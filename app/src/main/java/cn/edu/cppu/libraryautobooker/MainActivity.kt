@@ -53,9 +53,7 @@ class MainActivity : ComponentActivity() {
                 val notificationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { }
-                val seatPicker = rememberLauncherForActivityResult(
-                    ActivityResultContracts.StartActivityForResult()
-                ) { config = store.load() }
+                var seatInput by remember { mutableStateOf(config.seatNumbers.joinToString("\n")) }
 
                 Column(
                     modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -72,7 +70,7 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("准备", style = MaterialTheme.typography.titleMedium)
-                    Text("1. 连接校园局域网并登录\n2. 前一晚依次选好候选位置\n3. 设置放号时间，先演练一次")
+                            Text("1. 连接校园局域网并登录\n2. 每行输入一个座位号，越靠前优先级越高\n3. 设置放号时间，先演练一次")
                             OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java)) }) {
                                 Text("打开预约系统 / 登录")
                             }
@@ -84,22 +82,17 @@ class MainActivity : ComponentActivity() {
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("候选座位", style = MaterialTheme.typography.titleMedium)
-                            Text("在座位图上依次点选，先点的优先；最多 10 个。灰色位置也可以提前记录，放号时会检查是否变为绿色。")
-                            if (config.seatChoices.isEmpty()) Text("尚未选择位置")
-                            config.seatChoices.forEachIndexed { index, seat ->
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("${index + 1}. ${seat.label}", Modifier.weight(1f))
-                                    OutlinedButton(onClick = {
-                                        config = config.copy(seatChoices = config.seatChoices.filterIndexed { i, _ -> i != index })
-                                        store.save(config)
-                                    }) { Text("移除") }
-                                }
-                            }
-                            OutlinedButton(onClick = {
-                                store.save(config)
-                                seatPicker.launch(Intent(this@MainActivity, SeatPickerActivity::class.java))
-                            }) { Text("在一楼座位图中选择") }
+                            Text("按优先顺序填写座位号", style = MaterialTheme.typography.titleMedium)
+                            Text("每行一个，第一行最优先。放号时按顺序尝试，最多 10 个。")
+                            OutlinedTextField(
+                                value = seatInput,
+                                onValueChange = { seatInput = it },
+                                label = { Text("座位号") },
+                                placeholder = { Text("G015A\nG016A\nG017A") },
+                                minLines = 4,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text("当前顺序：${parseSeatNumbers(seatInput).joinToString(" → ").ifEmpty { "尚未填写" }}")
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -143,12 +136,14 @@ class MainActivity : ComponentActivity() {
 
                     Button(
                         onClick = {
+                            val seatNumbers = parseSeatNumbers(seatInput)
+                            config = config.copy(seatNumbers = seatNumbers)
                             if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             if (config.enabled) {
-                                if (config.seatChoices.isEmpty()) {
+                                if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
                                     config = config.copy(enabled = false, scheduledAtMillis = 0L)
                                     store.save(config)
-                                    status = "请先选择至少一个候选座位"
+                                    status = "请输入 1 到 10 个座位号，每行一个"
                                 } else if (!scheduler.canScheduleExact()) {
                                     config = config.copy(enabled = false, scheduledAtMillis = 0L)
                                     store.save(config)
@@ -171,10 +166,12 @@ class MainActivity : ComponentActivity() {
                     ) { Text("保存并安排任务") }
                     OutlinedButton(
                         onClick = {
-                            if (config.seatChoices.isEmpty()) {
-                                status = "请先选择至少一个候选座位"
+                            val seatNumbers = parseSeatNumbers(seatInput)
+                            if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
+                                status = "请输入 1 到 10 个座位号，每行一个"
                                 return@OutlinedButton
                             }
+                            config = config.copy(seatNumbers = seatNumbers)
                             store.save(config)
                             if (Build.VERSION.SDK_INT >= 33) {
                                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -191,7 +188,7 @@ class MainActivity : ComponentActivity() {
                     ) { Text(if (config.dryRun) "立即演练" else "立即运行一次") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
                     Text(
-                        "请先演练。若学校页面变化，应用会提示失败，请重新在座位图录入候选位置。",
+                        "请先演练。若页面无法识别座位号，应用会停止，不会猜测或点击其他座位。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(20.dp))
@@ -200,6 +197,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private fun parseSeatNumbers(input: String): List<String> = input.lines()
+    .map { it.trim().uppercase() }
+    .filter { it.isNotEmpty() }
+    .distinct()
 
 @androidx.compose.runtime.Composable
 private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChecked: (Boolean) -> Unit) {

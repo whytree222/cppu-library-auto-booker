@@ -16,6 +16,7 @@ class ConfigStore(context: Context) {
         roomKeywords = prefs.getString("room_keywords", "").orEmpty(),
         seatKeywords = prefs.getString("seat_keywords", "").orEmpty(),
         seatChoices = readSeats(),
+        seatNumbers = readSeatNumbers(),
         startTime = prefs.getString("start_time", "08:00").orEmpty(),
         endTime = prefs.getString("end_time", "22:00").orEmpty(),
         entryPath = prefs.getString("entry_path", "/multireadingroomtablelist").orEmpty(),
@@ -41,6 +42,7 @@ class ConfigStore(context: Context) {
                     })
                 }
             }.toString())
+            .putString("seat_numbers", JSONArray(config.seatNumbers).toString())
             .putString("start_time", config.startTime)
             .putString("end_time", config.endTime)
             .putString("entry_path", config.entryPath)
@@ -59,6 +61,13 @@ class ConfigStore(context: Context) {
                 yFraction = item.optDouble("y", 0.5)
             )
         }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private fun readSeatNumbers(): List<String> = try {
+        val array = JSONArray(prefs.getString("seat_numbers", "[]"))
+        (0 until array.length()).map { array.optString(it).trim() }.filter { it.isNotEmpty() }
     } catch (_: Exception) {
         emptyList()
     }

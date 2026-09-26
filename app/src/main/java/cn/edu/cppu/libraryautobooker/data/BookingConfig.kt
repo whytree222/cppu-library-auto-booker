@@ -9,6 +9,7 @@ data class BookingConfig(
     val roomKeywords: String = "",
     val seatKeywords: String = "",
     val seatChoices: List<SeatChoice> = emptyList(),
+    val seatNumbers: List<String> = emptyList(),
     val startTime: String = "08:00",
     val endTime: String = "22:00",
     val entryPath: String = "/multireadingroomtablelist",
