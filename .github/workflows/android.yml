@@ -17,9 +17,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
       - name: Install Android SDK
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+        run: |
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' | sort -V | tail -1)
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
@@ -38,3 +39,4 @@ jobs:
           else
             gh release create v0.2.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.2.0' --notes '可安装的 Android 调试版 APK。请先在应用内演练并确认座位识别。'
           fi
+
