@@ -33,4 +33,3 @@ gradle assembleDebug
 ```
 
 输出位于 `app/build/outputs/apk/debug/app-debug.apk`。本项目没有提交 `local.properties`、密码、签名密钥或登录 Cookie。
-
