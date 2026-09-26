@@ -20,7 +20,7 @@ import java.util.Locale
 
 class SeatPickerActivity : Activity() {
     private lateinit var webView: WebView
-    private lateinit var overlay: View
+    private lateinit var captureLayer: View
     private lateinit var message: TextView
     private lateinit var toggle: Button
     private val store by lazy { ConfigStore(this) }
@@ -41,7 +41,7 @@ class SeatPickerActivity : Activity() {
             text = "开启位置录入"
             setOnClickListener {
                 captureEnabled = !captureEnabled
-                overlay.visibility = if (captureEnabled) View.VISIBLE else View.GONE
+                captureLayer.visibility = if (captureEnabled) View.VISIBLE else View.GONE
                 text = if (captureEnabled) "暂停录入 / 滚动网页" else "开启位置录入"
                 showSelections()
             }
@@ -69,7 +69,7 @@ class SeatPickerActivity : Activity() {
             loadUrl("http://mlib.cppu.edu.cn/selectreadingroom")
         }
         frame.addView(webView, FrameLayout.LayoutParams(-1, -1))
-        overlay = View(this).apply {
+        captureLayer = View(this).apply {
             visibility = View.GONE
             setOnTouchListener { view, event ->
                 if (event.action == MotionEvent.ACTION_UP) {
@@ -78,7 +78,7 @@ class SeatPickerActivity : Activity() {
                 true
             }
         }
-        frame.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        frame.addView(captureLayer, FrameLayout.LayoutParams(-1, -1))
         root.addView(frame, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
     }

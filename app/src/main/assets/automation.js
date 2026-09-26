@@ -5,6 +5,32 @@
   const report = (state, detail) => window.AutoBooker?.report(state, detail);
   const seats = config.seatChoices || [];
 
+  const setField = (pattern, value) => {
+    const field = [...document.querySelectorAll('input,select')].find(el =>
+      pattern.test(`${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label')}`)
+    );
+    if (!field) return;
+    if (field.tagName === 'SELECT') {
+      const option = [...field.options].find(item => item.value === value || item.textContent.trim() === value);
+      if (!option) return;
+      field.value = option.value;
+    } else {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(field, value);
+    }
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const setDesiredPeriod = () => {
+    const day = new Date();
+    if (config.reserveTomorrow) day.setDate(day.getDate() + 1);
+    const date = [day.getFullYear(), String(day.getMonth() + 1).padStart(2, '0'),
+      String(day.getDate()).padStart(2, '0')].join('-');
+    setField(/date|use.?day|日期/i, date);
+    setField(/begin|start|开始/i, config.startTime);
+    setField(/end|finish|结束/i, config.endTime);
+  };
+
   if (location.pathname === '/login' || document.querySelector('form#fromuser input#passwd')) {
     report('error', '登录已失效，请先在应用内重新登录');
     return;
@@ -65,6 +91,7 @@
   let attempt = 0;
   const run = () => {
     attempt += 1;
+    setDesiredPeriod();
     const choice = seats.find(item => {
       const element = locate(item);
       return element && isAvailable(element, item);

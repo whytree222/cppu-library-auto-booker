@@ -89,7 +89,7 @@ class BookingService : Service() {
         @JavascriptInterface
         fun report(state: String, detail: String) {
             getSystemService(NotificationManager::class.java).notify(
-                NOTIFICATION_ID,
+                RESULT_NOTIFICATION_ID,
                 notification(
                     if (state == "success") "预约成功：$detail" else "预约状态：$detail",
                     ongoing = false
@@ -125,5 +125,6 @@ class BookingService : Service() {
         const val ACTION_SCHEDULED = "cn.edu.cppu.libraryautobooker.SCHEDULED"
         private const val CHANNEL_ID = "booking"
         private const val NOTIFICATION_ID = 4402
+        private const val RESULT_NOTIFICATION_ID = 4403
     }
 }
