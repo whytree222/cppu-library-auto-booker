@@ -34,8 +34,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.3.0 >/dev/null 2>&1; then
-            gh release upload v0.3.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.3.1 >/dev/null 2>&1; then
+            gh release upload v0.3.1 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.3.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.3.0' --notes '按输入顺序尝试座位号。请先在应用内演练并确认座位识别；尚未在真实登录页面验证。'
+            gh release create v0.3.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.3.1' --notes '修复登录后无法自动返回应用，新增手动返回按钮。请先演练确认座位识别；尚未在真实登录页面验证。'
           fi
