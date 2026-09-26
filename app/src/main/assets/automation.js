@@ -13,8 +13,10 @@
     if (field.tagName === 'SELECT') {
       const option = [...field.options].find(item => item.value === value || item.textContent.trim() === value);
       if (!option) return;
+      if (field.value === option.value) return;
       field.value = option.value;
     } else {
+      if (field.value === value) return;
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
       setter.call(field, value);
     }

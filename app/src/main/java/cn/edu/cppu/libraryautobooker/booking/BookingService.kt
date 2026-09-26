@@ -21,6 +21,7 @@ import cn.edu.cppu.libraryautobooker.data.ConfigStore
 class BookingService : Service() {
     private var webView: WebView? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var automationStarted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -39,6 +40,7 @@ class BookingService : Service() {
         }
 
         webView?.destroy()
+        automationStarted = false
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -50,6 +52,22 @@ class BookingService : Service() {
                         Bridge().report("error", "页面跳转到非校内站点，已停止")
                         return
                     }
+                    if (Uri.parse(url).path == "/login") {
+                        Bridge().report("error", "登录已失效，请先在应用内重新登录")
+                        return
+                    }
+                    if (automationStarted) {
+                        view.evaluateJavascript(
+                            "window.AutoBooker.report(/预约成功|预定成功/.test(document.body.innerText) ? 'success' : 'submitted', '页面已跳转，请在学校系统核对结果')",
+                            null
+                        )
+                        return
+                    }
+                    if (Uri.parse(url).path != config.entryPath.ensureLeadingSlash()) {
+                        Bridge().report("error", "没有进入预选的座位列表")
+                        return
+                    }
+                    automationStarted = true
                     val template = assets.open("automation.js").bufferedReader().use { it.readText() }
                     view.evaluateJavascript(AutomationScript.build(template, config), null)
                 }
