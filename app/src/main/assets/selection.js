@@ -17,16 +17,31 @@
   };
   const wantedDate = normalizeDate(targetDate);
   const text = element => (element.textContent || element.value || '').replace(/\s+/g, '').trim();
-  const room = () => [...document.querySelectorAll('#roomdata [onclick]')].find(element =>
+  const documents = () => {
+    const result = [];
+    const visit = current => {
+      if (!current || result.includes(current)) return;
+      result.push(current);
+      for (const frame of current.querySelectorAll('iframe')) {
+        try { visit(frame.contentDocument); } catch (_) { }
+      }
+    };
+    visit(document);
+    return result;
+  };
+  const queryAll = selector => documents().flatMap(current => [...current.querySelectorAll(selector)]);
+  const room = () => queryAll('#roomdata [onclick]').find(element =>
     /roomonclick\(['"]26['"]\)/.test(element.getAttribute('onclick') || '') &&
     text(element).includes('过刊阅览室'));
-  const dateCard = () => [...document.querySelectorAll('#usedayinfo [onclick]')].find(element => {
+  const dateHandlers = () => queryAll('[onclick*="selectusedaybuttonclick"]');
+  const dateFromHandler = element => {
     const handler = element.getAttribute('onclick') || '';
     const match = /selectusedaybuttonclick\(\s*['"]\d+['"]\s*,\s*['"]\d+['"]\s*,\s*['"]([^'"]+)['"]/.exec(handler);
-    return match && normalizeDate(match[1]) === wantedDate;
-  });
-  const form = () => document.querySelector('form[action*="multireadingroomtablelist"]');
-  const boxes = () => [...document.querySelectorAll('#selectdate input[type="checkbox"][name="url"]')];
+    return match ? normalizeDate(match[1]) : '';
+  };
+  const dateCard = () => dateHandlers().find(element => dateFromHandler(element) === wantedDate);
+  const form = () => queryAll('form[action*="multireadingroomtablelist"]')[0];
+  const boxes = () => queryAll('#selectdate input[type="checkbox"][name="url"]');
   const slotStarts = ['08:10', '10:01', '11:31', '14:31', '16:31', '18:01', '19:31'];
 
   let roomClicked = false;
@@ -45,10 +60,14 @@
   };
   const tick = () => {
     if (finished || location.pathname === '/multireadingroomtablelist') return;
-    if (Date.now() - stageAt > 15000) {
+    if (Date.now() - stageAt > 20000) {
+      const seenDates = [...new Set(dateHandlers().map(dateFromHandler).filter(Boolean))].join('、');
+      const frameCount = queryAll('iframe').length;
       fail(nextClicked ? '时段已选，但未进入座位图；请检查学校网页'
         : dateClicked ? '已选日期，但未出现七个时段'
-        : roomClicked ? '已选过刊阅览室，但未出现日期选择'
+        : roomClicked ? seenDates
+          ? `未找到目标日期 ${targetDate}；页面日期：${seenDates}；内嵌页：${frameCount}`
+          : `已点击过刊阅览室，但日期选项未出现；目标日期：${targetDate}；内嵌页：${frameCount}`
         : '未找到过刊阅览室卡片');
       return;
     }
@@ -74,7 +93,7 @@
         const index = [...bySlot].find(([, value]) => value === box)?.[0];
         const shouldCheck = slots.includes(index);
         if (box.checked === shouldCheck) return;
-        const label = [...document.querySelectorAll('label')].find(item => item.htmlFor === box.id);
+        const label = [...box.ownerDocument.querySelectorAll('label')].find(item => item.htmlFor === box.id);
         (label || box).click();
       });
       if (choices.some(box => box.checked !== slots.includes([...bySlot].find(([, value]) => value === box)?.[0]))) {
