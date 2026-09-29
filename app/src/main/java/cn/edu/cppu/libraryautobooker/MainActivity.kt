@@ -99,14 +99,15 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = config.startTime,
                             onValueChange = { config = config.copy(startTime = it) },
-                            label = { Text("开始") }, modifier = Modifier.weight(1f)
+                            label = { Text("使用开始时间") }, modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
                             value = config.endTime,
                             onValueChange = { config = config.copy(endTime = it) },
-                            label = { Text("结束") }, modifier = Modifier.weight(1f)
+                            label = { Text("使用结束时间") }, modifier = Modifier.weight(1f)
                         )
                     }
+                    Text("这是预约座位的使用时段，不是放号时间。", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = config.entryPath,
                         onValueChange = { config = config.copy(entryPath = it) },

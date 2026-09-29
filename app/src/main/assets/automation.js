@@ -49,11 +49,16 @@
     const box = el.getBoundingClientRect();
     return box.width > 3 && box.height > 3 && box.width <= 160 && box.height <= 160;
   };
-  const isAvailable = el => [el, ...el.querySelectorAll('*')].slice(0, 30).some(item => {
+  const isAvailable = el => {
+    if (el.classList.contains('seatCharts-seat')) {
+      return el.classList.contains('available') && !el.classList.contains('unavailable');
+    }
+    return [el, ...el.querySelectorAll('*')].slice(0, 30).some(item => {
     const style = getComputedStyle(item);
     return [style.color, style.backgroundColor, style.fill, style.stroke, style.borderColor]
       .some(color => green(parseRgb(color)));
-  });
+    });
+  };
   const exactNumber = (value, number) => {
     if (!value) return false;
     const escaped = number.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -69,6 +74,10 @@
     return values;
   };
   const locate = number => {
+    const exactSeat = document.getElementById(number);
+    if (exactSeat?.classList.contains('seatCharts-seat')) {
+      return visible(exactSeat) && seatSized(exactSeat) && isAvailable(exactSeat) ? exactSeat : null;
+    }
     const matches = [...document.querySelectorAll('body *')].filter(el =>
       visible(el) && labels(el).some(value => exactNumber(value, number)));
     for (const match of matches) {
@@ -79,7 +88,7 @@
     }
     return null;
   };
-  const numberPresent = number => [...document.querySelectorAll('body *')].some(el =>
+  const numberPresent = number => !!document.getElementById(number) || [...document.querySelectorAll('body *')].some(el =>
     labels(el).some(value => exactNumber(value, number)));
   const notices = () => [...document.querySelectorAll(
     '.alertify-message,.alertify-log,[role="alert"],.layui-layer-content')]
