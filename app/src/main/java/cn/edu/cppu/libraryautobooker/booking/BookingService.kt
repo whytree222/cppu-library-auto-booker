@@ -68,7 +68,7 @@ class BookingService : Service() {
                     }
                     if (automationStarted) {
                         view.evaluateJavascript(
-                            "window.AutoBooker.report(/预约成功|预定成功/.test(document.body.innerText) ? 'success' : 'submitted', '页面已跳转，请在学校系统核对结果')",
+                            "window.AutoBooker.report(/预约成功|预定成功/.test(document.body.innerText) ? 'success' : 'error', /预约成功|预定成功/.test(document.body.innerText) ? '网页显示预约成功；请在学校系统核对记录' : '页面已跳转，但没有明确成功提示；不能视为预约成功')",
                             null
                         )
                         return

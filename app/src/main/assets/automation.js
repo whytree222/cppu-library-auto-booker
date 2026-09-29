@@ -66,13 +66,10 @@
   const numberPresent = number => !!document.getElementById(number) || [...document.querySelectorAll('body *')].some(el =>
     labels(el).some(value => exactNumber(value, number)));
   const notices = () => [...document.querySelectorAll(
-    '.alertify-message,.alertify-log,[role="alert"],.layui-layer-content')]
+    '.alertify-message,.alertify-log,[role="alert"],.layui-layer-content,.modal.in .modal-body,.modal.show .modal-body,.modal[style*="display: block"] .modal-body')]
     .filter(visible).map(text).join(' ');
   const successText = () => /预约成功|预定成功|预约已成功/.test(notices()) ? notices().slice(0, 80) : '';
   const failureText = () => /预约失败|已被预约|不可预约|预约已满|操作失败/.test(notices()) ? notices().slice(0, 80) : '';
-  const modalButton = () => [...document.querySelectorAll(
-    '#alertify button,#alertify a,.alertify-dialog button,.alertify-dialog a,[role="dialog"] button,.popup_wrap button')]
-    .find(el => visible(el) && /^(确定|确认|预约|提交)$/.test(text(el)));
 
   let finished = false;
   const attempted = new Set();
@@ -124,6 +121,7 @@
     });
     watcher.observe(document.body, { childList: true, subtree: true, characterData: true });
     seat.click();
+    report('progress', `已选中 ${number}，正在核对网页选座状态`);
     setTimeout(() => {
       if (finished || !active || thisAttempt !== attemptId) return;
       const current = document.getElementById(number);
@@ -137,19 +135,23 @@
         watcher.disconnect();
         return finish('error', '未找到座位图的预约按钮；没有提交');
       }
+      const selectedList = document.querySelector('#selected-seats');
+      if (selectedList && !text(selectedList).toUpperCase().includes(number)) {
+        watcher.disconnect();
+        return finish('error', `${number} 未进入网页的已选座位列表；没有提交`);
+      }
+      report('progress', `已点击 ${number} 的预约按钮，等待学校系统返回结果`);
       submit.click();
-      setTimeout(() => {
-        if (finished || !active || thisAttempt !== attemptId) return;
-        const confirm = modalButton();
-        if (confirm) confirm.click();
-      }, 500);
-    }, 250);
+    }, 800);
     setTimeout(() => {
       watcher.disconnect();
       if (!finished && active && thisAttempt === attemptId) {
-        finish('submitted', `已尝试 ${number}，未收到明确结果；请到学校系统核对`);
+        const notice = notices();
+        finish('error', notice
+          ? `${number} 未确认预约成功；网页提示：${notice.slice(0, 80)}`
+          : `${number} 点击预约后 45 秒未收到网页结果；不能视为预约成功`);
       }
-    }, 9000);
+    }, 45000);
   };
   tryNext();
 })();
