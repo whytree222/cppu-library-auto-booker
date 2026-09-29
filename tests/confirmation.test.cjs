@@ -1,0 +1,144 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { JSDOM } = require('jsdom');
+
+const script = fs.readFileSync('app/src/main/assets/automation.js', 'utf8');
+
+// Reproduce the supplied layoutBespeak/commitbesk boundary: clicking 预约
+// only opens Alertify; the simulated request happens exclusively on 确认.
+function fixture(options = {}) {
+  const dom = new JSDOM(`<!doctype html><body>
+    <input id="roomno" value="26"><input id="isuseday" value="1">
+    <input id="begintime" value="08:10:01"><input id="endtime" value="10:00:00">
+    <input id="times"><input id="tableNo"><ul id="selected-seats"></ul>
+    <div id="G015A" class="seatCharts-seat available" aria-checked="false">G015A</div>
+    <div id="G016A" class="seatCharts-seat available" aria-checked="false">G016A</div>
+    <button id="book" onclick="layoutBespeak()">预约</button>
+    <div id="confirmation" class="alertify ajs-hidden"><div class="ajs-dialog">
+      <div class="ajs-content"></div><div class="ajs-footer">
+      <button class="ui positive button">确认</button><button>取消</button></div></div></div>
+    <div id="result" class="alertify ajs-hidden"><div class="ajs-dialog">
+      <div class="ajs-content"></div><div class="ajs-footer"><button>确认</button></div></div></div>
+    </body>`, { url: 'http://mlib.cppu.edu.cn/multireadingroomtablelist', runScripts: 'outside-only' });
+  const w = dom.window;
+  const d = w.document;
+  const messages = [];
+  let requests = 0;
+  let clicks = 0;
+  let now = Date.now();
+  const timers = new Map();
+  let timerId = 0;
+  w.Date.now = () => now;
+  // Virtual time permits testing delayed modals and the full 45-second wait.
+  w.setTimeout = (fn, delay = 0) => { timers.set(++timerId, { fn, at: now + delay }); return timerId; };
+  w.setInterval = (fn, period) => { timers.set(++timerId, { fn, at: now + period, period }); return timerId; };
+  w.clearTimeout = w.clearInterval = id => timers.delete(id);
+  w.HTMLElement.prototype.getClientRects = function () {
+    if (this.closest('.ajs-hidden,[hidden]')) return [];
+    for (let el = this; el; el = el.parentElement) if (el.style.display === 'none') return [];
+    return [{ width: 25, height: 25 }];
+  };
+  w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
+  for (const number of ['G015A', 'G016A']) d.getElementById(number).onclick = () => {
+    const seat = d.getElementById(number);
+    const selected = seat.getAttribute('aria-checked') !== 'true';
+    seat.className = `seatCharts-seat ${selected ? 'selected' : 'available'}`;
+    seat.setAttribute('aria-checked', String(selected));
+    d.getElementById('selected-seats').textContent = selected ? `座位${number}号座位` : '';
+    d.getElementById('tableNo').value = options.emptyField || !selected ? '' : number;
+  };
+  const reserveTomorrow = options.today ? false : true;
+  d.getElementById('isuseday').value = reserveTomorrow ? '1' : '0';
+  if (options.multi) {
+    d.getElementById('begintime').value = '';
+    d.getElementById('times').value = '08:10:01-10:00:59,10:01:10-11:29:00';
+  }
+  w.layoutBespeak = () => {
+    clicks++;
+    if (options.noConfirmation) return;
+    const open = () => {
+      const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+      const day = reserveTomorrow ? `${tomorrow.getFullYear()}-${tomorrow.getMonth() + 1}-${tomorrow.getDate()}` : '今日';
+      const time = options.multi ? d.getElementById('times').value : '08:10:01-10:00:00';
+      const content = d.querySelector('#confirmation .ajs-content');
+      content.innerHTML = `确认要预约使用时间为：<span class="badge">${options.wrongTime ? '19:31:00-22:01:00' : time}</span><br>使用日期为：<span class="badge">${options.wrongDate ? '1999-1-1' : day}</span><br>座位号码：<span class="badge">${options.wrongSeat ? 'G016A' : d.getElementById('tableNo').value}</span><br>的预约记录吗?`;
+      d.getElementById('confirmation').classList.remove('ajs-hidden');
+    };
+    w.setTimeout(open, options.delay || 0);
+  };
+  d.getElementById('book').onclick = w.layoutBespeak;
+  d.querySelector('#confirmation button').onclick = () => {
+    requests++;
+    d.getElementById('confirmation').classList.add('ajs-hidden');
+    if (options.noResponse) return;
+    // The response text is inserted while hidden, then only the class changes.
+    d.querySelector('#result .ajs-content').textContent = options.conflict && requests === 1 ? '座位已被预约' : options.result || '预约成功';
+    w.setTimeout(() => d.getElementById('result').classList.remove('ajs-hidden'), 400);
+  };
+  d.querySelector('#result button').onclick = () => d.getElementById('result').classList.add('ajs-hidden');
+  const config = { seatNumbers: options.conflict ? ['G015A', 'G016A'] : ['G015A'], selectedSlots: options.multi ? [0, 1] : [0], reserveTomorrow, dryRun: !!options.dryRun };
+  w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify(config)));
+  async function advance(duration) {
+    const target = now + duration;
+    while (true) {
+      const next = [...timers.entries()].filter(([, t]) => t.at <= target).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      const [id, timer] = next;
+      now = timer.at;
+      if (timer.period) timer.at += timer.period; else timers.delete(id);
+      timer.fn();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    now = target;
+    await Promise.resolve();
+  }
+  return { messages, advance, requests: () => requests, clicks: () => clicks, close: () => w.close() };
+}
+
+for (const [name, options] of [
+  ['tomorrow', {}], ['today', { today: true }], ['two time slots', { multi: true }],
+  ['confirmation delayed beyond the old 500 ms check', { delay: 2000 }]
+]) test(`confirm once and recognize success: ${name}`, async () => {
+  const f = fixture(options);
+  try {
+    await f.advance(5000);
+    assert.equal(f.requests(), 1);
+    assert.equal(f.messages.at(-1).state, 'success');
+    await f.advance(50000);
+    assert.equal(f.requests(), 1);
+  } finally { f.close(); }
+});
+
+for (const option of ['wrongSeat', 'wrongDate', 'wrongTime', 'emptyField', 'noConfirmation']) {
+  test(`do not send request: ${option}`, async () => {
+    const f = fixture({ [option]: true });
+    try { await f.advance(12000); assert.equal(f.requests(), 0); assert.equal(f.messages.at(-1).state, 'error'); }
+    finally { f.close(); }
+  });
+}
+
+test('dry run never opens or confirms a booking', async () => {
+  const f = fixture({ dryRun: true });
+  try { await f.advance(5000); assert.equal(f.clicks(), 0); assert.equal(f.requests(), 0); assert.equal(f.messages.at(-1).state, 'dry-run'); }
+  finally { f.close(); }
+});
+
+test('show server rejection without treating 未预约成功 as success', async () => {
+  const f = fixture({ result: '未预约成功，请勿重复预约' });
+  try { await f.advance(5000); assert.equal(f.requests(), 1); assert.equal(f.messages.at(-1).state, 'error'); assert.match(f.messages.at(-1).detail, /请勿重复预约/); }
+  finally { f.close(); }
+});
+
+test('uncertain response does not cause a second submission', async () => {
+  const f = fixture({ noResponse: true });
+  try { await f.advance(50000); assert.equal(f.requests(), 1); assert.equal(f.messages.at(-1).state, 'error'); assert.match(f.messages.at(-1).detail, /45 秒/); }
+  finally { f.close(); }
+});
+
+test('a definite seat conflict closes the result and confirms the next preference', async () => {
+  const f = fixture({ conflict: true });
+  try { await f.advance(10000); assert.equal(f.requests(), 2); assert.equal(f.messages.at(-1).state, 'success'); assert.match(f.messages.at(-1).detail, /G016A/); }
+  finally { f.close(); }
+});

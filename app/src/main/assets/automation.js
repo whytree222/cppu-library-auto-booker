@@ -66,10 +66,10 @@
   const numberPresent = number => !!document.getElementById(number) || [...document.querySelectorAll('body *')].some(el =>
     labels(el).some(value => exactNumber(value, number)));
   const notices = () => [...document.querySelectorAll(
-    '.alertify-message,.alertify-log,[role="alert"],.layui-layer-content,.modal.in .modal-body,.modal.show .modal-body,.modal[style*="display: block"] .modal-body')]
+    '.alertify:not(.ajs-hidden) .ajs-content,.alertify-notifier .ajs-message,.alertify-message,.alertify-log,[role="alert"],.layui-layer-content,.modal.in .modal-body,.modal.show .modal-body,.modal[style*="display: block"] .modal-body')]
     .filter(visible).map(text).join(' ');
-  const successText = () => /预约成功|预定成功|预约已成功/.test(notices()) ? notices().slice(0, 80) : '';
-  const failureText = () => /预约失败|已被预约|不可预约|预约已满|操作失败/.test(notices()) ? notices().slice(0, 80) : '';
+  const successText = () => /^(预约成功|预定成功|预约已成功)[！!。\.\s]*$/.test(notices()) ? notices().slice(0, 80) : '';
+  const failureText = () => /预约失败|已被预约|座位已被占用|不可预约|预约已满|操作失败/.test(notices()) ? notices().slice(0, 80) : '';
 
   let finished = false;
   const attempted = new Set();
@@ -98,28 +98,105 @@
     active = true;
     const thisAttempt = ++attemptId;
     const previousNotice = notices();
-    const watcher = new MutationObserver(() => {
+    let submittedAt = 0;
+    let confirmationAt = 0;
+    let pollTimer;
+    const inspect = () => {
       if (finished || !active || thisAttempt !== attemptId) return;
-      const success = successText();
-      if (success) return finish('success', `${number}：${success}`);
-      if (failureText() && notices() !== previousNotice) {
-        watcher.disconnect();
-        const current = document.getElementById(number);
-        if (current && (current.getAttribute('aria-checked') === 'true' || current.classList.contains('selected'))) {
-          current.click();
+      // commitbesk only sends its AJAX request inside the confirmation's OK callback.
+      const confirmation = [...document.querySelectorAll('.alertify:not(.ajs-hidden) .ajs-content')]
+        .find(content => visible(content) && text(content).startsWith('确认要预约使用时间为：'));
+      if (confirmation && submittedAt && !confirmationAt) {
+        const field = id => String(document.getElementById(id)?.value || '').trim();
+        const badges = [...confirmation.querySelectorAll('.badge')].map(text);
+        const dayOffset = config.reserveTomorrow ? 1 : 0;
+        const day = new Date();
+        day.setDate(day.getDate() + dayOffset);
+        const expectedDay = dayOffset === 0 ? '今日' : `${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`;
+        const expectedTime = (field('begintime') ? `${field('begintime')}-${field('endtime')}` : field('times')).replace(/\s+/g, '');
+        const slotStarts = ['08:10', '10:01', '11:31', '14:31', '16:31', '18:01', '19:31'];
+        const slotEnds = ['10:00', '11:29', '14:29', '16:30', '18:00', '19:29', '22:01'];
+        const slots = [...new Set(config.selectedSlots || [])].sort((a, b) => a - b);
+        const ranges = [...expectedTime.matchAll(/(\d{2}:\d{2})(?::\d{2})?[-~至](\d{2}:\d{2})(?::\d{2})?/g)];
+        const validSlots = slots.length > 0 && slots.length <= 4 && slots.every((slot, i) =>
+          Number.isInteger(slot) && slot >= 0 && slot < 7 && slot === slots[0] + i);
+        const timeMatches = validSlots && (ranges.length === slots.length
+          ? ranges.every((range, i) => range[1] === slotStarts[slots[i]] && range[2] === slotEnds[slots[i]])
+          : ranges.length === 1 && ranges[0][1] === slotStarts[slots[0]] && ranges[0][2] === slotEnds[slots[slots.length - 1]]);
+        if (field('roomno') !== '26' || field('isuseday') !== String(dayOffset) ||
+            field('tableNo').toUpperCase() !== number || badges.length !== 3 ||
+            badges[0] !== expectedTime || badges[1] !== expectedDay || badges[2].toUpperCase() !== number || !timeMatches) {
+          return finish('error', '预约确认框中的阅览室、日期、时段或座位与任务不符；未点击确认');
         }
-        setTimeout(() => {
-          if (finished || thisAttempt !== attemptId) return;
-          if (current && (current.getAttribute('aria-checked') === 'true' || current.classList.contains('selected'))) {
-            return finish('error', `${number} 预约失败，且无法安全取消选中；已停止`);
-          }
-          active = false;
-          scanCount = 0;
-          tryNext();
-        }, 200);
+        const dialog = confirmation.closest('.ajs-dialog');
+        const buttons = dialog ? [...dialog.querySelectorAll('.ajs-footer button')]
+          .filter(button => visible(button) && !button.disabled && /^(确认|确定)$/.test(text(button))) : [];
+        if (buttons.length !== 1) return finish('error', '已出现预约确认框，但无法唯一识别确认按钮；未提交');
+        confirmationAt = Date.now();
+        report('progress', `已核对 ${number} 的日期和时段，正在确认预约`);
+        buttons[0].click();
+        return;
       }
-    });
-    watcher.observe(document.body, { childList: true, subtree: true, characterData: true });
+      const success = successText();
+      if (confirmationAt && success) return finish('success', `${number}：${success}`);
+      if (failureText() && notices() !== previousNotice) {
+        const failure = notices();
+        watcher.disconnect();
+        clearInterval(pollTimer);
+        // Only a definite seat conflict permits moving to the next preference.
+        // A timeout or other error may follow a completed request: never resubmit it.
+        if (confirmationAt && /已被预约|座位已被占用/.test(failure) && numbers.some(value => !attempted.has(value))) {
+          const content = [...document.querySelectorAll('.alertify:not(.ajs-hidden) .ajs-content')]
+            .find(element => visible(element) && /已被预约|座位已被占用/.test(text(element)));
+          const acknowledgements = content ? [...content.closest('.ajs-dialog').querySelectorAll('.ajs-footer button')]
+            .filter(button => visible(button) && !button.disabled && /^(确认|确定)$/.test(text(button))) : [];
+          if (acknowledgements.length === 1) {
+            active = false;
+            acknowledgements[0].click();
+            const retryAt = Date.now();
+            const retry = () => {
+              if (finished || thisAttempt !== attemptId) return;
+              if (content.closest('.alertify')?.classList.contains('ajs-hidden') || !visible(content)) {
+                const current = document.getElementById(number);
+                if (current && (current.getAttribute('aria-checked') === 'true' || current.classList.contains('selected'))) current.click();
+                if (String(document.getElementById('tableNo')?.value || '').trim()) {
+                  return finish('error', `${number} 被预约后无法清除网页选座状态；已停止`);
+                }
+                scanCount = 0;
+                report('progress', `${number} 已被预约，正在按顺序尝试下一候选座位`);
+                return tryNext();
+              }
+              if (Date.now() - retryAt > 3000) return finish('error', '无法关闭座位冲突提示；已停止');
+              setTimeout(retry, 200);
+            };
+            setTimeout(retry, 200);
+            return;
+          }
+        }
+        return finish('error', `${number}：${failure.slice(0, 100)}`);
+      }
+      const result = notices();
+      if (submittedAt && result && result !== previousNotice && !confirmation && !success) {
+        return finish('error', `${number}：${result.slice(0, 100)}`);
+      }
+      if (submittedAt && !confirmationAt && Date.now() - submittedAt > 10000) {
+        return finish('error', `${number} 点击预约后未出现可识别的预约确认框；没有确认提交`);
+      }
+      if (confirmationAt && Date.now() - confirmationAt > 45000) {
+        return finish('error', `${number} 已确认预约，但学校系统 45 秒内未返回结果；请核对预约记录`);
+      }
+    };
+    const watcher = new MutationObserver(inspect);
+    pollTimer = setInterval(() => {
+      if (finished || !active || thisAttempt !== attemptId) {
+        clearInterval(pollTimer);
+        watcher.disconnect();
+        return;
+      }
+      inspect();
+    }, 200);
+    watcher.observe(document.body, { childList: true, subtree: true, characterData: true,
+      attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
     seat.click();
     report('progress', `已选中 ${number}，正在核对网页选座状态`);
     setTimeout(() => {
@@ -140,18 +217,16 @@
         watcher.disconnect();
         return finish('error', `${number} 未进入网页的已选座位列表；没有提交`);
       }
-      report('progress', `已点击 ${number} 的预约按钮，等待学校系统返回结果`);
+      // layoutBespeak reads this field, not the seat icon or selected-seats list.
+      const tableNo = document.querySelector('#tableNo');
+      if (!tableNo || !String(tableNo.value || '').trim()) {
+        watcher.disconnect();
+        return finish('error', `${number} 已在座位图选中，但网页提交字段 tableNo 为空；没有发送预约`);
+      }
+      submittedAt = Date.now();
+      report('progress', `正在打开 ${number} 的预约确认框`);
       submit.click();
     }, 800);
-    setTimeout(() => {
-      watcher.disconnect();
-      if (!finished && active && thisAttempt === attemptId) {
-        const notice = notices();
-        finish('error', notice
-          ? `${number} 未确认预约成功；网页提示：${notice.slice(0, 80)}`
-          : `${number} 点击预约后 45 秒未收到网页结果；不能视为预约成功`);
-      }
-    }, 45000);
   };
   tryNext();
 })();

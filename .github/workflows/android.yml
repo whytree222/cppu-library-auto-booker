@@ -13,6 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Verify booking confirmation flow
+        run: |
+          npm ci --ignore-scripts
+          npm test
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -34,8 +42,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.4.3 >/dev/null 2>&1; then
-            gh release upload v0.4.3 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.4.4 >/dev/null 2>&1; then
+            gh release upload v0.4.4 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.4.3 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.4.3' --notes '识别学校网站的预约结果弹窗，确认已选座位进入列表，并延长提交结果等待；请核对学校系统中的预约记录。'
+            gh release create v0.4.4 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.4.4' --notes '修复停在预约确认框而未发送请求的问题：核对阅览室、日期、时段和座位后点击确认，并识别学校 Alertify 的结果提示。包含确认流程回归测试；真实预约结果以学校系统记录为准。'
           fi
