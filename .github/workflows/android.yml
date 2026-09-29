@@ -33,7 +33,7 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Build installable APK
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: library-auto-booker-apk
@@ -42,8 +42,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.4.4 >/dev/null 2>&1; then
-            gh release upload v0.4.4 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.5.0 >/dev/null 2>&1; then
+            gh release upload v0.5.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.4.4 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.4.4' --notes '修复停在预约确认框而未发送请求的问题：核对阅览室、日期、时段和座位后点击确认，并识别学校 Alertify 的结果提示。包含确认流程回归测试；真实预约结果以学校系统记录为准。'
+            gh release create v0.5.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.5.0' --notes '新增同座位追加后三段：选择第1–4段并开启开关，前四段成功后自动预约同一天、同一座位的第5–7段。第二笔失败保留第一笔并报告部分成功。演练不会提交两笔。'
           fi

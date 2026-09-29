@@ -76,10 +76,12 @@
   let scanCount = 0;
   let active = false;
   let attemptId = 0;
-  const finish = (state, detail) => {
+  const finish = (state, detail, seatNumber = '') => {
     if (finished) return;
     finished = true;
-    report(state, detail);
+    if (state === 'success' && typeof window.AutoBooker?.booked === 'function') {
+      window.AutoBooker.booked(seatNumber, detail);
+    } else report(state, detail);
   };
   const tryNext = () => {
     if (finished || active) return;
@@ -113,6 +115,7 @@
         const day = new Date();
         day.setDate(day.getDate() + dayOffset);
         const expectedDay = dayOffset === 0 ? '今日' : `${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`;
+        const actualDate = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
         const expectedTime = (field('begintime') ? `${field('begintime')}-${field('endtime')}` : field('times')).replace(/\s+/g, '');
         const slotStarts = ['08:10', '10:01', '11:31', '14:31', '16:31', '18:01', '19:31'];
         const slotEnds = ['10:00', '11:29', '14:29', '16:30', '18:00', '19:29', '22:01'];
@@ -123,7 +126,7 @@
         const timeMatches = validSlots && (ranges.length === slots.length
           ? ranges.every((range, i) => range[1] === slotStarts[slots[i]] && range[2] === slotEnds[slots[i]])
           : ranges.length === 1 && ranges[0][1] === slotStarts[slots[0]] && ranges[0][2] === slotEnds[slots[slots.length - 1]]);
-        if (field('roomno') !== '26' || field('isuseday') !== String(dayOffset) ||
+        if ((config.targetDate && config.targetDate !== actualDate) || field('roomno') !== '26' || field('isuseday') !== String(dayOffset) ||
             field('tableNo').toUpperCase() !== number || badges.length !== 3 ||
             badges[0] !== expectedTime || badges[1] !== expectedDay || badges[2].toUpperCase() !== number || !timeMatches) {
           return finish('error', '预约确认框中的阅览室、日期、时段或座位与任务不符；未点击确认');
@@ -138,7 +141,7 @@
         return;
       }
       const success = successText();
-      if (confirmationAt && success) return finish('success', `${number}：${success}`);
+      if (confirmationAt && success) return finish('success', `${number}：${success}`, number);
       if (failureText() && notices() !== previousNotice) {
         const failure = notices();
         watcher.disconnect();

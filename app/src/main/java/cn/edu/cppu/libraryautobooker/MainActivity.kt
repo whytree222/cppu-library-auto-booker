@@ -128,7 +128,8 @@ class MainActivity : ComponentActivity() {
                                     if (next.size > 4 || (next.isNotEmpty() && next.last() - next.first() + 1 != next.size)) {
                                         status = "每笔只能选择 1–4 个连续时段；可先取消边缘时段再调整"
                                     } else {
-                                        config = config.copy(selectedSlots = next)
+                                        config = config.copy(selectedSlots = next,
+                                            appendLastThree = config.appendLastThree && next == listOf(0, 1, 2, 3))
                                     }
                                 }
                                 if (selected) {
@@ -141,11 +142,19 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                            if (config.selectedSlots == listOf(0, 1, 2, 3)) {
+                                SettingSwitch(
+                                    title = "同一座位追加后三个时段",
+                                    detail = "前四段成功后，自动预约该座位的第 5–7 段。分两笔提交；后三段失败时保留前四段。",
+                                    checked = config.appendLastThree,
+                                    onChecked = { config = config.copy(appendLastThree = it) }
+                                )
+                            }
                         }
                     }
                     SettingSwitch(
                         title = "演练模式",
-                        detail = "会走到座位图并识别座位，但不会提交预约",
+                        detail = if (config.appendLastThree) "只演练前四段；不提交预约，也不启动后三段" else "会走到座位图并识别座位，但不会提交预约",
                         checked = config.dryRun,
                         onChecked = { config = config.copy(dryRun = it) }
                     )

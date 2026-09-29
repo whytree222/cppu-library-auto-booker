@@ -11,6 +11,7 @@ data class BookingConfig(
     val seatChoices: List<SeatChoice> = emptyList(),
     val seatNumbers: List<String> = emptyList(),
     val selectedSlots: List<Int> = emptyList(),
+    val appendLastThree: Boolean = false,
     val startTime: String = "08:00",
     val endTime: String = "22:00",
     val entryPath: String = "/selectreadingroom",

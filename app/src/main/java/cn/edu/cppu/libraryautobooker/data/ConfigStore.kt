@@ -18,6 +18,7 @@ class ConfigStore(context: Context) {
         seatChoices = readSeats(),
         seatNumbers = readSeatNumbers(),
         selectedSlots = readSlots(),
+        appendLastThree = prefs.getBoolean("append_last_three", false),
         startTime = prefs.getString("start_time", "08:00").orEmpty(),
         endTime = prefs.getString("end_time", "22:00").orEmpty(),
         entryPath = prefs.getString("entry_path", "/selectreadingroom")
@@ -46,6 +47,7 @@ class ConfigStore(context: Context) {
             }.toString())
             .putString("seat_numbers", JSONArray(config.seatNumbers).toString())
             .putString("selected_slots", JSONArray(config.selectedSlots).toString())
+            .putBoolean("append_last_three", config.appendLastThree)
             .putString("start_time", config.startTime)
             .putString("end_time", config.endTime)
             .putString("entry_path", config.entryPath)

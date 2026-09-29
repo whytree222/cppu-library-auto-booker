@@ -10,7 +10,7 @@
   }
   const day = new Date();
   if (config.reserveTomorrow) day.setDate(day.getDate() + 1);
-  const targetDate = `${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`;
+  const targetDate = config.targetDate || `${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`;
   const normalizeDate = value => {
     const match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec((value || '').trim());
     return match ? `${Number(match[1])}-${Number(match[2])}-${Number(match[3])}` : '';

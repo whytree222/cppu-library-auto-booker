@@ -5,10 +5,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object AutomationScript {
-    fun build(template: String, config: BookingConfig): String {
+    fun build(template: String, config: BookingConfig, targetDate: String? = null): String {
         val json = JSONObject().apply {
             put("dryRun", config.dryRun)
             put("reserveTomorrow", config.reserveTomorrow)
+            if (targetDate != null) put("targetDate", targetDate)
             put("roomKeywords", config.roomKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatKeywords", config.seatKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatNumbers", JSONArray(config.seatNumbers))

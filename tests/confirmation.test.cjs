@@ -40,6 +40,7 @@ function fixture(options = {}) {
     return [{ width: 25, height: 25 }];
   };
   w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
+  if (options.nativeBridge) w.AutoBooker.booked = (seat, detail) => messages.push({ state: 'success', detail, seat });
   for (const number of ['G015A', 'G016A']) d.getElementById(number).onclick = () => {
     const seat = d.getElementById(number);
     const selected = seat.getAttribute('aria-checked') !== 'true';
@@ -50,9 +51,13 @@ function fixture(options = {}) {
   };
   const reserveTomorrow = options.today ? false : true;
   d.getElementById('isuseday').value = reserveTomorrow ? '1' : '0';
-  if (options.multi) {
+  if (options.multi || options.lastThree || options.firstFour) {
     d.getElementById('begintime').value = '';
-    d.getElementById('times').value = '08:10:01-10:00:59,10:01:10-11:29:00';
+    d.getElementById('times').value = options.lastThree
+      ? '16:31:30-18:00:30,18:01:30-19:29:30,19:31:00-22:01:00'
+      : options.firstFour
+        ? '08:10:01-10:00:59,10:01:10-11:29:00,11:31:00-14:29:00,14:31:00-16:30:30'
+        : '08:10:01-10:00:59,10:01:10-11:29:00';
   }
   w.layoutBespeak = () => {
     clicks++;
@@ -60,7 +65,7 @@ function fixture(options = {}) {
     const open = () => {
       const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
       const day = reserveTomorrow ? `${tomorrow.getFullYear()}-${tomorrow.getMonth() + 1}-${tomorrow.getDate()}` : '今日';
-      const time = options.multi ? d.getElementById('times').value : '08:10:01-10:00:00';
+      const time = (options.multi || options.lastThree || options.firstFour) ? d.getElementById('times').value : '08:10:01-10:00:00';
       const content = d.querySelector('#confirmation .ajs-content');
       content.innerHTML = `确认要预约使用时间为：<span class="badge">${options.wrongTime ? '19:31:00-22:01:00' : time}</span><br>使用日期为：<span class="badge">${options.wrongDate ? '1999-1-1' : day}</span><br>座位号码：<span class="badge">${options.wrongSeat ? 'G016A' : d.getElementById('tableNo').value}</span><br>的预约记录吗?`;
       d.getElementById('confirmation').classList.remove('ajs-hidden');
@@ -77,7 +82,9 @@ function fixture(options = {}) {
     w.setTimeout(() => d.getElementById('result').classList.remove('ajs-hidden'), 400);
   };
   d.querySelector('#result button').onclick = () => d.getElementById('result').classList.add('ajs-hidden');
-  const config = { seatNumbers: options.conflict ? ['G015A', 'G016A'] : ['G015A'], selectedSlots: options.multi ? [0, 1] : [0], reserveTomorrow, dryRun: !!options.dryRun };
+  const config = { seatNumbers: options.conflict ? ['G015A', 'G016A'] : ['G015A'],
+    selectedSlots: options.lastThree ? [4, 5, 6] : options.firstFour ? [0, 1, 2, 3] : options.multi ? [0, 1] : [0],
+    reserveTomorrow, dryRun: !!options.dryRun, targetDate: options.targetDate };
   w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify(config)));
   async function advance(duration) {
     const target = now + duration;
@@ -140,5 +147,22 @@ test('uncertain response does not cause a second submission', async () => {
 test('a definite seat conflict closes the result and confirms the next preference', async () => {
   const f = fixture({ conflict: true });
   try { await f.advance(10000); assert.equal(f.requests(), 2); assert.equal(f.messages.at(-1).state, 'success'); assert.match(f.messages.at(-1).detail, /G016A/); }
+  finally { f.close(); }
+});
+
+for (const batch of ['firstFour', 'lastThree']) test(`native success carries exact seat for ${batch}`, async () => {
+  const f = fixture({ [batch]: true, nativeBridge: true });
+  try {
+    await f.advance(5000);
+    assert.equal(f.requests(), 1);
+    const successes = f.messages.filter(m => m.state === 'success');
+    assert.equal(successes.length, 1);
+    assert.equal(successes[0].seat, 'G015A');
+  } finally { f.close(); }
+});
+
+test('changed calendar date cannot silently move a booking', async () => {
+  const f = fixture({ targetDate: '1999-01-01', nativeBridge: true });
+  try { await f.advance(5000); assert.equal(f.requests(), 0); assert.equal(f.messages.at(-1).state, 'error'); }
   finally { f.close(); }
 });
