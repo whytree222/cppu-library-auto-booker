@@ -15,31 +15,6 @@
     return;
   }
 
-  const setField = (pattern, value) => {
-    const field = [...document.querySelectorAll('input,select')].find(el =>
-      pattern.test(`${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label')}`));
-    if (!field || field.value === value) return;
-    if (field.tagName === 'SELECT') {
-      const option = [...field.options].find(item => item.value === value || item.textContent.trim() === value);
-      if (!option) return;
-      field.value = option.value;
-    } else {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      setter.call(field, value);
-    }
-    field.dispatchEvent(new Event('input', { bubbles: true }));
-    field.dispatchEvent(new Event('change', { bubbles: true }));
-  };
-  const setDesiredPeriod = () => {
-    const day = new Date();
-    if (config.reserveTomorrow) day.setDate(day.getDate() + 1);
-    const date = [day.getFullYear(), String(day.getMonth() + 1).padStart(2, '0'),
-      String(day.getDate()).padStart(2, '0')].join('-');
-    setField(/date|use.?day|日期/i, date);
-    setField(/begin|start|开始/i, config.startTime);
-    setField(/end|finish|结束/i, config.endTime);
-  };
-
   const parseRgb = value => {
     const match = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(value || '');
     return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
@@ -76,7 +51,7 @@
   const locate = number => {
     const exactSeat = document.getElementById(number);
     if (exactSeat?.classList.contains('seatCharts-seat')) {
-      return visible(exactSeat) && seatSized(exactSeat) && isAvailable(exactSeat) ? exactSeat : null;
+      return isAvailable(exactSeat) ? exactSeat : null;
     }
     const matches = [...document.querySelectorAll('body *')].filter(el =>
       visible(el) && labels(el).some(value => exactNumber(value, number)));
@@ -103,6 +78,7 @@
   const attempted = new Set();
   let scanCount = 0;
   let active = false;
+  let attemptId = 0;
   const finish = (state, detail) => {
     if (finished) return;
     finished = true;
@@ -110,7 +86,6 @@
   };
   const tryNext = () => {
     if (finished || active) return;
-    setDesiredPeriod();
     const number = numbers.find(value => !attempted.has(value) && locate(value));
     if (!number) {
       if (++scanCount < 30) return setTimeout(tryNext, 400);
@@ -124,27 +99,56 @@
     if (config.dryRun) return finish('dry-run', `已识别可预约座位 ${number}；未提交`);
     attempted.add(number);
     active = true;
+    const thisAttempt = ++attemptId;
+    const previousNotice = notices();
     const watcher = new MutationObserver(() => {
-      if (finished || !active) return;
+      if (finished || !active || thisAttempt !== attemptId) return;
       const success = successText();
       if (success) return finish('success', `${number}：${success}`);
-      if (failureText()) {
+      if (failureText() && notices() !== previousNotice) {
         watcher.disconnect();
-        active = false;
-        scanCount = 0;
-        setTimeout(tryNext, 150);
+        const current = document.getElementById(number);
+        if (current && (current.getAttribute('aria-checked') === 'true' || current.classList.contains('selected'))) {
+          current.click();
+        }
+        setTimeout(() => {
+          if (finished || thisAttempt !== attemptId) return;
+          if (current && (current.getAttribute('aria-checked') === 'true' || current.classList.contains('selected'))) {
+            return finish('error', `${number} 预约失败，且无法安全取消选中；已停止`);
+          }
+          active = false;
+          scanCount = 0;
+          tryNext();
+        }, 200);
       }
     });
     watcher.observe(document.body, { childList: true, subtree: true, characterData: true });
-    seat.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    seat.click();
     setTimeout(() => {
-      if (finished || !active) return;
-      const confirm = modalButton();
-      if (confirm) confirm.click();
-    }, 500);
+      if (finished || !active || thisAttempt !== attemptId) return;
+      const current = document.getElementById(number);
+      if (!current || (current.getAttribute('aria-checked') !== 'true' && !current.classList.contains('selected'))) {
+        watcher.disconnect();
+        return finish('error', `${number} 未能在网页上选中；没有提交预约`);
+      }
+      const submit = [...document.querySelectorAll('button[onclick*="layoutBespeak"]')]
+        .find(button => text(button) === '预约');
+      if (!submit) {
+        watcher.disconnect();
+        return finish('error', '未找到座位图的预约按钮；没有提交');
+      }
+      submit.click();
+      setTimeout(() => {
+        if (finished || !active || thisAttempt !== attemptId) return;
+        const confirm = modalButton();
+        if (confirm) confirm.click();
+      }, 500);
+    }, 250);
     setTimeout(() => {
       watcher.disconnect();
-      if (!finished && active) finish('submitted', `已尝试 ${number}，未收到明确结果；请到学校系统核对`);
+      if (!finished && active && thisAttempt === attemptId) {
+        finish('submitted', `已尝试 ${number}，未收到明确结果；请到学校系统核对`);
+      }
     }, 9000);
   };
   tryNext();

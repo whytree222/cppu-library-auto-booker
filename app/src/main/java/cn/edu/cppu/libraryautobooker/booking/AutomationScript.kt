@@ -12,6 +12,7 @@ object AutomationScript {
             put("roomKeywords", config.roomKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatKeywords", config.seatKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatNumbers", JSONArray(config.seatNumbers))
+            put("selectedSlots", JSONArray(config.selectedSlots))
             put("seatChoices", JSONArray().apply {
                 config.seatChoices.forEach { seat ->
                     put(JSONObject().apply {

@@ -95,36 +95,42 @@ class MainActivity : ComponentActivity() {
                             Text("当前顺序：${parseSeatNumbers(seatInput).joinToString(" → ").ifEmpty { "尚未填写" }}")
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        OutlinedTextField(
-                            value = config.startTime,
-                            onValueChange = { config = config.copy(startTime = it) },
-                            label = { Text("使用开始时间") }, modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = config.endTime,
-                            onValueChange = { config = config.copy(endTime = it) },
-                            label = { Text("使用结束时间") }, modifier = Modifier.weight(1f)
-                        )
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("选择使用时段", style = MaterialTheme.typography.titleMedium)
+                            Text("选择 1–4 个连续时段；下列时间为便于识别的约数，实际秒数以学校网页为准。")
+                            slotLabels.forEachIndexed { index, label ->
+                                val selected = index in config.selectedSlots
+                                val onClick = {
+                                    val next = (if (selected) config.selectedSlots - index else config.selectedSlots + index)
+                                        .distinct().sorted()
+                                    if (next.size > 4 || (next.isNotEmpty() && next.last() - next.first() + 1 != next.size)) {
+                                        status = "每笔只能选择 1–4 个连续时段；可先取消边缘时段再调整"
+                                    } else {
+                                        config = config.copy(selectedSlots = next)
+                                    }
+                                }
+                                if (selected) {
+                                    Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                                        Text("✓ ${index + 1}. $label")
+                                    }
+                                } else {
+                                    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                                        Text("${index + 1}. $label")
+                                    }
+                                }
+                            }
+                        }
                     }
-                    Text("这是预约座位的使用时段，不是放号时间。", style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(
-                        value = config.entryPath,
-                        onValueChange = { config = config.copy(entryPath = it) },
-                        label = { Text("预约入口路径（高级）") },
-                        supportingText = { Text("一楼预约列表入口：/multireadingroomtablelist") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
                     SettingSwitch(
                         title = "预约次日座位",
-                        detail = "关闭后预约当天；默认在放号时预约次日",
+                        detail = "关闭后预约今天；开启后预约明天",
                         checked = config.reserveTomorrow,
                         onChecked = { config = config.copy(reserveTomorrow = it) }
                     )
                     SettingSwitch(
                         title = "演练模式",
-                        detail = "开启时只定位按钮，不会提交预约",
+                        detail = "会走到座位图并识别座位，但不会提交预约",
                         checked = config.dryRun,
                         onChecked = { config = config.copy(dryRun = it) }
                     )
@@ -145,6 +151,10 @@ class MainActivity : ComponentActivity() {
                                     config = config.copy(enabled = false, scheduledAtMillis = 0L)
                                     store.save(config)
                                     status = "请输入 1 到 10 个座位号，每行一个"
+                                } else if (config.selectedSlots.isEmpty()) {
+                                    config = config.copy(enabled = false, scheduledAtMillis = 0L)
+                                    store.save(config)
+                                    status = "请选择 1–4 个连续使用时段"
                                 } else if (!scheduler.canScheduleExact()) {
                                     config = config.copy(enabled = false, scheduledAtMillis = 0L)
                                     store.save(config)
@@ -170,6 +180,10 @@ class MainActivity : ComponentActivity() {
                             val seatNumbers = parseSeatNumbers(seatInput)
                             if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
                                 status = "请输入 1 到 10 个座位号，每行一个"
+                                return@OutlinedButton
+                            }
+                            if (config.selectedSlots.isEmpty()) {
+                                status = "请选择 1–4 个连续使用时段"
                                 return@OutlinedButton
                             }
                             config = config.copy(seatNumbers = seatNumbers)
@@ -203,6 +217,11 @@ private fun parseSeatNumbers(input: String): List<String> = input.lines()
     .map { it.trim().uppercase() }
     .filter { it.isNotEmpty() }
     .distinct()
+
+private val slotLabels = listOf(
+    "08:10–10:00", "10:01–11:29", "11:31–14:29", "14:31–16:30",
+    "16:31–18:00", "18:01–19:29", "19:31–22:01"
+)
 
 @androidx.compose.runtime.Composable
 private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChecked: (Boolean) -> Unit) {

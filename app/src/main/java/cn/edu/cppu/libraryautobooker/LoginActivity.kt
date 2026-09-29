@@ -36,7 +36,7 @@ class LoginActivity : Activity() {
                     if (uri.host != "mlib.cppu.edu.cn") return
                     if (uri.path?.trimEnd('/') == "/login") {
                         view.evaluateJavascript(
-                            "document.querySelector('form#fromuser input#url')?.setAttribute('value', 'multireadingroomtablelist')",
+                            "document.querySelector('form#fromuser input#url')?.setAttribute('value', 'selectreadingroom')",
                             null
                         )
                     } else {

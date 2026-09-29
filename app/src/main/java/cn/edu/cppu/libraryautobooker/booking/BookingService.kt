@@ -48,12 +48,22 @@ class BookingService : Service() {
             addJavascriptInterface(Bridge(), "AutoBooker")
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
-                    if (Uri.parse(url).host != "mlib.cppu.edu.cn") {
+                    val uri = Uri.parse(url)
+                    if (uri.host != "mlib.cppu.edu.cn") {
                         Bridge().report("error", "页面跳转到非校内站点，已停止")
                         return
                     }
-                    if (Uri.parse(url).path == "/login") {
+                    if (uri.path == "/login") {
                         Bridge().report("error", "登录已失效，请先在应用内重新登录")
+                        return
+                    }
+                    if (uri.path == "/selectreadingroom") {
+                        val template = assets.open("selection.js").bufferedReader().use { it.readText() }
+                        view.evaluateJavascript(AutomationScript.build(template, config), null)
+                        return
+                    }
+                    if (uri.path != "/multireadingroomtablelist") {
+                        Bridge().report("error", "没有进入过刊阅览室的预约页面")
                         return
                     }
                     if (automationStarted) {
@@ -61,10 +71,6 @@ class BookingService : Service() {
                             "window.AutoBooker.report(/预约成功|预定成功/.test(document.body.innerText) ? 'success' : 'submitted', '页面已跳转，请在学校系统核对结果')",
                             null
                         )
-                        return
-                    }
-                    if (Uri.parse(url).path != config.entryPath.ensureLeadingSlash()) {
-                        Bridge().report("error", "没有进入预选的座位列表")
                         return
                     }
                     automationStarted = true
@@ -88,7 +94,7 @@ class BookingService : Service() {
                 View.MeasureSpec.makeMeasureSpec(metrics.heightPixels, View.MeasureSpec.EXACTLY)
             )
             layout(0, 0, metrics.widthPixels, metrics.heightPixels)
-            loadUrl("http://mlib.cppu.edu.cn${config.entryPath.ensureLeadingSlash()}")
+            loadUrl("http://mlib.cppu.edu.cn/selectreadingroom")
         }
         return START_NOT_STICKY
     }
@@ -106,6 +112,12 @@ class BookingService : Service() {
     private inner class Bridge {
         @JavascriptInterface
         fun report(state: String, detail: String) {
+            if (state == "progress") {
+                getSystemService(NotificationManager::class.java).notify(
+                    NOTIFICATION_ID, notification(detail)
+                )
+                return
+            }
             getSystemService(NotificationManager::class.java).notify(
                 RESULT_NOTIFICATION_ID,
                 notification(
@@ -135,8 +147,6 @@ class BookingService : Service() {
             )
         )
         .build()
-
-    private fun String.ensureLeadingSlash() = if (startsWith('/')) this else "/$this"
 
     companion object {
         const val ACTION_RUN_ONCE = "cn.edu.cppu.libraryautobooker.RUN_ONCE"

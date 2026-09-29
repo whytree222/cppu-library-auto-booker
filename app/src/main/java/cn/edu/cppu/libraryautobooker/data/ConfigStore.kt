@@ -17,9 +17,11 @@ class ConfigStore(context: Context) {
         seatKeywords = prefs.getString("seat_keywords", "").orEmpty(),
         seatChoices = readSeats(),
         seatNumbers = readSeatNumbers(),
+        selectedSlots = readSlots(),
         startTime = prefs.getString("start_time", "08:00").orEmpty(),
         endTime = prefs.getString("end_time", "22:00").orEmpty(),
-        entryPath = prefs.getString("entry_path", "/multireadingroomtablelist").orEmpty(),
+        entryPath = prefs.getString("entry_path", "/selectreadingroom")
+            .orEmpty().let { if (it == "/multireadingroomtablelist") "/selectreadingroom" else it },
         scheduledAtMillis = prefs.getLong("scheduled_at", 0L)
     )
 
@@ -43,6 +45,7 @@ class ConfigStore(context: Context) {
                 }
             }.toString())
             .putString("seat_numbers", JSONArray(config.seatNumbers).toString())
+            .putString("selected_slots", JSONArray(config.selectedSlots).toString())
             .putString("start_time", config.startTime)
             .putString("end_time", config.endTime)
             .putString("entry_path", config.entryPath)
@@ -68,6 +71,13 @@ class ConfigStore(context: Context) {
     private fun readSeatNumbers(): List<String> = try {
         val array = JSONArray(prefs.getString("seat_numbers", "[]"))
         (0 until array.length()).map { array.optString(it).trim() }.filter { it.isNotEmpty() }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private fun readSlots(): List<Int> = try {
+        val array = JSONArray(prefs.getString("selected_slots", "[]"))
+        (0 until array.length()).map { array.getInt(it) }.filter { it in 0..6 }.distinct().sorted()
     } catch (_: Exception) {
         emptyList()
     }
