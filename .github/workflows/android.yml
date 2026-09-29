@@ -34,8 +34,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.4.0 >/dev/null 2>&1; then
-            gh release upload v0.4.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.4.1 >/dev/null 2>&1; then
+            gh release upload v0.4.1 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.4.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.4.0' --notes '过刊阅览室专用流程，支持七个时段中连续 1–4 段。请先演练验证完整导航；实际提交流程仍需现场核对。'
+            gh release create v0.4.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.4.1' --notes '显式的今天/明天日期按钮；请先演练验证完整导航，实际提交流程仍需现场核对。'
           fi

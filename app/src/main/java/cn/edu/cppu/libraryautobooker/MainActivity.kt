@@ -97,6 +97,27 @@ class MainActivity : ComponentActivity() {
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("预约哪一天", style = MaterialTheme.typography.titleMedium)
+                            Text("以任务运行当天为准。")
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                if (config.reserveTomorrow) {
+                                    OutlinedButton(
+                                        onClick = { config = config.copy(reserveTomorrow = false) },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("今天") }
+                                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("✓ 明天") }
+                                } else {
+                                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("✓ 今天") }
+                                    OutlinedButton(
+                                        onClick = { config = config.copy(reserveTomorrow = true) },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("明天") }
+                                }
+                            }
+                        }
+                    }
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("选择使用时段", style = MaterialTheme.typography.titleMedium)
                             Text("选择 1–4 个连续时段；下列时间为便于识别的约数，实际秒数以学校网页为准。")
                             slotLabels.forEachIndexed { index, label ->
@@ -122,12 +143,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    SettingSwitch(
-                        title = "预约次日座位",
-                        detail = "关闭后预约今天；开启后预约明天",
-                        checked = config.reserveTomorrow,
-                        onChecked = { config = config.copy(reserveTomorrow = it) }
-                    )
                     SettingSwitch(
                         title = "演练模式",
                         detail = "会走到座位图并识别座位，但不会提交预约",
