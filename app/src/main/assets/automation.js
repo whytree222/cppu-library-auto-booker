@@ -14,6 +14,11 @@
     report('error', '尚未填写候选座位号');
     return;
   }
+  const invalid = numbers.filter(number => !/^G\d{3}[A-Z]$/.test(number));
+  if (invalid.length) {
+    report('error', `座位号格式错误：${invalid.join('、')}。过刊阅览室请按 G015A 格式输入（G + 三位数字 + 一个字母），每行一个`);
+    return;
+  }
 
   const parseRgb = value => {
     const match = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(value || '');
@@ -70,9 +75,21 @@
     .filter(visible).map(text).join(' ');
   const successText = () => /^(预约成功|预定成功|预约已成功)[！!。\.\s]*$/.test(notices()) ? notices().slice(0, 80) : '';
   const failureText = () => /预约失败|已被预约|座位已被占用|不可预约|预约已满|操作失败/.test(notices()) ? notices().slice(0, 80) : '';
+  const serverReason = message => {
+    const category = /已被预约|座位已被占用/.test(message) ? '座位已被预约'
+      : /登录|登陆|会话/.test(message) ? '登录状态失效或需要重新登录'
+      : /格式|座位.*不存在|座位号.*错误/.test(message) ? '学校系统拒绝座位号'
+      : /重复预约|已有预约|已预约过/.test(message) ? '已有预约或重复预约限制'
+      : /上限|次数|最多|限额|预约已满/.test(message) ? '预约数量或次数限制'
+      : /未开放|未开始|放号|已结束|已过期|时间|时段/.test(message) ? '预约日期、时段或开放时间限制'
+      : /未知错误|网络|超时/.test(message) ? '学校系统或网络异常'
+      : '学校系统拒绝预约（未明确分类）';
+    return `${category}；学校提示：${message.slice(0, 120)}`;
+  };
 
   let finished = false;
   const attempted = new Set();
+  const rejected = new Map();
   let scanCount = 0;
   let active = false;
   let attemptId = 0;
@@ -88,9 +105,12 @@
     const number = numbers.find(value => !attempted.has(value) && locate(value));
     if (!number) {
       if (++scanCount < 30) return setTimeout(tryNext, 400);
-      finish('error', numbers.some(numberPresent)
-        ? '候选座位均未显示为可预约，或尝试后均失败'
-        : '网页中未找到输入的座位号；需要进一步适配页面，未点击任何座位');
+      const reasons = numbers.map(value => {
+        if (rejected.has(value)) return `${value}：${rejected.get(value)}`;
+        if (numberPresent(value)) return `${value}：网页标记为不可预约（可能已预约或停用，页面未明确区分）`;
+        return `${value}：格式正确，但当前过刊阅览室座位图未找到该编号，请核对号码或页面是否加载完成`;
+      });
+      finish('error', `没有可预约的候选座位。${reasons.join('；')}`);
       return;
     }
     const seat = locate(number);
@@ -144,6 +164,7 @@
       if (confirmationAt && success) return finish('success', `${number}：${success}`, number);
       if (failureText() && notices() !== previousNotice) {
         const failure = notices();
+        rejected.set(number, serverReason(failure));
         watcher.disconnect();
         clearInterval(pollTimer);
         // Only a definite seat conflict permits moving to the next preference.
@@ -176,11 +197,11 @@
             return;
           }
         }
-        return finish('error', `${number}：${failure.slice(0, 100)}`);
+        return finish('error', `${number}：${serverReason(failure)}`);
       }
       const result = notices();
       if (submittedAt && result && result !== previousNotice && !confirmation && !success) {
-        return finish('error', `${number}：${result.slice(0, 100)}`);
+        return finish('error', `${number}：${serverReason(result)}`);
       }
       if (submittedAt && !confirmationAt && Date.now() - submittedAt > 10000) {
         return finish('error', `${number} 点击预约后未出现可识别的预约确认框；没有确认提交`);

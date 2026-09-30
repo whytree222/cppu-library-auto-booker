@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -103,10 +104,17 @@ class MainActivity : ComponentActivity() {
         val scheduler = BookingScheduler(this)
         val runtime = RuntimeStore(this)
         runtime.prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
+        val setupPrefs = getSharedPreferences("permission_setup", MODE_PRIVATE)
         getSharedPreferences("booking_config", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(preferenceListener)
 
         setContent {
             MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(0xFF176B4D))) {
+                var showPermissionSetup by rememberSaveable { mutableStateOf(!setupPrefs.getBoolean("shown", false)) }
+                if (showPermissionSetup) PermissionSetup {
+                    setupPrefs.edit().putBoolean("shown", true).apply()
+                    showPermissionSetup = false
+                    refreshVersion++
+                }
                 var config by remember { mutableStateOf(store.load()) }
                 var status by remember { mutableStateOf("尚未启用") }
                 var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
@@ -172,6 +180,7 @@ class MainActivity : ComponentActivity() {
                             val power = getSystemService(PowerManager::class.java)
                             Text("系统省电豁免：${if (power.isIgnoringBatteryOptimizations(packageName)) "已开启" else "未开启"}")
                             Text("小米等机型还需在系统应用设置中检查后台运行、自启动和省电限制；测试时保持校园网络连接。")
+                            OutlinedButton(onClick = { showPermissionSetup = true }) { Text("重新查看权限引导") }
                             OutlinedButton(onClick = {
                                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                             }) { Text("打开系统应用设置") }
@@ -300,6 +309,11 @@ class MainActivity : ComponentActivity() {
                     Button(
                         onClick = {
                             val seatNumbers = parseSeatNumbers(seatInput)
+                            val invalid = seatNumbers.filterNot { Regex("^G\\d{3}[A-Z]$").matches(it) }
+                            if (config.enabled && invalid.isNotEmpty()) {
+                                status = "座位号格式错误：${invalid.joinToString("、")}；请按 G015A 格式输入，每行一个"
+                                return@Button
+                            }
                             config = config.copy(seatNumbers = seatNumbers)
                             if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             if (config.enabled) {
@@ -331,6 +345,11 @@ class MainActivity : ComponentActivity() {
                     OutlinedButton(
                         onClick = {
                             val seatNumbers = parseSeatNumbers(seatInput)
+                            val invalid = seatNumbers.filterNot { Regex("^G\\d{3}[A-Z]$").matches(it) }
+                            if (invalid.isNotEmpty()) {
+                                status = "座位号格式错误：${invalid.joinToString("、")}；请按 G015A 格式输入，每行一个"
+                                return@OutlinedButton
+                            }
                             if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
                                 status = "请输入 1 到 10 个座位号，每行一个"
                                 return@OutlinedButton

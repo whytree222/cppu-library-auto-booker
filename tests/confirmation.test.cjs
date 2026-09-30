@@ -85,6 +85,8 @@ function fixture(options = {}) {
   const config = { seatNumbers: options.conflict ? ['G015A', 'G016A'] : ['G015A'],
     selectedSlots: options.lastThree ? [4, 5, 6] : options.firstFour ? [0, 1, 2, 3] : options.multi ? [0, 1] : [0],
     reserveTomorrow, dryRun: !!options.dryRun, targetDate: options.targetDate };
+  if (options.numbers) config.seatNumbers = options.numbers;
+  if (options.unavailable) d.getElementById('G015A').className = 'seatCharts-seat unavailable';
   w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify(config)));
   async function advance(duration) {
     const target = now + duration;
@@ -164,5 +166,34 @@ for (const batch of ['firstFour', 'lastThree']) test(`native success carries exa
 test('changed calendar date cannot silently move a booking', async () => {
   const f = fixture({ targetDate: '1999-01-01', nativeBridge: true });
   try { await f.advance(5000); assert.equal(f.requests(), 0); assert.equal(f.messages.at(-1).state, 'error'); }
+  finally { f.close(); }
+});
+
+test('invalid seat format is reported before clicking', async () => {
+  const f = fixture({ numbers: ['G15A'] });
+  try { await f.advance(15000); assert.equal(f.clicks(), 0); assert.match(f.messages.at(-1).detail, /格式错误.*G15A/); }
+  finally { f.close(); }
+});
+
+test('valid missing seat is not mislabeled as a format error', async () => {
+  const f = fixture({ numbers: ['G999A'] });
+  try { await f.advance(15000); assert.equal(f.clicks(), 0); assert.match(f.messages.at(-1).detail, /格式正确.*未找到/); }
+  finally { f.close(); }
+});
+
+test('unavailable seat is distinct from unknown identifier', async () => {
+  const f = fixture({ unavailable: true });
+  try { await f.advance(15000); assert.equal(f.clicks(), 0); assert.match(f.messages.at(-1).detail, /网页标记为不可预约/); }
+  finally { f.close(); }
+});
+
+for (const [message, reason] of [
+  ['座位已被预约', /座位已被预约；学校提示/],
+  ['请勿重复预约', /已有预约或重复预约限制/],
+  ['预约失败，次数达到上限', /预约数量或次数限制/],
+  ['预约失败，登录已失效', /登录状态失效/]
+]) test(`classify server rejection: ${message}`, async () => {
+  const f = fixture({ result: message });
+  try { await f.advance(5000); assert.equal(f.requests(), 1); assert.match(f.messages.at(-1).detail, reason); }
   finally { f.close(); }
 });

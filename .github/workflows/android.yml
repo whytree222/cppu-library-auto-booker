@@ -42,8 +42,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.6.1 >/dev/null 2>&1; then
-            gh release upload v0.6.1 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.7.0 >/dev/null 2>&1; then
+            gh release upload v0.7.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.6.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.6.1' --notes '修复今天时段日期校验：支持完整日期和相对使用日，排除隐藏的旧时段选项，下一步按钮限定于当前时段表单。增加今天/明天及日期不匹配回归测试。'
+            gh release create v0.7.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.7.0' --notes '细化失败原因：座位号格式错误、号码不存在于当前座位图、网页不可预约、学校确认座位冲突、登录/时段/限额等。首次打开引导通知、精确闹钟和后台设置，可跳过并从首页重开。'
           fi
