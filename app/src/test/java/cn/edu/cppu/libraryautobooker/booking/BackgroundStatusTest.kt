@@ -26,7 +26,8 @@ class BackgroundStatusTest {
         val saved = ConfigStore(app).load()
         assertEquals(trigger.toInstant().toEpochMilli(), saved.scheduledAtMillis)
         val alarm = Shadows.shadowOf(app.getSystemService(Context.ALARM_SERVICE) as AlarmManager).nextScheduledAlarm
-        assertEquals(saved.scheduledAtMillis, alarm.triggerAtTime)
+        assertNotNull("An exact alarm must be registered", alarm)
+        assertEquals(saved.scheduledAtMillis, requireNotNull(alarm).triggerAtTime)
         assertEquals("SCHEDULED", RuntimeStore(app).prefs.getString("task_state", ""))
         assertTrue(RuntimeStore(app).prefs.getString("task_detail", "")!!.contains("真实预约"))
     }
@@ -74,3 +75,4 @@ class BackgroundStatusTest {
         assertEquals("valid", SessionChecker.decode(200, null, "{\"ReturnValue\":1}").first)
     }
 }
+
