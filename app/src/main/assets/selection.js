@@ -16,6 +16,18 @@
     return match ? `${Number(match[1])}-${Number(match[2])}-${Number(match[3])}` : '';
   };
   const wantedDate = normalizeDate(targetDate);
+  const calendarDate = offset => {
+    const date = new Date();
+    date.setDate(date.getDate() + offset);
+    return normalizeDate(`${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`);
+  };
+  const visible = element => {
+    for (let current = element; current; current = current.parentElement) {
+      if (current.hidden || getComputedStyle(current).display === 'none' ||
+          getComputedStyle(current).visibility === 'hidden') return false;
+    }
+    return true;
+  };
   const text = element => (element.textContent || element.value || '').replace(/\s+/g, '').trim();
   const documents = () => {
     const result = [];
@@ -39,9 +51,28 @@
     const match = /selectusedaybuttonclick\(\s*['"]\d+['"]\s*,\s*['"]\d+['"]\s*,\s*['"]([^'"]+)['"]/.exec(handler);
     return match ? normalizeDate(match[1]) : '';
   };
-  const dateCard = () => dateHandlers().find(element => dateFromHandler(element) === wantedDate);
-  const form = () => queryAll('form[action*="multireadingroomtablelist"]')[0];
-  const boxes = () => queryAll('#selectdate input[type="checkbox"][name="url"]');
+  const dateCard = () => dateHandlers().find(element => visible(element) && dateFromHandler(element) === wantedDate);
+  // Checkbox inputs are deliberately hidden; inspect their surrounding card instead.
+  const boxes = () => queryAll('#selectdate input[type="checkbox"][name="url"]')
+    .filter(box => visible(box.closest('.item-info') || box.parentElement));
+  const slotDate = box => {
+    const params = new URLSearchParams(box.value || '');
+    const raw = (params.get('useday') || '').trim();
+    const explicit = normalizeDate(raw);
+    const offset = params.get('isuseday');
+    const relative = offset === '0' || offset === '1' ? calendarDate(Number(offset)) : '';
+    // Today may be encoded as a relative day rather than a full date. Never let
+    // that fallback override an explicit date or accept an unknown date string.
+    if (explicit) return !relative || relative === explicit ? explicit : '';
+    const label = text(box.closest('.item-info') || box.parentElement);
+    const labelMatch = /使用[日日期]*[:：](\d{4}-\d{1,2}-\d{1,2})/.exec(label);
+    const labelDate = labelMatch ? normalizeDate(labelMatch[1]) : '';
+    if (labelDate && relative && labelDate !== relative) return '';
+    if (raw === '' || raw === offset || (offset === '0' && /^(今日|今天)$/.test(raw))) {
+      return relative || labelDate;
+    }
+    return '';
+  };
   const slotStarts = ['08:10', '10:01', '11:31', '14:31', '16:31', '18:01', '19:31'];
 
   let roomClicked = false;
@@ -75,10 +106,15 @@
 
     const choices = boxes();
     if (choices.length) {
-      if (choices.some(box => {
+      const mismatch = choices.find(box => {
         const params = new URLSearchParams(box.value || '');
-        return params.get('roomno') !== '26' || normalizeDate(params.get('useday')) !== wantedDate;
-      })) return fail('时段不属于过刊阅览室或目标日期；已停止');
+        return params.get('roomno') !== '26' || slotDate(box) !== wantedDate;
+      });
+      if (mismatch) {
+        const params = new URLSearchParams(mismatch.value || '');
+        const safe = value => String(value || '空').replace(/[^\dA-Za-z\u4e00-\u9fff:./ -]/g, '').slice(0, 40);
+        return fail(`时段不属于过刊阅览室或目标日期；目标 ${targetDate}，房间 ${safe(params.get('roomno'))}，使用日 ${safe(params.get('useday'))}，相对日 ${safe(params.get('isuseday'))}；已停止`);
+      }
       const bySlot = new Map();
       for (const box of choices) {
         const begin = new URLSearchParams(box.value || '').get('begintime') || '';
@@ -99,7 +135,8 @@
       if (choices.some(box => box.checked !== slots.includes([...bySlot].find(([, value]) => value === box)?.[0]))) {
         return fail('无法按所选顺序勾选使用时段；已停止');
       }
-      const bookingForm = form();
+      const bookingForm = choices[0].closest('form[action*="multireadingroomtablelist"]');
+      if (choices.some(box => box.closest('form') !== bookingForm)) return fail('出现多个时段页面；已停止');
       const next = bookingForm && [...bookingForm.querySelectorAll('button,input[type="submit"],a')]
         .find(element => /^下一步$/.test(text(element)));
       if (!next) return fail('未找到时段页面的“下一步”按钮');
