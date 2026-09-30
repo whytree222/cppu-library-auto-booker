@@ -19,6 +19,10 @@ object SessionChecker {
     // Same read-only login probe used by the school's readingroommanage.js.
     // Never persist or log the cookie or server response.
     fun check(context: Context, callback: (Boolean) -> Unit = {}) {
+        checkDetailed(context) { callback(it == "valid") }
+    }
+
+    fun checkDetailed(context: Context, callback: (String) -> Unit) {
         val id = generation.incrementAndGet()
         val app = context.applicationContext
         RuntimeStore(app).prefs.edit().putString("session_state", "checking")
@@ -55,8 +59,8 @@ object SessionChecker {
             main.post {
                 if (id == generation.get()) {
                     RuntimeStore(app).session(result.first, result.second)
-                    callback(result.first == "valid")
                 }
+                callback(result.first)
             }
         }
     }
@@ -72,3 +76,4 @@ object SessionChecker {
         } catch (_: Exception) { "unknown" to "服务器返回格式不符，无法验证登录" }
     }
 }
+

@@ -47,6 +47,7 @@ import cn.edu.cppu.libraryautobooker.data.BookingConfig
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.data.SeatCatalog
+import cn.edu.cppu.libraryautobooker.data.CredentialStore
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.time.format.DateTimeFormatter
@@ -60,7 +61,7 @@ class MainActivity : ComponentActivity() {
     private val sessionProbe = object : Runnable {
         override fun run() {
             refreshVersion++
-            SessionChecker.check(this@MainActivity)
+            SessionCoordinator.check(this@MainActivity)
             uiHandler.postDelayed(this, 60_000L)
         }
     }
@@ -117,6 +118,8 @@ class MainActivity : ComponentActivity() {
                     refreshVersion++
                 }
                 var config by remember { mutableStateOf(store.load()) }
+                var showCredentials by remember { mutableStateOf(false) }
+                if (showCredentials) CredentialEditor { showCredentials = false; refreshVersion++ }
                 var status by remember { mutableStateOf("尚未启用") }
                 var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
                 var savedEnabled by remember { mutableStateOf(config.enabled) }
@@ -169,7 +172,21 @@ class MainActivity : ComponentActivity() {
                             Text("登录状态", style = MaterialTheme.typography.titleMedium)
                             Text(sessionDetail)
                             Text("最近验证：${RuntimeStore.format(sessionAt)}；打开应用时及前台每分钟验证一次")
-                            OutlinedButton(onClick = { SessionChecker.check(this@MainActivity) }) { Text("立即检查登录") }
+                            OutlinedButton(onClick = { SessionCoordinator.check(this@MainActivity) }) { Text("立即检查登录") }
+                            val credentials = remember(refreshVersion) { CredentialStore(this@MainActivity) }
+                            Text(if (!credentials.configured) "自动重新登录：未设置账号密码"
+                                else if (credentials.paused) "自动重新登录：已暂停，请核对账号密码后重新登录"
+                                else if (credentials.enabled) "自动重新登录：已开启" else "自动重新登录：已关闭")
+                            OutlinedButton(onClick = { showCredentials = true }) { Text("设置 / 删除自动登录信息") }
+                            if (credentials.configured) {
+                                SettingSwitch("自动重新登录", "登录过期时使用手机保存的账号密码重新登录", credentials.enabled) {
+                                    if (!it) AutoLogin.cancel(this@MainActivity)
+                                    credentials.setEnabled(it)
+                                    if (it) credentials.resume()
+                                    refreshVersion++
+                                }
+                                OutlinedButton(onClick = { AutoLogin.login(this@MainActivity, force = true) }) { Text("重新登录并验证") }
+                            }
                         }
                     }
                     Card(Modifier.fillMaxWidth()) {

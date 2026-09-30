@@ -18,6 +18,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.app.NotificationCompat
 import cn.edu.cppu.libraryautobooker.MainActivity
+import cn.edu.cppu.libraryautobooker.SessionCoordinator
+import cn.edu.cppu.libraryautobooker.AutoLogin
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import java.time.LocalDate
@@ -36,7 +38,7 @@ class BookingService : Service() {
         super.onCreate()
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:booking")
-            .apply { acquire(330_000L) }
+            .apply { acquire(420_000L) }
         createChannel()
         startForeground(NOTIFICATION_ID, notification("正在连接校内预约系统…"))
     }
@@ -67,6 +69,15 @@ class BookingService : Service() {
     }
 
     private fun startBatch() {
+        val authGeneration = ++generation
+        RuntimeStore(this).record("RUNNING", sequence?.progress("正在验证登录，过期时自动重新登录") ?: "正在验证登录")
+        SessionCoordinator.check(this) { valid, detail ->
+            if (terminal || generation != authGeneration) return@check
+            if (valid) launchBatch() else fail(detail)
+        }
+    }
+
+    private fun launchBatch() {
         val run = sequence ?: return
         val config = run.configForDate(LocalDate.now())
         if (config == null) {
@@ -78,6 +89,7 @@ class BookingService : Service() {
         // Fresh fields and dialogs for each batch; app-wide cookies keep the login.
         webView?.destroy()
         var automationStarted = false
+        var recoveredLogin = false
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -93,7 +105,15 @@ class BookingService : Service() {
                     }
                     if (uri.path == "/login") {
                         RuntimeStore(this@BookingService).session("expired", "运行预约时发现登录已失效")
-                        fail("登录已失效，请先在应用内重新登录")
+                        if (automationStarted || recoveredLogin) {
+                            fail("预约过程中登录失效，未确认预约结果；请核对记录后重试")
+                            return
+                        }
+                        recoveredLogin = true
+                        AutoLogin.login(this@BookingService) { valid, detail ->
+                            if (terminal || generation != currentGeneration) return@login
+                            if (valid) view.loadUrl("http://mlib.cppu.edu.cn/selectreadingroom") else fail(detail)
+                        }
                         return
                     }
                     if (uri.path == "/selectreadingroom" && !automationStarted) {
@@ -231,3 +251,4 @@ class BookingService : Service() {
         private const val RESULT_NOTIFICATION_ID = 4403
     }
 }
+
