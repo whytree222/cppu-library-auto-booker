@@ -42,8 +42,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.5.0 >/dev/null 2>&1; then
-            gh release upload v0.5.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.6.0 >/dev/null 2>&1; then
+            gh release upload v0.6.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.5.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.5.0' --notes '新增同座位追加后三段：选择第1–4段并开启开关，前四段成功后自动预约同一天、同一座位的第5–7段。第二笔失败保留第一笔并报告部分成功。演练不会提交两笔。'
+            gh release create v0.6.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.6.0' --notes '新增登录在线验证、计划/触发/服务/结果记录、权限和省电状态、60秒后台唤醒测试。授权精确闹钟后自动继续安排；更新或重启后恢复未来任务。小米锁屏唤醒仍需在本机用测试功能验证。'
           fi

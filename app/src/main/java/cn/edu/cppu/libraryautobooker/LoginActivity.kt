@@ -40,10 +40,9 @@ class LoginActivity : Activity() {
                             null
                         )
                     } else {
-                        view.evaluateJavascript(
-                            "document.querySelector('input[type=password], form#fromuser input#passwd') === null"
-                        ) { noLoginForm ->
-                            if (noLoginForm == "true" && !isFinishing) finishLogin()
+                        CookieManager.getInstance().flush()
+                        SessionChecker.check(this@LoginActivity) { valid ->
+                            if (valid && !isFinishing) finishLogin(true)
                         }
                     }
                 }
@@ -57,9 +56,9 @@ class LoginActivity : Activity() {
         setContentView(container)
     }
 
-    private fun finishLogin() {
+    private fun finishLogin(verified: Boolean = false) {
         CookieManager.getInstance().flush()
-        setResult(RESULT_OK)
+        setResult(if (verified) RESULT_OK else RESULT_CANCELED)
         finish()
     }
 

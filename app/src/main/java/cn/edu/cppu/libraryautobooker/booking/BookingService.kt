@@ -19,7 +19,10 @@ import android.webkit.WebViewClient
 import androidx.core.app.NotificationCompat
 import cn.edu.cppu.libraryautobooker.MainActivity
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
+import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import java.time.LocalDate
+import java.time.Instant
+import java.time.ZoneId
 
 class BookingService : Service() {
     private var webView: WebView? = null
@@ -39,6 +42,13 @@ class BookingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_WAKE_TEST) {
+            RuntimeStore(this).test("DONE", "唤醒链路通过：闹钟和后台服务均已运行；未执行预约")
+            getSystemService(NotificationManager::class.java).notify(4405,
+                notification("后台唤醒测试成功，未执行预约", ongoing = false))
+            if (sequence == null) stopSelf()
+            return START_NOT_STICKY
+        }
         // Repeated taps/alarms must not restart an in-flight booking.
         if (sequence != null) return START_NOT_STICKY
         val config = ConfigStore(this).load()
@@ -47,7 +57,11 @@ class BookingService : Service() {
             return START_NOT_STICKY
         }
 
-        sequence = BookingSequence(config)
+        val plannedAt = intent?.getLongExtra("expected_at", 0L) ?: 0L
+        val taskDay = if (intent?.action == ACTION_SCHEDULED && plannedAt > 0)
+            Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else LocalDate.now()
+        sequence = BookingSequence(config, taskDay)
+        RuntimeStore(this).record("RUNNING", "后台服务已启动：${if (intent?.action == ACTION_SCHEDULED) "定时" else "手动"}${if (config.dryRun) "演练（不提交）" else "真实预约"}")
         startBatch()
         return START_NOT_STICKY
     }
@@ -78,6 +92,7 @@ class BookingService : Service() {
                         return
                     }
                     if (uri.path == "/login") {
+                        RuntimeStore(this@BookingService).session("expired", "运行预约时发现登录已失效")
                         fail("登录已失效，请先在应用内重新登录")
                         return
                     }
@@ -122,6 +137,7 @@ class BookingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        if (!terminal && sequence != null) RuntimeStore(this).record("INTERRUPTED", sequence!!.progress("预约服务提前结束，未确认最终结果；请核对学校记录"))
         terminal = true
         generation++
         main.removeCallbacksAndMessages(null)
@@ -134,11 +150,12 @@ class BookingService : Service() {
 
     private fun fail(detail: String) {
         if (terminal) return
-        complete(sequence?.failure(detail)?.detail ?: detail)
+        complete(sequence?.failure(detail)?.detail ?: detail, "FAILED")
     }
 
-    private fun complete(detail: String) {
+    private fun complete(detail: String, state: String = "DONE") {
         terminal = true
+        RuntimeStore(this).record(state, detail)
         showResult(detail)
         stopSelf()
     }
@@ -157,9 +174,11 @@ class BookingService : Service() {
         @JavascriptInterface
         fun report(state: String, detail: String) = dispatch {
             when (state) {
-                "progress" -> getSystemService(NotificationManager::class.java).notify(
-                    NOTIFICATION_ID, notification(sequence?.progress(detail) ?: detail)
-                )
+                "progress" -> {
+                    val progress = sequence?.progress(detail) ?: detail
+                    RuntimeStore(this@BookingService).record("RUNNING", progress)
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(progress))
+                }
                 "dry-run" -> complete(if (sequence?.hasSecondBatch == true)
                     "前四段演练：$detail；未提交两笔预约，后三段未运行" else detail)
                 "error", "submitted" -> fail(detail)
@@ -171,12 +190,13 @@ class BookingService : Service() {
         fun booked(seatNumber: String, detail: String) = dispatch {
             when (val result = sequence?.success(sourceBatch, seatNumber)) {
                 is BookingSequence.Result.Next -> {
+                    RuntimeStore(this@BookingService).record("RUNNING", result.detail)
                     showResult(result.detail)
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(result.detail))
                     startBatch()
                 }
                 is BookingSequence.Result.Done -> complete(result.detail)
-                is BookingSequence.Result.Failed -> complete(result.detail)
+                is BookingSequence.Result.Failed -> complete(result.detail, "FAILED")
                 else -> Unit
             }
         }
@@ -204,6 +224,7 @@ class BookingService : Service() {
 
     companion object {
         const val ACTION_RUN_ONCE = "cn.edu.cppu.libraryautobooker.RUN_ONCE"
+        const val ACTION_WAKE_TEST = "cn.edu.cppu.libraryautobooker.WAKE_TEST"
         const val ACTION_SCHEDULED = "cn.edu.cppu.libraryautobooker.SCHEDULED"
         private const val CHANNEL_ID = "booking"
         private const val NOTIFICATION_ID = 4402

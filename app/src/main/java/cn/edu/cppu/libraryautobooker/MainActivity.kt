@@ -2,6 +2,12 @@ package cn.edu.cppu.libraryautobooker
 
 import android.Manifest
 import android.content.Intent
+import android.content.SharedPreferences
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -28,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,19 +44,106 @@ import cn.edu.cppu.libraryautobooker.booking.BookingScheduler
 import cn.edu.cppu.libraryautobooker.booking.BookingService
 import cn.edu.cppu.libraryautobooker.data.BookingConfig
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
+import cn.edu.cppu.libraryautobooker.data.RuntimeStore
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
+    private var refreshVersion by mutableStateOf(0)
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        uiHandler.post { refreshVersion++ }
+    }
+    private val sessionProbe = object : Runnable {
+        override fun run() {
+            refreshVersion++
+            SessionChecker.check(this@MainActivity)
+            uiHandler.postDelayed(this, 60_000L)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val store = ConfigStore(this)
+        val current = store.load()
+        val runtime = RuntimeStore(this)
+        val now = System.currentTimeMillis()
+        if (current.enabled && current.scheduledAtMillis > now && BookingScheduler(this).canScheduleExact()) {
+            runCatching { BookingScheduler(this).scheduleAt(current.scheduledAtMillis) }
+                .onFailure { runtime.record("FAILED", "重新登记闹钟失败，请检查权限并重新保存任务") }
+        } else if (current.enabled && current.scheduledAtMillis > 0 && current.scheduledAtMillis < now - 30_000L) {
+            if (runtime.prefs.getString("task_state", "") == "SCHEDULED") {
+                runtime.record("DELAYED", "计划时间已过，尚未收到闹钟触发记录；请检查权限、省电与自启动设置")
+            }
+        }
+        if (runtime.prefs.getString("task_state", "") in setOf("RUNNING", "TRIGGERED") &&
+            now - runtime.prefs.getLong("task_at", now) > 330_000L) {
+            runtime.record("INTERRUPTED", "任务没有留下完成结果，可能已中断；请核对学校预约记录")
+        }
+        uiHandler.removeCallbacks(sessionProbe)
+        uiHandler.post(sessionProbe)
+    }
+
+    override fun onPause() {
+        uiHandler.removeCallbacks(sessionProbe)
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        RuntimeStore(this).prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        getSharedPreferences("booking_config", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        uiHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val store = ConfigStore(this)
         val scheduler = BookingScheduler(this)
+        val runtime = RuntimeStore(this)
+        runtime.prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
+        getSharedPreferences("booking_config", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(preferenceListener)
 
         setContent {
             MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(0xFF176B4D))) {
                 var config by remember { mutableStateOf(store.load()) }
                 var status by remember { mutableStateOf("尚未启用") }
+                var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
+                var savedEnabled by remember { mutableStateOf(config.enabled) }
+                val liveConfig = remember(refreshVersion) { store.load() }
+                LaunchedEffect(refreshVersion) {
+                    if (liveConfig.enabled != savedEnabled) {
+                        config = config.copy(enabled = liveConfig.enabled, scheduledAtMillis = liveConfig.scheduledAtMillis)
+                        savedEnabled = liveConfig.enabled
+                    }
+                }
+                val sessionDetail = remember(refreshVersion) { runtime.prefs.getString("session_detail", "登录状态待验证").orEmpty() }
+                val sessionAt = remember(refreshVersion) { runtime.prefs.getLong("session_at", 0L) }
+                val taskDetail = remember(refreshVersion) { runtime.prefs.getString("task_detail", "尚未安排任务").orEmpty() }
+                val events = remember(refreshVersion) { runtime.prefs.getString("events", "").orEmpty() }
+                val testDetail = remember(refreshVersion) {
+                    val state = runtime.prefs.getString("test_state", "")
+                    val due = runtime.prefs.getLong("test_due", 0L)
+                    val overdue = state == "SCHEDULED" && due > 0 && System.currentTimeMillis() - due > 10_000L
+                    if (overdue) "测试时间已过，未收到闹钟触发记录"
+                    else runtime.prefs.getString("test_detail", "尚未进行后台唤醒测试").orEmpty()
+                }
+                val arrange: (BookingConfig) -> Unit = { requested ->
+                    runCatching { scheduler.schedule(requested) }.onSuccess { next ->
+                        config = requested.copy(enabled = true, scheduledAtMillis = next.toInstant().toEpochMilli())
+                        status = "已安排${if (requested.dryRun) "演练（不提交）" else "真实预约"}：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))}"
+                    }.onFailure { status = "安排失败，请检查精确闹钟权限；详情见任务记录" }
+                }
+                val exactPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+                    val requested = pendingSchedule
+                    pendingSchedule = null
+                    if (requested != null) {
+                        if (scheduler.canScheduleExact()) arrange(requested)
+                        else status = "未获得精确闹钟权限，任务没有安排"
+                    }
+                    refreshVersion++
+                }
                 val notificationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { }
@@ -61,6 +155,44 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Text("图书馆自动预约", style = MaterialTheme.typography.headlineMedium)
                     Text("仅在连接校内网络时工作；账号登录由学校网页完成。")
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("登录状态", style = MaterialTheme.typography.titleMedium)
+                            Text(sessionDetail)
+                            Text("最近验证：${RuntimeStore.format(sessionAt)}；打开应用时及前台每分钟验证一次")
+                            OutlinedButton(onClick = { SessionChecker.check(this@MainActivity) }) { Text("立即检查登录") }
+                        }
+                    }
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("定时任务与后台状态", style = MaterialTheme.typography.titleMedium)
+                            Text(if (liveConfig.enabled) "计划：${RuntimeStore.format(liveConfig.scheduledAtMillis)} · ${if (liveConfig.dryRun) "演练，不提交" else "真实预约"}" else "当前没有等待触发的定时任务")
+                            Text(taskDetail)
+                            Text("精确闹钟：${if (scheduler.canScheduleExact()) "已允许" else "未允许"}；通知：${if (NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()) "已允许" else "未允许"}")
+                            val power = getSystemService(PowerManager::class.java)
+                            Text("系统省电豁免：${if (power.isIgnoringBatteryOptimizations(packageName)) "已开启" else "未开启"}")
+                            Text("小米等机型还需在系统应用设置中检查后台运行、自启动和省电限制；测试时保持校园网络连接。")
+                            OutlinedButton(onClick = {
+                                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                            }) { Text("打开系统应用设置") }
+                            OutlinedButton(onClick = {
+                                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            }) { Text("查看系统省电设置") }
+                            OutlinedButton(onClick = {
+                                if (!scheduler.canScheduleExact()) {
+                                    status = "请允许精确闹钟，然后再次点击测试"
+                                    exactPermission.launch(scheduler.exactAlarmSettingsIntent())
+                                } else {
+                                    if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    runCatching { scheduler.scheduleWakeTest() }
+                                        .onSuccess { status = "60 秒后测试后台唤醒，请锁屏等待；不会预约，也不改变正式任务" }
+                                        .onFailure { status = it.message ?: "安排测试失败，请检查系统权限" }
+                                }
+                            }) { Text("60 秒后台唤醒测试（不预约）") }
+                            Text("请避开放号前 20 分钟测试，以免连续闹钟受到系统频率限制。", style = MaterialTheme.typography.bodySmall)
+                            Text(testDetail)
+                        }
+                    }
                     Text(
                         "安全提醒：校方系统目前使用 HTTP，登录信息没有 TLS 传输保护。请只在可信的校园局域网中登录。",
                         color = MaterialTheme.colorScheme.error,
@@ -180,20 +312,17 @@ class MainActivity : ComponentActivity() {
                                     store.save(config)
                                     status = "请选择 1–4 个连续使用时段"
                                 } else if (!scheduler.canScheduleExact()) {
-                                    config = config.copy(enabled = false, scheduledAtMillis = 0L)
-                                    store.save(config)
-                                    startActivity(scheduler.exactAlarmSettingsIntent())
-                                    status = "请允许“闹钟和提醒”，然后再次保存"
+                                    pendingSchedule = config
+                                    exactPermission.launch(scheduler.exactAlarmSettingsIntent())
+                                    status = "请允许“闹钟和提醒”；返回应用后会继续安排任务"
                                 } else {
-                                    val next = scheduler.schedule(config)
-                                    config = config.copy(scheduledAtMillis = next.toInstant().toEpochMilli())
-                                    store.save(config)
-                                    status = "已安排：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))}"
+                                    arrange(config)
                                 }
                             } else {
                                 scheduler.cancel()
                                 config = config.copy(scheduledAtMillis = 0L)
                                 store.save(config)
+                                runtime.record("CANCELLED", "定时任务已取消")
                                 status = "自动运行已关闭"
                             }
                         },
@@ -215,17 +344,29 @@ class MainActivity : ComponentActivity() {
                             if (Build.VERSION.SDK_INT >= 33) {
                                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             }
-                            ContextCompat.startForegroundService(
+                            runCatching { ContextCompat.startForegroundService(
                                 this@MainActivity,
                                 Intent(this@MainActivity, BookingService::class.java).apply {
                                     action = BookingService.ACTION_RUN_ONCE
                                 }
-                            )
-                            status = if (config.dryRun) "已开始立即演练，请查看通知" else "已开始单次预约，请查看通知"
+                            ) }.onSuccess {
+                                status = if (config.dryRun) "已开始立即演练" else "已开始单次预约"
+                            }.onFailure {
+                                status = "启动预约服务失败：${it.javaClass.simpleName}"
+                                runtime.record("FAILED", status)
+                            }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text(if (config.dryRun) "立即演练" else "立即运行一次") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
+                    if (events.isNotBlank()) {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("最近运行记录", style = MaterialTheme.typography.titleMedium)
+                                Text(events, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
                     Text(
                         "请先演练。若页面无法识别座位号，应用会停止，不会猜测或点击其他座位。",
                         style = MaterialTheme.typography.bodySmall
