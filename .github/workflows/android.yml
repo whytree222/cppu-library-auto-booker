@@ -42,8 +42,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.7.0 >/dev/null 2>&1; then
-            gh release upload v0.7.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.7.1 >/dev/null 2>&1; then
+            gh release upload v0.7.1 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.7.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.7.0' --notes '细化失败原因：座位号格式错误、号码不存在于当前座位图、网页不可预约、学校确认座位冲突、登录/时段/限额等。首次打开引导通知、精确闹钟和后台设置，可跳过并从首页重开。'
+            gh release create v0.7.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.7.1' --notes '根据完整HTML适配过刊阅览室94个位置：G001–G023的A/B/C/D及YXS1、YXS2。修复右侧座位编号末尾换行导致的定位和提交失败；仅精确匹配座位图元素，校验编号唯一及显示文字一致。逐座位模拟选中、确认和提交测试通过。'
           fi
+

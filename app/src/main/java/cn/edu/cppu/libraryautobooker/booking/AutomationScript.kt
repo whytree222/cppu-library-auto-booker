@@ -1,6 +1,7 @@
 package cn.edu.cppu.libraryautobooker.booking
 
 import cn.edu.cppu.libraryautobooker.data.BookingConfig
+import cn.edu.cppu.libraryautobooker.data.SeatCatalog
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -13,6 +14,7 @@ object AutomationScript {
             put("roomKeywords", config.roomKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatKeywords", config.seatKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatNumbers", JSONArray(config.seatNumbers))
+            put("seatCatalog", JSONArray(SeatCatalog.numbers))
             put("selectedSlots", JSONArray(config.selectedSlots))
             put("seatChoices", JSONArray().apply {
                 config.seatChoices.forEach { seat ->
@@ -30,3 +32,4 @@ object AutomationScript {
         return template.replace("__BOOKING_CONFIG__", json)
     }
 }
+

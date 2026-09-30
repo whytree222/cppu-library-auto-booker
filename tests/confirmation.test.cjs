@@ -4,6 +4,9 @@ const fs = require('node:fs');
 const { JSDOM } = require('jsdom');
 
 const script = fs.readFileSync('app/src/main/assets/automation.js', 'utf8');
+const seatMap = fs.readFileSync('tests/fixtures/seat-map.html', 'utf8');
+const seatCatalog = Array.from({ length: 23 }, (_, i) => ['A', 'B', 'C', 'D']
+  .map(letter => `G${String(i + 1).padStart(3, '0')}${letter}`)).flat().concat(['YXS1', 'YXS2']);
 
 // Reproduce the supplied layoutBespeak/commitbesk boundary: clicking 预约
 // only opens Alertify; the simulated request happens exclusively on 确认.
@@ -12,8 +15,9 @@ function fixture(options = {}) {
     <input id="roomno" value="26"><input id="isuseday" value="1">
     <input id="begintime" value="08:10:01"><input id="endtime" value="10:00:00">
     <input id="times"><input id="tableNo"><ul id="selected-seats"></ul>
+    ${options.realMap ? seatMap : `<div id="seat-map">
     <div id="G015A" class="seatCharts-seat available" aria-checked="false">G015A</div>
-    <div id="G016A" class="seatCharts-seat available" aria-checked="false">G016A</div>
+    <div id="G016A" class="seatCharts-seat available" aria-checked="false">G016A</div></div>`}
     <button id="book" onclick="layoutBespeak()">预约</button>
     <div id="confirmation" class="alertify ajs-hidden"><div class="ajs-dialog">
       <div class="ajs-content"></div><div class="ajs-footer">
@@ -25,6 +29,7 @@ function fixture(options = {}) {
   const d = w.document;
   const messages = [];
   let requests = 0;
+  const submittedNumbers = [];
   let clicks = 0;
   let now = Date.now();
   const timers = new Map();
@@ -41,14 +46,17 @@ function fixture(options = {}) {
   };
   w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
   if (options.nativeBridge) w.AutoBooker.booked = (seat, detail) => messages.push({ state: 'success', detail, seat });
-  for (const number of ['G015A', 'G016A']) d.getElementById(number).onclick = () => {
-    const seat = d.getElementById(number);
+  for (const seat of d.querySelectorAll('#seat-map .seatCharts-seat[id]')) {
+    if (options.realMap && !options.keepStatus) seat.className = 'seatCharts-seat available';
+    const number = seat.id;
+    seat.onclick = () => {
     const selected = seat.getAttribute('aria-checked') !== 'true';
     seat.className = `seatCharts-seat ${selected ? 'selected' : 'available'}`;
     seat.setAttribute('aria-checked', String(selected));
     d.getElementById('selected-seats').textContent = selected ? `座位${number}号座位` : '';
     d.getElementById('tableNo').value = options.emptyField || !selected ? '' : number;
-  };
+    };
+  }
   const reserveTomorrow = options.today ? false : true;
   d.getElementById('isuseday').value = reserveTomorrow ? '1' : '0';
   if (options.multi || options.lastThree || options.firstFour) {
@@ -75,6 +83,7 @@ function fixture(options = {}) {
   d.getElementById('book').onclick = w.layoutBespeak;
   d.querySelector('#confirmation button').onclick = () => {
     requests++;
+    submittedNumbers.push(d.getElementById('tableNo').value);
     d.getElementById('confirmation').classList.add('ajs-hidden');
     if (options.noResponse) return;
     // The response text is inserted while hidden, then only the class changes.
@@ -84,9 +93,11 @@ function fixture(options = {}) {
   d.querySelector('#result button').onclick = () => d.getElementById('result').classList.add('ajs-hidden');
   const config = { seatNumbers: options.conflict ? ['G015A', 'G016A'] : ['G015A'],
     selectedSlots: options.lastThree ? [4, 5, 6] : options.firstFour ? [0, 1, 2, 3] : options.multi ? [0, 1] : [0],
-    reserveTomorrow, dryRun: !!options.dryRun, targetDate: options.targetDate };
+    reserveTomorrow, dryRun: !!options.dryRun, targetDate: options.targetDate, seatCatalog };
   if (options.numbers) config.seatNumbers = options.numbers;
   if (options.unavailable) d.getElementById('G015A').className = 'seatCharts-seat unavailable';
+  if (options.duplicate) d.getElementById('G015A').after(d.getElementById('G015A').cloneNode(true));
+  if (options.mismatchedLabel) d.getElementById('G015A').textContent = 'G015B';
   w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify(config)));
   async function advance(duration) {
     const target = now + duration;
@@ -103,7 +114,7 @@ function fixture(options = {}) {
     now = target;
     await Promise.resolve();
   }
-  return { messages, advance, requests: () => requests, clicks: () => clicks, close: () => w.close() };
+  return { messages, advance, requests: () => requests, submittedNumbers, clicks: () => clicks, close: () => w.close() };
 }
 
 for (const [name, options] of [
@@ -176,8 +187,37 @@ test('invalid seat format is reported before clicking', async () => {
 });
 
 test('valid missing seat is not mislabeled as a format error', async () => {
-  const f = fixture({ numbers: ['G999A'] });
+  const f = fixture({ numbers: ['G023D'] });
   try { await f.advance(15000); assert.equal(f.clicks(), 0); assert.match(f.messages.at(-1).detail, /格式正确.*未找到/); }
+  finally { f.close(); }
+});
+
+test('all 94 identifiers in supplied HTML select and confirm the exact requested seat', async t => {
+  const source = new JSDOM(seatMap);
+  const identifiers = [...source.window.document.querySelectorAll('.seatCharts-seat[id]')].map(seat => seat.id.trim());
+  source.window.close();
+  assert.equal(identifiers.length, 94);
+  assert.deepEqual([...identifiers].sort(), [...seatCatalog].sort());
+  for (const number of identifiers) await t.test(number, async () => {
+    const f = fixture({ realMap: true, numbers: [number], nativeBridge: true });
+    try {
+      await f.advance(5000);
+      assert.equal(f.requests(), 1);
+      assert.deepEqual(f.submittedNumbers, [number]);
+      assert.equal(f.messages.at(-1).state, 'success');
+      assert.equal(f.messages.at(-1).seat, number);
+    } finally { f.close(); }
+  });
+});
+
+for (const [name, options, reason] of [
+  ['duplicate identifier', { duplicate: true }, /编号重复/],
+  ['mismatched label', { mismatchedLabel: true }, /显示文字不一致/],
+  ['existing reservation', { realMap: true, keepStatus: true }, /本次已预约/],
+  ['nonexistent catalog number', { numbers: ['G024A'] }, /没有这些座位号/]
+]) test(`refuse ambiguous or unavailable seat: ${name}`, async () => {
+  const f = fixture(options);
+  try { await f.advance(15000); assert.equal(f.clicks(), 0); assert.match(f.messages.at(-1).detail, reason); }
   finally { f.close(); }
 });
 
@@ -197,3 +237,4 @@ for (const [message, reason] of [
   try { await f.advance(5000); assert.equal(f.requests(), 1); assert.match(f.messages.at(-1).detail, reason); }
   finally { f.close(); }
 });
+

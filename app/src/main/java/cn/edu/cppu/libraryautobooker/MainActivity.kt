@@ -46,6 +46,7 @@ import cn.edu.cppu.libraryautobooker.booking.BookingService
 import cn.edu.cppu.libraryautobooker.data.BookingConfig
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
+import cn.edu.cppu.libraryautobooker.data.SeatCatalog
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.time.format.DateTimeFormatter
@@ -225,11 +226,12 @@ class MainActivity : ComponentActivity() {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("按优先顺序填写座位号", style = MaterialTheme.typography.titleMedium)
                             Text("每行一个，第一行最优先。放号时按顺序尝试，最多 10 个。")
+                            Text("过刊阅览室共 94 个位置：G001–G023 每桌 A/B/C/D，以及 YXS1、YXS2。")
                             OutlinedTextField(
                                 value = seatInput,
                                 onValueChange = { seatInput = it },
                                 label = { Text("座位号") },
-                                placeholder = { Text("G015A\nG016A\nG017A") },
+                                placeholder = { Text("G023D\nG015A\nYXS1") },
                                 minLines = 4,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -309,9 +311,9 @@ class MainActivity : ComponentActivity() {
                     Button(
                         onClick = {
                             val seatNumbers = parseSeatNumbers(seatInput)
-                            val invalid = seatNumbers.filterNot { Regex("^G\\d{3}[A-Z]$").matches(it) }
-                            if (config.enabled && invalid.isNotEmpty()) {
-                                status = "座位号格式错误：${invalid.joinToString("、")}；请按 G015A 格式输入，每行一个"
+                            val seatError = SeatCatalog.error(seatNumbers)
+                            if (config.enabled && seatError != null) {
+                                status = seatError
                                 return@Button
                             }
                             config = config.copy(seatNumbers = seatNumbers)
@@ -345,9 +347,9 @@ class MainActivity : ComponentActivity() {
                     OutlinedButton(
                         onClick = {
                             val seatNumbers = parseSeatNumbers(seatInput)
-                            val invalid = seatNumbers.filterNot { Regex("^G\\d{3}[A-Z]$").matches(it) }
-                            if (invalid.isNotEmpty()) {
-                                status = "座位号格式错误：${invalid.joinToString("、")}；请按 G015A 格式输入，每行一个"
+                            val seatError = SeatCatalog.error(seatNumbers)
+                            if (seatError != null) {
+                                status = seatError
                                 return@OutlinedButton
                             }
                             if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
@@ -434,3 +436,4 @@ private fun TimeField(label: String, hour: Int, minute: Int, onChange: (Int, Int
         modifier = Modifier.fillMaxWidth()
     )
 }
+

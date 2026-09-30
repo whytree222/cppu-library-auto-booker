@@ -14,62 +14,38 @@
     report('error', '尚未填写候选座位号');
     return;
   }
-  const invalid = numbers.filter(number => !/^G\d{3}[A-Z]$/.test(number));
+  const invalid = numbers.filter(number => !/^(G\d{3}[A-Z]|YXS\d+)$/.test(number));
   if (invalid.length) {
-    report('error', `座位号格式错误：${invalid.join('、')}。过刊阅览室请按 G015A 格式输入（G + 三位数字 + 一个字母），每行一个`);
+    report('error', `座位号格式错误：${invalid.join('、')}。例如 G023D、YXS1，每行一个`);
     return;
   }
 
-  const parseRgb = value => {
-    const match = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(value || '');
-    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+  const catalog = new Set(config.seatCatalog || []);
+  if (!catalog.size) {
+    report('error', '座位目录未加载，请更新应用后重试');
+    return;
+  }
+  const unknown = numbers.filter(number => !catalog.has(number));
+  if (unknown.length) {
+    report('error', `过刊阅览室没有这些座位号：${unknown.join('、')}；范围为 G001A–G023D（A/B/C/D）及 YXS1、YXS2`);
+    return;
+  }
+  const normalizeSeat = value => String(value || '').trim().toUpperCase();
+  // Keep the site's original ID (including trailing newlines) for its click
+  // handler. All lookups compare canonical identifiers inside the seat map.
+  const matchingSeats = number => [...document.querySelectorAll('#seat-map .seatCharts-seat[id]')]
+    .filter(el => normalizeSeat(el.id) === number);
+  const findSeat = number => {
+    const matches = matchingSeats(number);
+    return matches.length === 1 && normalizeSeat(matches[0].textContent) === number ? matches[0] : null;
   };
-  const green = rgb => rgb && rgb[1] > rgb[0] * 1.12 && rgb[1] > rgb[2] * 1.08 && rgb[1] > 85;
-  const seatSized = el => {
-    const box = el.getBoundingClientRect();
-    return box.width > 3 && box.height > 3 && box.width <= 160 && box.height <= 160;
-  };
-  const isAvailable = el => {
-    if (el.classList.contains('seatCharts-seat')) {
-      return el.classList.contains('available') && !el.classList.contains('unavailable');
-    }
-    return [el, ...el.querySelectorAll('*')].slice(0, 30).some(item => {
-    const style = getComputedStyle(item);
-    return [style.color, style.backgroundColor, style.fill, style.stroke, style.borderColor]
-      .some(color => green(parseRgb(color)));
-    });
-  };
-  const exactNumber = (value, number) => {
-    if (!value) return false;
-    const escaped = number.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|[^A-Z0-9])${escaped}($|[^A-Z0-9])`, 'i').test(value);
-  };
-  const labels = el => {
-    const attrs = ['data-seat-no', 'data-seat-number', 'data-table-no', 'data-number',
-      'data-name', 'title', 'aria-label', 'alt', 'id', 'onclick'];
-    const values = attrs.map(name => el.getAttribute(name)).filter(Boolean);
-    const ownText = [...el.childNodes].filter(node => node.nodeType === Node.TEXT_NODE)
-      .map(node => node.textContent.trim()).join(' ');
-    if (ownText.length <= 40) values.push(ownText);
-    return values;
-  };
+  const isAvailable = el => visible(el) && el.classList.contains('available') &&
+    !['unavailable', 'hasbesk', 'selected', 'reserved', 'booked'].some(state => el.classList.contains(state));
   const locate = number => {
-    const exactSeat = document.getElementById(number);
-    if (exactSeat?.classList.contains('seatCharts-seat')) {
-      return isAvailable(exactSeat) ? exactSeat : null;
-    }
-    const matches = [...document.querySelectorAll('body *')].filter(el =>
-      visible(el) && labels(el).some(value => exactNumber(value, number)));
-    for (const match of matches) {
-      let el = match;
-      for (let depth = 0; depth < 3 && el && el !== document.body; depth++, el = el.parentElement) {
-        if (seatSized(el) && isAvailable(el)) return el;
-      }
-    }
-    return null;
+    const seat = findSeat(number);
+    return seat && isAvailable(seat) ? seat : null;
   };
-  const numberPresent = number => !!document.getElementById(number) || [...document.querySelectorAll('body *')].some(el =>
-    labels(el).some(value => exactNumber(value, number)));
+  const numberPresent = number => matchingSeats(number).length > 0;
   const notices = () => [...document.querySelectorAll(
     '.alertify:not(.ajs-hidden) .ajs-content,.alertify-notifier .ajs-message,.alertify-message,.alertify-log,[role="alert"],.layui-layer-content,.modal.in .modal-body,.modal.show .modal-body,.modal[style*="display: block"] .modal-body')]
     .filter(visible).map(text).join(' ');
@@ -107,6 +83,9 @@
       if (++scanCount < 30) return setTimeout(tryNext, 400);
       const reasons = numbers.map(value => {
         if (rejected.has(value)) return `${value}：${rejected.get(value)}`;
+        if (matchingSeats(value).length > 1) return `${value}：网页编号重复，无法唯一定位，未点击`;
+        if (numberPresent(value) && !findSeat(value)) return `${value}：网页编号与显示文字不一致，未点击`;
+        if (findSeat(value)?.classList.contains('hasbesk')) return `${value}：页面标记为本次已预约座位，不重复提交`;
         if (numberPresent(value)) return `${value}：网页标记为不可预约（可能已预约或停用，页面未明确区分）`;
         return `${value}：格式正确，但当前过刊阅览室座位图未找到该编号，请核对号码或页面是否加载完成`;
       });
@@ -181,7 +160,7 @@
             const retry = () => {
               if (finished || thisAttempt !== attemptId) return;
               if (content.closest('.alertify')?.classList.contains('ajs-hidden') || !visible(content)) {
-                const current = document.getElementById(number);
+                const current = findSeat(number);
                 if (current && (current.getAttribute('aria-checked') === 'true' || current.classList.contains('selected'))) current.click();
                 if (String(document.getElementById('tableNo')?.value || '').trim()) {
                   return finish('error', `${number} 被预约后无法清除网页选座状态；已停止`);
@@ -225,7 +204,7 @@
     report('progress', `已选中 ${number}，正在核对网页选座状态`);
     setTimeout(() => {
       if (finished || !active || thisAttempt !== attemptId) return;
-      const current = document.getElementById(number);
+      const current = findSeat(number);
       if (!current || (current.getAttribute('aria-checked') !== 'true' && !current.classList.contains('selected'))) {
         watcher.disconnect();
         return finish('error', `${number} 未能在网页上选中；没有提交预约`);
@@ -247,6 +226,12 @@
         watcher.disconnect();
         return finish('error', `${number} 已在座位图选中，但网页提交字段 tableNo 为空；没有发送预约`);
       }
+      if (normalizeSeat(tableNo.value) !== number) {
+        return finish('error', `${number} 与网页实际提交的座位号不一致；没有发送预约`);
+      }
+      // The supplied map contains IDs ending in CR/LF. The site's click handler
+      // may copy that raw ID into tableNo; submit only the verified canonical ID.
+      tableNo.value = number;
       submittedAt = Date.now();
       report('progress', `正在打开 ${number} 的预约确认框`);
       submit.click();
@@ -254,3 +239,4 @@
   };
   tryNext();
 })();
+
