@@ -71,7 +71,18 @@ fun EntryLoginScreen(
     }
     LaunchedEffect(Unit) {
         if (AutoLogin.running) AutoLogin.login(app) { valid, _ -> checked(if (valid) "valid" else "expired") }
-        else sessionCheck(app, ::checked)
+        else sessionCheck(app) { state ->
+            if (active && state == "expired" && store.enabled && !store.paused) {
+                detail = "登录已过期，正在自动重新登录…"
+                AutoLogin.login(app) { valid, message ->
+                    if (active) {
+                        busy = false
+                        validSession = valid
+                        detail = if (valid) "自动重新登录成功，可以继续进入应用" else message
+                    }
+                }
+            } else checked(state)
+        }
     }
     val schoolLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
