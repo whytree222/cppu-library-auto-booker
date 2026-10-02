@@ -27,10 +27,12 @@ class BookingScheduler(private val context: Context) {
         ConfigStore(context).save(planned)
         try {
             scheduleAt(planned.scheduledAtMillis)
-            RuntimeStore(context).record("SCHEDULED", "已安排${if (config.dryRun) "演练（不提交）" else "真实预约"}：${RuntimeStore.format(planned.scheduledAtMillis)}")
+            RuntimeStore(context).record("SCHEDULED", "已安排${if (config.dryRun) "演练（不提交）" else "真实预约"}：${RuntimeStore.format(planned.scheduledAtMillis)}",
+                RuntimeStore.scheduledAction(planned.scheduledAtMillis), if (config.dryRun) "定时演练" else "定时预约")
         } catch (error: RuntimeException) {
             ConfigStore(context).save(planned.copy(enabled = false))
-            RuntimeStore(context).record("FAILED", "安排闹钟失败：${error.javaClass.simpleName}，请检查精确闹钟权限")
+            RuntimeStore(context).record("FAILED", "安排闹钟失败：${error.javaClass.simpleName}，请检查精确闹钟权限",
+                RuntimeStore.scheduledAction(planned.scheduledAtMillis), "定时任务")
             throw error
         }
         return trigger

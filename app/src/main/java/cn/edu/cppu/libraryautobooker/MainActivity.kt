@@ -54,12 +54,14 @@ import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
     private var refreshVersion by mutableStateOf(0)
+    private var loginEntryVisible = true
     private val uiHandler = Handler(Looper.getMainLooper())
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         uiHandler.post { refreshVersion++ }
     }
     private val sessionProbe = object : Runnable {
         override fun run() {
+            if (loginEntryVisible) return
             refreshVersion++
             SessionCoordinator.check(this@MainActivity)
             uiHandler.postDelayed(this, 60_000L)
@@ -74,10 +76,10 @@ class MainActivity : ComponentActivity() {
         val now = System.currentTimeMillis()
         if (current.enabled && current.scheduledAtMillis > now && BookingScheduler(this).canScheduleExact()) {
             runCatching { BookingScheduler(this).scheduleAt(current.scheduledAtMillis) }
-                .onFailure { runtime.record("FAILED", "重新登记闹钟失败，请检查权限并重新保存任务") }
+                .onFailure { runtime.record("FAILED", "重新登记闹钟失败，请检查权限并重新保存任务", RuntimeStore.scheduledAction(current.scheduledAtMillis)) }
         } else if (current.enabled && current.scheduledAtMillis > 0 && current.scheduledAtMillis < now - 30_000L) {
             if (runtime.prefs.getString("task_state", "") == "SCHEDULED") {
-                runtime.record("DELAYED", "计划时间已过，尚未收到闹钟触发记录；请检查权限、省电与自启动设置")
+                runtime.record("DELAYED", "计划时间已过，尚未收到闹钟触发记录；请检查权限、省电与自启动设置", RuntimeStore.scheduledAction(current.scheduledAtMillis))
             }
         }
         if (runtime.prefs.getString("task_state", "") in setOf("RUNNING", "TRIGGERED") &&
@@ -85,7 +87,7 @@ class MainActivity : ComponentActivity() {
             runtime.record("INTERRUPTED", "任务没有留下完成结果，可能已中断；请核对学校预约记录")
         }
         uiHandler.removeCallbacks(sessionProbe)
-        uiHandler.post(sessionProbe)
+        if (!loginEntryVisible) uiHandler.post(sessionProbe)
     }
 
     override fun onPause() {
@@ -111,6 +113,16 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(0xFF176B4D))) {
+                var showEntryLogin by rememberSaveable { mutableStateOf(true) }
+                LaunchedEffect(showEntryLogin) {
+                    loginEntryVisible = showEntryLogin
+                    uiHandler.removeCallbacks(sessionProbe)
+                    if (!showEntryLogin) uiHandler.post(sessionProbe)
+                }
+                if (showEntryLogin) {
+                    EntryLoginScreen { showEntryLogin = false; refreshVersion++ }
+                    return@MaterialTheme
+                }
                 var showPermissionSetup by rememberSaveable { mutableStateOf(!setupPrefs.getBoolean("shown", false)) }
                 if (showPermissionSetup) PermissionSetup {
                     setupPrefs.edit().putBoolean("shown", true).apply()
@@ -118,8 +130,6 @@ class MainActivity : ComponentActivity() {
                     refreshVersion++
                 }
                 var config by remember { mutableStateOf(store.load()) }
-                var showCredentials by remember { mutableStateOf(false) }
-                if (showCredentials) CredentialEditor { showCredentials = false; refreshVersion++ }
                 var status by remember { mutableStateOf("尚未启用") }
                 var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
                 var savedEnabled by remember { mutableStateOf(config.enabled) }
@@ -133,7 +143,7 @@ class MainActivity : ComponentActivity() {
                 val sessionDetail = remember(refreshVersion) { runtime.prefs.getString("session_detail", "登录状态待验证").orEmpty() }
                 val sessionAt = remember(refreshVersion) { runtime.prefs.getLong("session_at", 0L) }
                 val taskDetail = remember(refreshVersion) { runtime.prefs.getString("task_detail", "尚未安排任务").orEmpty() }
-                val events = remember(refreshVersion) { runtime.prefs.getString("events", "").orEmpty() }
+                val history = remember(refreshVersion) { runtime.history() }
                 val testDetail = remember(refreshVersion) {
                     val state = runtime.prefs.getString("test_state", "")
                     val due = runtime.prefs.getLong("test_due", 0L)
@@ -166,7 +176,7 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text("图书馆自动预约", style = MaterialTheme.typography.headlineMedium)
-                    Text("仅在连接校内网络时工作；账号登录由学校网页完成。")
+                    Text("过刊阅览室 · 仅在校园网络下运行")
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("登录状态", style = MaterialTheme.typography.titleMedium)
@@ -177,16 +187,7 @@ class MainActivity : ComponentActivity() {
                             Text(if (!credentials.configured) "自动重新登录：未设置账号密码"
                                 else if (credentials.paused) "自动重新登录：已暂停，请核对账号密码后重新登录"
                                 else if (credentials.enabled) "自动重新登录：已开启" else "自动重新登录：已关闭")
-                            OutlinedButton(onClick = { showCredentials = true }) { Text("设置 / 删除自动登录信息") }
-                            if (credentials.configured) {
-                                SettingSwitch("自动重新登录", "登录过期时使用手机保存的账号密码重新登录", credentials.enabled) {
-                                    if (!it) AutoLogin.cancel(this@MainActivity)
-                                    credentials.setEnabled(it)
-                                    if (it) credentials.resume()
-                                    refreshVersion++
-                                }
-                                OutlinedButton(onClick = { AutoLogin.login(this@MainActivity, force = true) }) { Text("重新登录并验证") }
-                            }
+                            OutlinedButton(onClick = { loginEntryVisible = true; showEntryLogin = true }) { Text("登录 / 管理账号") }
                         }
                     }
                     Card(Modifier.fillMaxWidth()) {
@@ -352,10 +353,11 @@ class MainActivity : ComponentActivity() {
                                     arrange(config)
                                 }
                             } else {
+                                val cancelledAt = store.load().scheduledAtMillis
                                 scheduler.cancel()
                                 config = config.copy(scheduledAtMillis = 0L)
                                 store.save(config)
-                                runtime.record("CANCELLED", "定时任务已取消")
+                                if (cancelledAt > 0) runtime.record("CANCELLED", "定时任务已取消", RuntimeStore.scheduledAction(cancelledAt))
                                 status = "自动运行已关闭"
                             }
                         },
@@ -391,20 +393,13 @@ class MainActivity : ComponentActivity() {
                                 status = if (config.dryRun) "已开始立即演练" else "已开始单次预约"
                             }.onFailure {
                                 status = "启动预约服务失败：${it.javaClass.simpleName}"
-                                runtime.record("FAILED", status)
+                                runtime.record("FAILED", status, "manual-failed:${java.util.UUID.randomUUID()}", "立即任务")
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text(if (config.dryRun) "立即演练" else "立即运行一次") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
-                    if (events.isNotBlank()) {
-                        Card(Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text("最近运行记录", style = MaterialTheme.typography.titleMedium)
-                                Text(events, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
+                    RunHistoryCard(history)
                     Text(
                         "请先演练。若页面无法识别座位号，应用会停止，不会猜测或点击其他座位。",
                         style = MaterialTheme.typography.bodySmall
@@ -453,4 +448,3 @@ private fun TimeField(label: String, hour: Int, minute: Int, onChange: (Int, Int
         modifier = Modifier.fillMaxWidth()
     )
 }
-

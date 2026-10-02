@@ -17,6 +17,7 @@ class CredentialStore(context: Context) {
     val configured get() = prefs.contains("encrypted")
     val enabled get() = prefs.getBoolean("enabled", false) && configured
     val paused get() = prefs.getBoolean("paused", false)
+    val preferredAutoLogin get() = prefs.getBoolean("preferred_enabled", if (configured) enabled else true)
 
     fun save(username: String, password: String) {
         require(username.isNotBlank() && password.isNotEmpty())
@@ -27,12 +28,20 @@ class CredentialStore(context: Context) {
         try {
             val encoded = Base64.encodeToString(cipher.doFinal(plain), Base64.NO_WRAP)
             check(prefs.edit().putString("encrypted", encoded).putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-                .putBoolean("enabled", true).putBoolean("paused", false).commit())
+                .putBoolean("enabled", true).putBoolean("preferred_enabled", true).putBoolean("paused", false).commit())
         } finally { plain.fill(0) }
     }
 
     fun read(): Credentials? {
         if (!enabled) return null
+        return decrypt()
+    }
+
+    // Only the account name is prefilled; never put a password in saved UI state.
+    fun savedUsername(): String = runCatching { decrypt()?.username.orEmpty() }.getOrDefault("")
+
+    private fun decrypt(): Credentials? {
+        if (!configured) return null
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(prefs.getString("iv", ""), Base64.NO_WRAP)))
         val plain = cipher.doFinal(Base64.decode(prefs.getString("encrypted", ""), Base64.NO_WRAP))
@@ -44,7 +53,8 @@ class CredentialStore(context: Context) {
 
     fun pause() { prefs.edit().putBoolean("paused", true).apply() }
     fun resume() { prefs.edit().putBoolean("paused", false).apply() }
-    fun setEnabled(value: Boolean) { prefs.edit().putBoolean("enabled", value).apply() }
+    fun setEnabled(value: Boolean) { prefs.edit().putBoolean("enabled", value).putBoolean("preferred_enabled", value).apply() }
+    fun setPreference(value: Boolean) { prefs.edit().putBoolean("preferred_enabled", value).apply() }
     fun clear() {
         check(prefs.edit().clear().commit())
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -61,4 +71,3 @@ class CredentialStore(context: Context) {
     }
     companion object { private const val ALIAS = "library_auto_login_v1" }
 }
-

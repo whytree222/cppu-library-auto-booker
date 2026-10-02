@@ -25,6 +25,7 @@ import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import java.time.LocalDate
 import java.time.Instant
 import java.time.ZoneId
+import java.util.UUID
 
 class BookingService : Service() {
     private var webView: WebView? = null
@@ -33,6 +34,7 @@ class BookingService : Service() {
     private var sequence: BookingSequence? = null
     private var generation = 0
     private var terminal = false
+    private var historyId: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -60,17 +62,20 @@ class BookingService : Service() {
         }
 
         val plannedAt = intent?.getLongExtra("expected_at", 0L) ?: 0L
+        historyId = if (intent?.action == ACTION_SCHEDULED) RuntimeStore.scheduledAction(plannedAt)
+            else "manual:${UUID.randomUUID()}"
         val taskDay = if (intent?.action == ACTION_SCHEDULED && plannedAt > 0)
             Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else LocalDate.now()
         sequence = BookingSequence(config, taskDay)
-        RuntimeStore(this).record("RUNNING", "后台服务已启动：${if (intent?.action == ACTION_SCHEDULED) "定时" else "手动"}${if (config.dryRun) "演练（不提交）" else "真实预约"}")
+        RuntimeStore(this).record("RUNNING", "后台服务已启动：${if (intent?.action == ACTION_SCHEDULED) "定时" else "手动"}${if (config.dryRun) "演练（不提交）" else "真实预约"}", historyId,
+            "${if (intent?.action == ACTION_SCHEDULED) "定时" else "立即"}${if (config.dryRun) "演练" else "预约"}")
         startBatch()
         return START_NOT_STICKY
     }
 
     private fun startBatch() {
         val authGeneration = ++generation
-        RuntimeStore(this).record("RUNNING", sequence?.progress("正在验证登录，过期时自动重新登录") ?: "正在验证登录")
+        record("RUNNING", sequence?.progress("正在验证登录，过期时自动重新登录") ?: "正在验证登录")
         SessionCoordinator.check(this) { valid, detail ->
             if (terminal || generation != authGeneration) return@check
             if (valid) launchBatch() else fail(detail)
@@ -157,7 +162,7 @@ class BookingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        if (!terminal && sequence != null) RuntimeStore(this).record("INTERRUPTED", sequence!!.progress("预约服务提前结束，未确认最终结果；请核对学校记录"))
+        if (!terminal && sequence != null) record("INTERRUPTED", sequence!!.progress("预约服务提前结束，未确认最终结果；请核对学校记录"))
         terminal = true
         generation++
         main.removeCallbacksAndMessages(null)
@@ -175,7 +180,7 @@ class BookingService : Service() {
 
     private fun complete(detail: String, state: String = "DONE") {
         terminal = true
-        RuntimeStore(this).record(state, detail)
+        record(state, detail)
         showResult(detail)
         stopSelf()
     }
@@ -185,6 +190,8 @@ class BookingService : Service() {
             RESULT_NOTIFICATION_ID, notification(detail, ongoing = false)
         )
     }
+
+    private fun record(state: String, detail: String) { RuntimeStore(this).record(state, detail, historyId) }
 
     private inner class Bridge(private val sourceGeneration: Int, private val sourceBatch: Int) {
         private fun dispatch(action: () -> Unit) {
@@ -196,7 +203,7 @@ class BookingService : Service() {
             when (state) {
                 "progress" -> {
                     val progress = sequence?.progress(detail) ?: detail
-                    RuntimeStore(this@BookingService).record("RUNNING", progress)
+                    record("RUNNING", progress)
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(progress))
                 }
                 "dry-run" -> complete(if (sequence?.hasSecondBatch == true)
@@ -210,7 +217,7 @@ class BookingService : Service() {
         fun booked(seatNumber: String, detail: String) = dispatch {
             when (val result = sequence?.success(sourceBatch, seatNumber)) {
                 is BookingSequence.Result.Next -> {
-                    RuntimeStore(this@BookingService).record("RUNNING", result.detail)
+                    record("RUNNING", result.detail)
                     showResult(result.detail)
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(result.detail))
                     startBatch()
@@ -251,4 +258,3 @@ class BookingService : Service() {
         private const val RESULT_NOTIFICATION_ID = 4403
     }
 }
-

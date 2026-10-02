@@ -42,8 +42,24 @@ object AutoLogin {
         }
         val credentials = try { store.read() } catch (_: Exception) {
             store.pause(); callback(false, "无法读取保存的登录信息，请重新填写保存"); return
-        } ?: return
+        } ?: run { callback(false, "没有可用的登录信息，请重新填写"); return }
         if (force) store.resume()
+        beginLogin(app, credentials, automatic = true, callback = callback)
+    }
+
+    /** One-off form login. The caller decides whether to encrypt credentials AFTER verification. */
+    fun loginWithCredentials(context: Context, username: String, password: String, callback: (Boolean, String) -> Unit) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (running) { callback(false, "已有登录正在进行，请稍后重试"); return }
+        val error = LoginInput.error(username, password)
+        if (error != null) { callback(false, error); return }
+        beginLogin(context.applicationContext, CredentialStore.Credentials(username.trim(), password),
+            automatic = false, callback = callback)
+    }
+
+    private fun beginLogin(app: Context, credentials: CredentialStore.Credentials, automatic: Boolean,
+                           callback: (Boolean, String) -> Unit) {
+        val store = CredentialStore(app)
         callbacks.add(callback)
         val token = ++serial
         var submitted = false
@@ -51,7 +67,7 @@ object AutoLogin {
         fun finish(ok: Boolean, detail: String, pause: Boolean = false, unknown: Boolean = false) {
             if (token != serial || view == null) return
             serial++
-            if (pause) store.pause()
+            if (pause && automatic) store.pause()
             RuntimeStore(app).session(if (ok) "valid" else if (unknown) "unknown" else "expired", detail)
             CookieManager.getInstance().flush()
             val old = view
@@ -60,7 +76,7 @@ object AutoLogin {
             val pending = callbacks.toList(); callbacks.clear()
             pending.forEach { it(ok, detail) }
         }
-        RuntimeStore(app).session("logging_in", "登录已失效，正在自动重新登录…")
+        RuntimeStore(app).session("logging_in", if (automatic) "登录已失效，正在自动重新登录…" else "正在登录学校系统…")
         CookieManager.getInstance().setAcceptCookie(true)
         view = WebView(app).apply {
             settings.javaScriptEnabled = true
@@ -91,9 +107,10 @@ object AutoLogin {
                         SessionChecker.checkDetailed(app) { state ->
                             if (token != serial) return@checkDetailed
                             finish(state == "valid", when (state) {
-                                "valid" -> "自动重新登录成功（学校系统验证通过）"
-                                "expired" -> "自动登录失败：学校未接受登录，请核对账号密码或手动登录；已暂停自动重试"
-                                else -> "自动登录后无法验证，请检查校园网络并重试"
+                                "valid" -> if (automatic) "自动重新登录成功（学校系统验证通过）" else "登录成功（学校系统验证通过）"
+                                "expired" -> if (automatic) "自动登录失败：学校未接受登录，请核对账号密码或手动登录；已暂停自动重试"
+                                    else "登录失败：学校未接受登录，请核对账号密码或使用学校网页登录"
+                                else -> "登录后无法验证，请检查校园网络并重试"
                             }, state == "expired", state == "unknown")
                         }
                     }
@@ -117,4 +134,3 @@ object SessionCoordinator {
         }
     }
 }
-
