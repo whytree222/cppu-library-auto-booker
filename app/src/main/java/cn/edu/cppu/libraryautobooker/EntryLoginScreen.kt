@@ -175,6 +175,9 @@ fun EntryLoginScreen(
             }
             TextButton(onClick = {
                 password = ""
+                // A school-web login may switch accounts; old saved credentials cannot be assumed to match.
+                store.setEnabled(false)
+                store.setPreference(autoRelogin)
                 schoolLogin.launch(Intent(context, LoginActivity::class.java))
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("使用学校网页登录") }
             if (store.configured) TextButton(onClick = {
