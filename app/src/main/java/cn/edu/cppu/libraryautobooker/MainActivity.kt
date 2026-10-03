@@ -54,7 +54,8 @@ import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
     private var refreshVersion by mutableStateOf(0)
-    private var loginEntryVisible = true
+    private var loginEntryVisible by mutableStateOf(true)
+    private var managingLogin by mutableStateOf(false)
     private val uiHandler = Handler(Looper.getMainLooper())
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         uiHandler.post { refreshVersion++ }
@@ -63,7 +64,13 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             if (loginEntryVisible) return
             refreshVersion++
-            SessionCoordinator.check(this@MainActivity)
+            SessionCoordinator.check(this@MainActivity) { valid, _ ->
+                val state = RuntimeStore(this@MainActivity).prefs.getString("session_state", "unknown")
+                if (!valid && state == "expired" && !isFinishing && !isDestroyed && !loginEntryVisible) {
+                    managingLogin = false
+                    loginEntryVisible = true
+                }
+            }
             uiHandler.postDelayed(this, 60_000L)
         }
     }
@@ -113,18 +120,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(0xFF176B4D))) {
-                var showEntryLogin by rememberSaveable { mutableStateOf(true) }
-                LaunchedEffect(showEntryLogin) {
-                    loginEntryVisible = showEntryLogin
+                LaunchedEffect(loginEntryVisible) {
                     uiHandler.removeCallbacks(sessionProbe)
-                    if (!showEntryLogin) uiHandler.post(sessionProbe)
-                }
-                if (showEntryLogin) {
-                    EntryLoginScreen { showEntryLogin = false; refreshVersion++ }
-                    return@MaterialTheme
+                    if (!loginEntryVisible) uiHandler.postDelayed(sessionProbe, 60_000L)
                 }
                 var showPermissionSetup by rememberSaveable { mutableStateOf(!setupPrefs.getBoolean("shown", false)) }
-                if (showPermissionSetup) PermissionSetup {
+                if (showPermissionSetup && !loginEntryVisible) PermissionSetup {
                     setupPrefs.edit().putBoolean("shown", true).apply()
                     showPermissionSetup = false
                     refreshVersion++
@@ -171,6 +172,14 @@ class MainActivity : ComponentActivity() {
                 ) { }
                 var seatInput by remember { mutableStateOf(config.seatNumbers.joinToString("\n")) }
 
+                // Keep draft reservation settings alive while an expired session is restored.
+                if (loginEntryVisible) {
+                    EntryLoginScreen(autoEnterValid = !managingLogin) {
+                        loginEntryVisible = false; managingLogin = false; refreshVersion++
+                    }
+                    return@MaterialTheme
+                }
+
                 Column(
                     modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -187,7 +196,7 @@ class MainActivity : ComponentActivity() {
                             Text(if (!credentials.configured) "自动重新登录：未设置账号密码"
                                 else if (credentials.paused) "自动重新登录：已暂停，请核对账号密码后重新登录"
                                 else if (credentials.enabled) "自动重新登录：已开启" else "自动重新登录：已关闭")
-                            OutlinedButton(onClick = { loginEntryVisible = true; showEntryLogin = true }) { Text("登录 / 管理账号") }
+                            OutlinedButton(onClick = { managingLogin = true; loginEntryVisible = true }) { Text("登录 / 管理账号") }
                         }
                     }
                     Card(Modifier.fillMaxWidth()) {

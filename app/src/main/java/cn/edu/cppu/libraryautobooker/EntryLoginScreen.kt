@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -39,10 +40,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
+import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 
 /** The entry page contains only login controls, not the reservation dashboard. */
 @Composable
 fun EntryLoginScreen(
+    autoEnterValid: Boolean = true,
     sessionCheck: (Context, (String) -> Unit) -> Unit = { context, callback -> SessionChecker.checkDetailed(context, callback) },
     onAuthenticated: () -> Unit
 ) {
@@ -57,20 +60,31 @@ fun EntryLoginScreen(
     var validSession by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf("正在检查登录状态…") }
     var active by remember { mutableStateOf(true) }
+    var gateOnly by remember { mutableStateOf(autoEnterValid) }
+    var checkAttempt by remember { mutableStateOf(0) }
     DisposableEffect(Unit) { onDispose { active = false; password = "" } }
 
     fun checked(state: String) {
         if (!active) return
         busy = false
         validSession = state == "valid"
+        if (validSession && autoEnterValid) {
+            onAuthenticated()
+            return
+        }
+        gateOnly = autoEnterValid && state != "expired"
         detail = when (state) {
             "valid" -> "当前登录仍有效，可以直接继续"
             "expired" -> "请登录学校图书馆账号"
             else -> "无法验证登录，请检查校园网络后重试"
         }
     }
-    LaunchedEffect(Unit) {
-        if (AutoLogin.running) AutoLogin.login(app) { valid, _ -> checked(if (valid) "valid" else "expired") }
+    LaunchedEffect(checkAttempt) {
+        busy = true
+        detail = "正在检查登录状态…"
+        if (AutoLogin.running) AutoLogin.login(app) { valid, _ ->
+            checked(if (valid) "valid" else RuntimeStore(app).prefs.getString("session_state", "unknown").orEmpty())
+        }
         else sessionCheck(app) { state ->
             if (active && state == "expired" && store.enabled && !store.paused) {
                 detail = "登录已过期，正在自动重新登录…"
@@ -79,6 +93,8 @@ fun EntryLoginScreen(
                         busy = false
                         validSession = valid
                         detail = if (valid) "自动重新登录成功，可以继续进入应用" else message
+                        if (valid && autoEnterValid) onAuthenticated()
+                        else gateOnly = false
                     }
                 }
             } else checked(state)
@@ -89,10 +105,23 @@ fun EntryLoginScreen(
             validSession = true
             busy = false
             detail = "学校网页登录成功，可以继续；自动重新登录需在此填写账号密码"
+            if (autoEnterValid) onAuthenticated()
         } else {
             busy = true
             sessionCheck(app, ::checked)
         }
+    }
+
+    if (gateOnly) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(Modifier.padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (busy) CircularProgressIndicator()
+                Text(detail)
+                if (!busy) Button(onClick = { checkAttempt++ }) { Text("重新检查") }
+            }
+        }
+        return
     }
 
     Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.Center) {

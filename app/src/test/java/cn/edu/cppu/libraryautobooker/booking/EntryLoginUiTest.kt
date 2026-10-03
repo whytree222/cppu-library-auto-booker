@@ -41,8 +41,9 @@ class EntryLoginUiTest {
     @Test fun verifiedExistingSessionCanContinueWithoutEnteringPassword() {
         var entered = false
         compose.setContent { MaterialTheme { EntryLoginScreen(sessionCheck = { _, callback -> callback("valid") }) { entered = true } } }
-        compose.onNodeWithText("继续进入应用").performScrollTo().assertIsDisplayed().performClick()
+        compose.waitForIdle()
         assertTrue(entered)
+        compose.onNodeWithText("学校账号").assertDoesNotExist()
         assertFalse(CredentialStore(RuntimeEnvironment.getApplication()).enabled)
     }
 
@@ -50,8 +51,41 @@ class EntryLoginUiTest {
         var entered = false
         compose.setContent { MaterialTheme { EntryLoginScreen(sessionCheck = { _, callback -> callback("unknown") }) { entered = true } } }
         compose.onNodeWithText("继续进入应用").assertDoesNotExist()
-        compose.onNodeWithText("登录并进入应用").performScrollTo().performClick()
-        compose.onNodeWithText("请填写账号和密码").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("学校账号").assertDoesNotExist()
+        compose.onNodeWithText("重新检查").assertIsDisplayed()
         assertFalse(entered)
+    }
+
+    @Test fun checkingDoesNotFlashLoginFieldsAndRetryCanEnterAutomatically() {
+        var checks = 0
+        var entered = false
+        compose.setContent { MaterialTheme { EntryLoginScreen(sessionCheck = { _, callback ->
+            checks++
+            callback(if (checks == 1) "unknown" else "valid")
+        }) { entered = true } } }
+        compose.onNodeWithText("学校账号").assertDoesNotExist()
+        compose.onNodeWithText("重新检查").performClick()
+        assertTrue(entered)
+        assertEquals(2, checks)
+    }
+
+    @Test fun explicitAccountManagementStaysAccessibleForValidSession() {
+        var entered = false
+        compose.setContent { MaterialTheme { EntryLoginScreen(autoEnterValid = false,
+            sessionCheck = { _, callback -> callback("valid") }) { entered = true } } }
+        compose.onNodeWithText("学校账号").assertIsDisplayed()
+        assertFalse(entered)
+        compose.onNodeWithText("继续进入应用").performScrollTo().performClick()
+        assertTrue(entered)
+    }
+
+    @Test fun pendingCheckShowsNoLoginForm() {
+        var respond: ((String) -> Unit)? = null
+        var entered = false
+        compose.setContent { MaterialTheme { EntryLoginScreen(sessionCheck = { _, callback -> respond = callback }) { entered = true } } }
+        compose.onNodeWithText("正在检查登录状态…").assertIsDisplayed()
+        compose.onNodeWithText("学校账号").assertDoesNotExist()
+        compose.runOnIdle { requireNotNull(respond)("valid") }
+        assertTrue(entered)
     }
 }
