@@ -65,6 +65,7 @@ class EntryLoginUiTest {
         }) { entered = true } } }
         compose.onNodeWithText("学校账号").assertDoesNotExist()
         compose.onNodeWithText("重新检查").performClick()
+        compose.waitForIdle()
         assertTrue(entered)
         assertEquals(2, checks)
     }
@@ -89,3 +90,4 @@ class EntryLoginUiTest {
         assertTrue(entered)
     }
 }
+
