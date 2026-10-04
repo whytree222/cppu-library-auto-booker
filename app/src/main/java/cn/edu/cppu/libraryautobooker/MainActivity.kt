@@ -246,7 +246,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    TimeField("每天放号时间", config.releaseHour, config.releaseMinute) { hour, minute ->
+                    ReleaseTimeField(config.releaseHour, config.releaseMinute) { hour, minute ->
                         config = config.copy(releaseHour = hour, releaseMinute = minute)
                     }
                     Card(Modifier.fillMaxWidth()) {
@@ -439,21 +439,4 @@ private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChe
         }
         Switch(checked = checked, onCheckedChange = onChecked)
     }
-}
-
-@androidx.compose.runtime.Composable
-private fun TimeField(label: String, hour: Int, minute: Int, onChange: (Int, Int) -> Unit) {
-    var text by remember(hour, minute) { mutableStateOf("%02d:%02d".format(hour, minute)) }
-    OutlinedTextField(
-        value = text,
-        onValueChange = { newText ->
-            text = newText
-            val match = Regex("^(\\d{1,2}):(\\d{1,2})$").matchEntire(newText) ?: return@OutlinedTextField
-            val h = match.groupValues[1].toIntOrNull() ?: return@OutlinedTextField
-            val m = match.groupValues[2].toIntOrNull() ?: return@OutlinedTextField
-            if (h in 0..23 && m in 0..59) onChange(h, m)
-        },
-        label = { Text(label) },
-        modifier = Modifier.fillMaxWidth()
-    )
 }
