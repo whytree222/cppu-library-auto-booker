@@ -51,8 +51,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.8.3 >/dev/null 2>&1; then
-            gh release upload v0.8.3 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.9.0 >/dev/null 2>&1; then
+            gh release upload v0.9.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.8.3 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.8.3' --notes '放号时间支持两种设置方式：选择时间打开24小时制时间选择器；手动填写分别输入小时和分钟，校验有效范围后确认。取消不会更改时间，首页清晰显示当前设置，保存并安排任务后生效。'
+            gh release create v0.9.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.9.0' --notes '支持最多10个不同的抢座时间，选择或手动输入，共用当前预约设置，每个时间运行一次。执行后保留其他时间，首页列出剩余计划；支持替换、取消、重启恢复，避免并发重复提交。'
           fi

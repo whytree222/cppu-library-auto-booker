@@ -136,8 +136,9 @@ class MainActivity : ComponentActivity() {
                 var savedEnabled by remember { mutableStateOf(config.enabled) }
                 val liveConfig = remember(refreshVersion) { store.load() }
                 LaunchedEffect(refreshVersion) {
-                    if (liveConfig.enabled != savedEnabled) {
-                        config = config.copy(enabled = liveConfig.enabled, scheduledAtMillis = liveConfig.scheduledAtMillis)
+                    if (liveConfig.enabled != savedEnabled || liveConfig.scheduledAtMillis != config.scheduledAtMillis) {
+                        config = config.copy(enabled = liveConfig.enabled, scheduledAtMillis = liveConfig.scheduledAtMillis,
+                            scheduledTimes = liveConfig.scheduledTimes)
                         savedEnabled = liveConfig.enabled
                     }
                 }
@@ -154,8 +155,8 @@ class MainActivity : ComponentActivity() {
                 }
                 val arrange: (BookingConfig) -> Unit = { requested ->
                     runCatching { scheduler.schedule(requested) }.onSuccess { next ->
-                        config = requested.copy(enabled = true, scheduledAtMillis = next.toInstant().toEpochMilli())
-                        status = "已安排${if (requested.dryRun) "演练（不提交）" else "真实预约"}：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))}"
+                        config = store.load()
+                        status = "已安排 ${config.pendingTimes().size} 个抢座时间；下一次：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))}"
                     }.onFailure { status = "安排失败，请检查精确闹钟权限；详情见任务记录" }
                 }
                 val exactPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -202,7 +203,10 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("定时任务与后台状态", style = MaterialTheme.typography.titleMedium)
-                            Text(if (liveConfig.enabled) "计划：${RuntimeStore.format(liveConfig.scheduledAtMillis)} · ${if (liveConfig.dryRun) "演练，不提交" else "真实预约"}" else "当前没有等待触发的定时任务")
+                            Text(if (liveConfig.enabled) "等待 ${liveConfig.pendingTimes().size} 个时间 · ${if (liveConfig.dryRun) "演练，不提交" else "真实预约"}" else "当前没有等待触发的定时任务")
+                            if (liveConfig.enabled) liveConfig.pendingTimes().forEach { at ->
+                                Text("计划：${RuntimeStore.format(at)}")
+                            }
                             Text(taskDetail)
                             Text("精确闹钟：${if (scheduler.canScheduleExact()) "已允许" else "未允许"}；通知：${if (NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()) "已允许" else "未允许"}")
                             val power = getSystemService(PowerManager::class.java)
@@ -246,8 +250,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    ReleaseTimeField(config.releaseHour, config.releaseMinute) { hour, minute ->
-                        config = config.copy(releaseHour = hour, releaseMinute = minute)
+                    ReleaseTimesField(config.times()) { times ->
+                        config = config.copy(releaseTimes = times, releaseHour = times.first() / 60,
+                            releaseMinute = times.first() % 60)
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -329,7 +334,7 @@ class MainActivity : ComponentActivity() {
                         onChecked = { config = config.copy(dryRun = it) }
                     )
                     SettingSwitch(
-                        title = "下次放号时运行一次",
+                        title = "按以上时间各运行一次",
                         detail = "需要精确闹钟权限；运行后自动关闭",
                         checked = config.enabled,
                         onChecked = { config = config.copy(enabled = it) }
@@ -347,11 +352,11 @@ class MainActivity : ComponentActivity() {
                             if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             if (config.enabled) {
                                 if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
-                                    config = config.copy(enabled = false, scheduledAtMillis = 0L)
+                                    config = config.withPending(emptyList())
                                     store.save(config)
                                     status = "请输入 1 到 10 个座位号，每行一个"
                                 } else if (config.selectedSlots.isEmpty()) {
-                                    config = config.copy(enabled = false, scheduledAtMillis = 0L)
+                                    config = config.withPending(emptyList())
                                     store.save(config)
                                     status = "请选择 1–4 个连续使用时段"
                                 } else if (!scheduler.canScheduleExact()) {
@@ -362,11 +367,11 @@ class MainActivity : ComponentActivity() {
                                     arrange(config)
                                 }
                             } else {
-                                val cancelledAt = store.load().scheduledAtMillis
+                                val cancelledTimes = store.load().pendingTimes()
                                 scheduler.cancel()
-                                config = config.copy(scheduledAtMillis = 0L)
+                                config = config.withPending(emptyList())
                                 store.save(config)
-                                if (cancelledAt > 0) runtime.record("CANCELLED", "定时任务已取消", RuntimeStore.scheduledAction(cancelledAt))
+                                cancelledTimes.forEach { at -> runtime.record("CANCELLED", "定时任务已取消", RuntimeStore.scheduledAction(at)) }
                                 status = "自动运行已关闭"
                             }
                         },

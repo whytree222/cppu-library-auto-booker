@@ -24,7 +24,7 @@ class BookingAlarmReceiver : BroadcastReceiver() {
         val config = store.load()
         if (!config.enabled) return
         val expected = intent?.getLongExtra("expected_at", config.scheduledAtMillis) ?: config.scheduledAtMillis
-        if (expected != config.scheduledAtMillis) return
+        if (!BookingScheduler(context).consume(expected)) return
         runtime.record("TRIGGERED", "定时闹钟已触发；计划 ${RuntimeStore.format(expected)}，实际 ${RuntimeStore.format(System.currentTimeMillis())}", RuntimeStore.scheduledAction(expected), "定时任务")
         try {
             ContextCompat.startForegroundService(
@@ -37,7 +37,5 @@ class BookingAlarmReceiver : BroadcastReceiver() {
         } catch (error: RuntimeException) {
             runtime.record("FAILED", "闹钟已触发，但后台服务启动失败：${error.javaClass.simpleName}", RuntimeStore.scheduledAction(expected))
         }
-        // Retain planned time and trigger trace instead of erasing the evidence.
-        store.save(config.copy(enabled = false))
     }
 }

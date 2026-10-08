@@ -22,20 +22,42 @@ class BookingScheduler(private val context: Context) {
     }
 
     fun schedule(config: BookingConfig): ZonedDateTime {
-        val trigger = nextTrigger(config.releaseHour, config.releaseMinute)
-        val planned = config.copy(enabled = true, scheduledAtMillis = trigger.toInstant().toEpochMilli())
+        val now = ZonedDateTime.now()
+        require(config.times().all { it in 0..1439 }) { "抢座时间无效" }
+        val triggers = config.times().map { nextTrigger(it / 60, it % 60, now) }.sorted()
+        require(triggers.size in 1..10) { "请设置 1 到 10 个抢座时间" }
+        val trigger = triggers.first()
+        val planned = config.withPending(triggers.map { it.toInstant().toEpochMilli() })
+        cancel()
         ConfigStore(context).save(planned)
         try {
             scheduleAt(planned.scheduledAtMillis)
-            RuntimeStore(context).record("SCHEDULED", "已安排${if (config.dryRun) "演练（不提交）" else "真实预约"}：${RuntimeStore.format(planned.scheduledAtMillis)}",
+            RuntimeStore(context).record("SCHEDULED", "已安排 ${triggers.size} 个时间，下一次${if (config.dryRun) "演练（不提交）" else "真实预约"}：${RuntimeStore.format(planned.scheduledAtMillis)}",
                 RuntimeStore.scheduledAction(planned.scheduledAtMillis), if (config.dryRun) "定时演练" else "定时预约")
         } catch (error: RuntimeException) {
-            ConfigStore(context).save(planned.copy(enabled = false))
+            ConfigStore(context).save(planned.withPending(emptyList()))
             RuntimeStore(context).record("FAILED", "安排闹钟失败：${error.javaClass.simpleName}，请检查精确闹钟权限",
                 RuntimeStore.scheduledAction(planned.scheduledAtMillis), "定时任务")
             throw error
         }
         return trigger
+    }
+
+    // Only register the next alarm. Consuming it persists the remaining queue and arms its successor.
+    fun consume(expected: Long): Boolean {
+        val store = ConfigStore(context)
+        val current = store.load()
+        if (!current.enabled || current.pendingTimes().firstOrNull() != expected) return false
+        val remaining = current.withPending(current.pendingTimes().filter { it != expected })
+        store.save(remaining)
+        if (remaining.enabled) {
+            try { scheduleAt(remaining.scheduledAtMillis) }
+            catch (error: RuntimeException) {
+                store.save(remaining.withPending(emptyList()))
+                RuntimeStore(context).record("FAILED", "后续闹钟登记失败，剩余任务已停用，请重新安排", RuntimeStore.scheduledAction(remaining.scheduledAtMillis))
+            }
+        }
+        return true
     }
 
     fun scheduleAt(epochMillis: Long) {
@@ -50,7 +72,7 @@ class BookingScheduler(private val context: Context) {
 
     fun scheduleWakeTest() {
         val planned = ConfigStore(context).load()
-        require(!planned.enabled || planned.scheduledAtMillis - System.currentTimeMillis() !in 0..1_200_000L) {
+        require(!planned.enabled || planned.pendingTimes().none { it - System.currentTimeMillis() in 0..1_200_000L }) {
             "正式任务将在 20 分钟内运行，请在任务结束后测试"
         }
         val due = System.currentTimeMillis() + 60_000L

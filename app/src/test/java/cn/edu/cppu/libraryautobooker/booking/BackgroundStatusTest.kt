@@ -37,7 +37,7 @@ class BackgroundStatusTest {
         ConfigStore(app).save(BookingConfig(enabled = true, scheduledAtMillis = due))
         BookingAlarmReceiver().onReceive(app, Intent().putExtra("expected_at", due))
         assertFalse(ConfigStore(app).load().enabled)
-        assertEquals(due, ConfigStore(app).load().scheduledAtMillis)
+        assertTrue(ConfigStore(app).load().pendingTimes().isEmpty())
         assertEquals("TRIGGERED", RuntimeStore(app).prefs.getString("task_state", ""))
         val service = Shadows.shadowOf(app).nextStartedService
         assertEquals(BookingService.ACTION_SCHEDULED, service.action)
@@ -75,4 +75,3 @@ class BackgroundStatusTest {
         assertEquals("valid", SessionChecker.decode(200, null, "{\"ReturnValue\":1}").first)
     }
 }
-

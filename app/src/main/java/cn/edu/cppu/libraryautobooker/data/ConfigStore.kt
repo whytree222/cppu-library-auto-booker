@@ -23,7 +23,9 @@ class ConfigStore(context: Context) {
         endTime = prefs.getString("end_time", "22:00").orEmpty(),
         entryPath = prefs.getString("entry_path", "/selectreadingroom")
             .orEmpty().let { if (it == "/multireadingroomtablelist") "/selectreadingroom" else it },
-        scheduledAtMillis = prefs.getLong("scheduled_at", 0L)
+        scheduledAtMillis = prefs.getLong("scheduled_at", 0L),
+        releaseTimes = readLongs("release_times").filter { it in 0..1439 }.map { it.toInt() },
+        scheduledTimes = readLongs("scheduled_times").filter { it > 0 }
     )
 
     fun save(config: BookingConfig) {
@@ -52,8 +54,15 @@ class ConfigStore(context: Context) {
             .putString("end_time", config.endTime)
             .putString("entry_path", config.entryPath)
             .putLong("scheduled_at", config.scheduledAtMillis)
+            .putString("release_times", JSONArray(config.releaseTimes).toString())
+            .putString("scheduled_times", JSONArray(config.scheduledTimes).toString())
             .apply()
     }
+
+    private fun readLongs(key: String): List<Long> = try {
+        val array = JSONArray(prefs.getString(key, "[]"))
+        (0 until array.length()).map { array.getLong(it) }.distinct().sorted()
+    } catch (_: Exception) { emptyList() }
 
     private fun readSeats(): List<SeatChoice> = try {
         val array = JSONArray(prefs.getString("seat_choices", "[]"))

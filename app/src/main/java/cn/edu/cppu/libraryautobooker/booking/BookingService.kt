@@ -54,7 +54,13 @@ class BookingService : Service() {
             return START_NOT_STICKY
         }
         // Repeated taps/alarms must not restart an in-flight booking.
-        if (sequence != null) return START_NOT_STICKY
+        if (sequence != null) {
+            if (intent?.action == ACTION_SCHEDULED) {
+                val expected = intent.getLongExtra("expected_at", 0L)
+                RuntimeStore(this).record("FAILED", "上一笔预约仍在运行，本次时间未执行，避免并发重复提交；请将抢座时间适当分开", RuntimeStore.scheduledAction(expected), "定时任务")
+            }
+            return START_NOT_STICKY
+        }
         val config = ConfigStore(this).load()
         if (!config.enabled && intent?.action !in setOf(ACTION_RUN_ONCE, ACTION_SCHEDULED)) {
             stopSelf()

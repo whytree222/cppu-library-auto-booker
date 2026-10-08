@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 
 @Composable
-fun ReleaseTimeField(hour: Int, minute: Int, onChange: (Int, Int) -> Unit) {
+fun ReleaseTimeField(hour: Int, minute: Int, title: String = "抢座时间", onChange: (Int, Int) -> Unit) {
     val context = LocalContext.current
     var picker by remember { mutableStateOf<TimePickerDialog?>(null) }
     var manual by remember { mutableStateOf(false) }
@@ -37,7 +37,7 @@ fun ReleaseTimeField(hour: Int, minute: Int, onChange: (Int, Int) -> Unit) {
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("每天放号时间", style = MaterialTheme.typography.titleMedium)
+            Text(title, style = MaterialTheme.typography.titleMedium)
             Text(String.format(Locale.ROOT, "%02d:%02d", hour, minute), style = MaterialTheme.typography.headlineMedium)
             Text("24 小时制，设置后点击“保存并安排任务”。", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -77,5 +77,37 @@ fun ReleaseTimeField(hour: Int, minute: Int, onChange: (Int, Int) -> Unit) {
                 if (valid) { onChange(requireNotNull(enteredHour), requireNotNull(enteredMinute)); manual = false }
             }, enabled = valid) { Text("确定") }
         }, dismissButton = { TextButton(onClick = { manual = false }) { Text("取消") } })
+    }
+}
+
+@Composable
+fun ReleaseTimesField(times: List<Int>, onChange: (List<Int>) -> Unit) {
+    var error by remember { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("多个抢座时间", style = MaterialTheme.typography.titleMedium)
+        Text("最多 10 个，每个时间运行一次，共用下面的座位、日期和时段。已过的时间安排到明天。修改后请保存；时间太近可能与上一笔冲突。")
+        times.forEachIndexed { index, time ->
+            // Keep an editor attached to its row; saving normalizes chronological order.
+            androidx.compose.runtime.key(index) {
+                ReleaseTimeField(time / 60, time % 60, "抢座时间 ${index + 1}") { hour, minute ->
+                    val changed = hour * 60 + minute
+                    if (changed !in times || changed == time) {
+                        error = ""
+                        onChange(times.toMutableList().apply { set(index, changed) })
+                    } else error = "该时间已存在，请选择另一个时间"
+                }
+                if (times.size > 1) TextButton(onClick = {
+                    onChange(times.filterIndexed { position, _ -> position != index })
+                }) { Text("删除时间 ${index + 1}") }
+            }
+        }
+        if (times.size < 10) OutlinedButton(onClick = {
+            val start = (times.last() + 60) % 1440
+            val candidate = (0..1439).map { (start + it) % 1440 }.first { it !in times }
+            error = ""
+            onChange(times + candidate)
+        }, modifier = Modifier.fillMaxWidth()) { Text("添加抢座时间") }
+        Text("同一时间不能重复添加。全部时间执行后自动关闭，不会每天循环。", style = MaterialTheme.typography.bodySmall)
+        if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
     }
 }
