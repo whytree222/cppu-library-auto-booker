@@ -12,8 +12,8 @@ android {
         applicationId = "cn.edu.cppu.libraryautobooker"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.9.0"
+        versionCode = 22
+        versionName = "0.10.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -61,3 +61,4 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+

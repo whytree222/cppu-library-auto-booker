@@ -328,6 +328,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     SettingSwitch(
+                        title = "未开放时最多等待 10 分钟",
+                        detail = "任务实际启动后限时 10 分钟。明确未开放时约每秒检查接口，不重载整页；开放后按座位顺序预约。网络、账号或参数错误及提交结果不明时停止。演练仍不提交。",
+                        checked = config.waitForRelease,
+                        onChecked = { config = config.copy(waitForRelease = it) }
+                    )
+                    OutlinedButton(onClick = {
+                        startService(Intent(this@MainActivity, BookingService::class.java).setAction(BookingService.ACTION_CANCEL))
+                        status = "已请求停止当前任务；不取消已成功的学校预约，也不取消其他定时计划"
+                    }, modifier = Modifier.fillMaxWidth()) { Text("停止当前任务") }
+                    SettingSwitch(
                         title = "演练模式",
                         detail = if (config.appendLastThree) "只演练前四段；不提交预约，也不启动后三段" else "会走到座位图并识别座位，但不会提交预约",
                         checked = config.dryRun,
@@ -445,3 +455,4 @@ private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChe
         Switch(checked = checked, onCheckedChange = onChecked)
     }
 }
+

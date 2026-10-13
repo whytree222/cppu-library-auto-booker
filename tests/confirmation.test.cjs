@@ -93,7 +93,7 @@ function fixture(options = {}) {
   d.querySelector('#result button').onclick = () => d.getElementById('result').classList.add('ajs-hidden');
   const config = { seatNumbers: options.conflict ? ['G015A', 'G016A'] : ['G015A'],
     selectedSlots: options.lastThree ? [4, 5, 6] : options.firstFour ? [0, 1, 2, 3] : options.multi ? [0, 1] : [0],
-    reserveTomorrow, dryRun: !!options.dryRun, targetDate: options.targetDate, seatCatalog };
+    reserveTomorrow, dryRun: !!options.dryRun, waitForRelease: !!options.wait, targetDate: options.targetDate, seatCatalog };
   if (options.numbers) config.seatNumbers = options.numbers;
   if (options.unavailable) d.getElementById('G015A').className = 'seatCharts-seat unavailable';
   if (options.duplicate) d.getElementById('G015A').after(d.getElementById('G015A').cloneNode(true));
@@ -155,6 +155,26 @@ test('uncertain response does not cause a second submission', async () => {
   const f = fixture({ noResponse: true });
   try { await f.advance(50000); assert.equal(f.requests(), 1); assert.equal(f.messages.at(-1).state, 'error'); assert.match(f.messages.at(-1).detail, /45 秒/); }
   finally { f.close(); }
+});
+
+test('explicit not-open rejection resumes checking without another submission in the old page', async () => {
+  const f = fixture({ wait: true, result: '尚未开放预约' });
+  try {
+    await f.advance(50000);
+    assert.equal(f.requests(), 1);
+    assert.equal(f.messages.at(-1).state, 'closed');
+  } finally { f.close(); }
+});
+
+test('wait mode stops on unknown submitted results and duplicate limits', async () => {
+  for (const options of [{ noResponse: true }, { result: '已有预约，请勿重复预约' }]) {
+    const f = fixture({ ...options, wait: true });
+    try {
+      await f.advance(50000);
+      assert.equal(f.requests(), 1);
+      assert.equal(f.messages.at(-1).state, 'error');
+    } finally { f.close(); }
+  }
 });
 
 test('a definite seat conflict closes the result and confirms the next preference', async () => {

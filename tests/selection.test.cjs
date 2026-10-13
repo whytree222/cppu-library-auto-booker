@@ -47,9 +47,14 @@ function run(options = {}) {
       </div></div><button type="button">下一步</button></form>`;
     d.body.prepend(old);
   }
-  d.querySelector('#slots button').onclick = () => { next++; };
+  d.querySelector('#slots button').onclick = () => {
+    if (options.schoolNotice) {
+      const notice = d.createElement('div'); notice.className = 'alertify-message';
+      notice.textContent = options.schoolNotice; d.body.appendChild(notice);
+    } else next++;
+  };
   w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify({ targetDate,
-    reserveTomorrow: !!options.tomorrow, selectedSlots: [4, 5, 6] })));
+    reserveTomorrow: !!options.tomorrow, selectedSlots: [4, 5, 6], waitForRelease: !!options.wait })));
   for (let count = 0; count < 8 && timers.length && !next && !messages.some(m => m.state === 'error'); count++) timers.shift()();
   const selected = [...d.querySelectorAll('#slots input:checked')].map(input => input.id);
   w.close();
@@ -67,6 +72,17 @@ for (const [name, options] of [
   assert.equal(result.messages.some(m => m.state === 'error'), false);
 });
 
+test('report real school reason when next step is refused, not a generic navigation timeout', () => {
+  const result = run({ schoolNotice: '没有共同的空闲座位可以预约或已经预约了选择的时间段的座位' });
+  assert.equal(result.next, 0);
+  assert.ok(result.messages.some(m => m.state === 'error' && m.detail.includes('没有共同的空闲座位')));
+});
+
+test('explicit not-open notice can enter bounded wait but no-seat notice cannot', () => {
+  assert.ok(run({ schoolNotice: '尚未开放预约', wait: true }).messages.some(m => m.state === 'closed'));
+  assert.equal(run({ schoolNotice: '没有空闲座位可以预约', wait: true }).messages.some(m => m.state === 'closed'), false);
+});
+
 for (const [name, options] of [
   ['explicit wrong date', { rawDate: dateString(1) }],
   ['relative day disagrees with date', { wrongOffset: true }],
@@ -78,3 +94,4 @@ for (const [name, options] of [
   assert.equal(result.next, 0);
   assert.ok(result.messages.some(m => m.state === 'error'));
 });
+

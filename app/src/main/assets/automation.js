@@ -76,6 +76,8 @@
       window.AutoBooker.booked(seatNumber, detail);
     } else report(state, detail);
   };
+  const closed = value => !/登录|登陆|会话|密码|验证码|重复|已有预约|已经预约|次数|上限|空闲座位|预约成功/.test(value) &&
+    /未到(?:预约|开放)时间|尚未开放|暂未开放|未开放预约|还未开放|未开始预约|预约尚未开始|尚未到.*预约时间/.test(value);
   const tryNext = () => {
     if (finished || active) return;
     const number = numbers.find(value => !attempted.has(value) && locate(value));
@@ -141,6 +143,9 @@
       }
       const success = successText();
       if (confirmationAt && success) return finish('success', `${number}：${success}`, number);
+      // Retry only an explicit rejection, never an unknown/timeout result after submission.
+      if (config.waitForRelease && submittedAt && notices() !== previousNotice && !confirmation && closed(notices()))
+        return finish('closed', '学校明确拒绝本次预约：尚未开放，返回开放状态检查');
       if (failureText() && notices() !== previousNotice) {
         const failure = notices();
         rejected.set(number, serverReason(failure));

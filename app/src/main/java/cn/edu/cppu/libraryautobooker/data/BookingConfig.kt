@@ -17,7 +17,8 @@ data class BookingConfig(
     val entryPath: String = "/selectreadingroom",
     val scheduledAtMillis: Long = 0L,
     val releaseTimes: List<Int> = emptyList(),
-    val scheduledTimes: List<Long> = emptyList()
+    val scheduledTimes: List<Long> = emptyList(),
+    val waitForRelease: Boolean = false
 ) {
     fun times(): List<Int> = (if (releaseTimes.isEmpty()) listOf(releaseHour * 60 + releaseMinute)
         else releaseTimes).distinct()
@@ -31,3 +32,4 @@ data class BookingConfig(
             scheduledAtMillis = pending.firstOrNull() ?: 0L)
     }
 }
+

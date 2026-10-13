@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
@@ -35,17 +36,24 @@ class BookingService : Service() {
     private var generation = 0
     private var terminal = false
     private var historyId: String? = null
+    private var releaseDeadline = 0L
+    private var gateActive = false
 
     override fun onCreate() {
         super.onCreate()
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:booking")
-            .apply { acquire(420_000L) }
+            .apply { acquire(if (ConfigStore(this@BookingService).load().waitForRelease) 720_000L else 420_000L) }
         createChannel()
         startForeground(NOTIFICATION_ID, notification("正在连接校内预约系统…"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL) {
+            if (sequence != null) fail("用户已停止当前任务；如曾确认提交，请核对学校记录；已成功预约不会被取消")
+            else stopSelf()
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_WAKE_TEST) {
             RuntimeStore(this).test("DONE", "唤醒链路通过：闹钟和后台服务均已运行；未执行预约")
             getSystemService(NotificationManager::class.java).notify(4405,
@@ -73,6 +81,12 @@ class BookingService : Service() {
         val taskDay = if (intent?.action == ACTION_SCHEDULED && plannedAt > 0)
             Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else LocalDate.now()
         sequence = BookingSequence(config, taskDay)
+        if (config.waitForRelease) {
+            releaseDeadline = SystemClock.elapsedRealtime() + 600_000L
+            main.postDelayed({
+                if (!terminal) fail("任务已达到 10 分钟上限，已停止；如曾确认提交但未收到结果，请核对学校记录")
+            }, 600_000L)
+        }
         RuntimeStore(this).record("RUNNING", "后台服务已启动：${if (intent?.action == ACTION_SCHEDULED) "定时" else "手动"}${if (config.dryRun) "演练（不提交）" else "真实预约"}", historyId,
             "${if (intent?.action == ACTION_SCHEDULED) "定时" else "立即"}${if (config.dryRun) "演练" else "预约"}")
         startBatch()
@@ -89,6 +103,10 @@ class BookingService : Service() {
     }
 
     private fun launchBatch() {
+        if (releaseDeadline > 0 && SystemClock.elapsedRealtime() >= releaseDeadline) {
+            fail("10 分钟等待窗口已结束，已停止")
+            return
+        }
         val run = sequence ?: return
         val config = run.configForDate(LocalDate.now())
         if (config == null) {
@@ -96,6 +114,7 @@ class BookingService : Service() {
             return
         }
         val currentGeneration = ++generation
+        gateActive = config.waitForRelease
         val bridge = Bridge(currentGeneration, run.batch)
         // Fresh fields and dialogs for each batch; app-wide cookies keep the login.
         webView?.destroy()
@@ -128,7 +147,9 @@ class BookingService : Service() {
                         return
                     }
                     if (uri.path == "/selectreadingroom" && !automationStarted) {
-                        val template = assets.open("selection.js").bufferedReader().use { it.readText() }
+                        val asset = if (config.waitForRelease) "release-wait.js" else "selection.js"
+                        val template = assets.open(asset).bufferedReader().use { it.readText() }
+                            .replace("__WAIT_MS__", (releaseDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0).toString())
                         view.evaluateJavascript(AutomationScript.build(template, config, run.targetDate.toString()), null)
                         return
                     }
@@ -161,7 +182,7 @@ class BookingService : Service() {
             loadUrl("http://mlib.cppu.edu.cn/selectreadingroom")
         }
         main.postDelayed({
-            if (!terminal && generation == currentGeneration) fail("本笔任务超时，未确认预约结果")
+            if (!terminal && generation == currentGeneration && !config.waitForRelease) fail("本笔任务超时，未确认预约结果")
         }, 150_000L)
     }
 
@@ -207,6 +228,24 @@ class BookingService : Service() {
         @JavascriptInterface
         fun report(state: String, detail: String) = dispatch {
             when (state) {
+                "opened" -> {
+                    if (!gateActive) return@dispatch
+                    gateActive = false
+                    val run = sequence ?: return@dispatch
+                    val config = run.configForDate(LocalDate.now()) ?: return@dispatch fail("目标日期已不在今天或明天范围内")
+                    record("RUNNING", run.progress(detail))
+                    val template = assets.open("selection.js").bufferedReader().use { it.readText() }
+                    webView?.evaluateJavascript(AutomationScript.build(template, config, run.targetDate.toString()), null)
+                    main.postDelayed({
+                        if (!terminal && generation == sourceGeneration && !gateActive) fail("本笔任务超时，未确认预约结果")
+                    }, 150_000L)
+                }
+                "closed" -> {
+                    if (sequence?.config?.waitForRelease == true && SystemClock.elapsedRealtime() < releaseDeadline) {
+                        record("RUNNING", sequence!!.progress("$detail；继续检查，10 分钟窗口不重置"))
+                        main.postDelayed({ if (!terminal && generation == sourceGeneration) launchBatch() }, 1000L)
+                    } else fail(detail)
+                }
                 "progress" -> {
                     val progress = sequence?.progress(detail) ?: detail
                     record("RUNNING", progress)
@@ -259,8 +298,10 @@ class BookingService : Service() {
         const val ACTION_RUN_ONCE = "cn.edu.cppu.libraryautobooker.RUN_ONCE"
         const val ACTION_WAKE_TEST = "cn.edu.cppu.libraryautobooker.WAKE_TEST"
         const val ACTION_SCHEDULED = "cn.edu.cppu.libraryautobooker.SCHEDULED"
+        const val ACTION_CANCEL = "cn.edu.cppu.libraryautobooker.CANCEL_CURRENT"
         private const val CHANNEL_ID = "booking"
         private const val NOTIFICATION_ID = 4402
         private const val RESULT_NOTIFICATION_ID = 4403
     }
 }
+

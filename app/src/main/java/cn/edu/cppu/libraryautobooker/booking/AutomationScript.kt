@@ -9,6 +9,7 @@ object AutomationScript {
     fun build(template: String, config: BookingConfig, targetDate: String? = null): String {
         val json = JSONObject().apply {
             put("dryRun", config.dryRun)
+            put("waitForRelease", config.waitForRelease)
             put("reserveTomorrow", config.reserveTomorrow)
             if (targetDate != null) put("targetDate", targetDate)
             put("roomKeywords", config.roomKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
