@@ -63,8 +63,8 @@ for (const [name, options, code] of [
   ['URL userinfo', {url: 'https://someone@sso.cppu.edu.cn/tpass/login'}, 'unsupported-page'],
   ['WebVPN root login', {url: 'https://webvpn.cppu.edu.cn/login'}, 'unsupported-page'],
   ['different proxy target', {url: 'https://webvpn.cppu.edu.cn/https/other/tpass/login'}, 'unsupported-page'],
-  ['external form target', {action: 'https://attacker.example/tpass/login'}, 'wrong-action'],
-  ['other form resource', {action: '/tpass/other'}, 'wrong-action'],
+  ['external form target', {action: 'https://attacker.example/tpass/login'}, 'wrong-action-attribute'],
+  ['other form resource', {action: '/tpass/other'}, 'wrong-action-attribute'],
   ['external CAPTCHA', {src: 'https://attacker.example/tpass/captcha.jpg'}, 'unsupported-image'],
   ['other CAPTCHA endpoint', {src: '/image.jpg'}, 'unsupported-image'],
   ['data image', {src: 'data:image/png;base64,abcd'}, 'unsupported-image'],
@@ -90,14 +90,63 @@ test('proxy DOM getters may expose only the same original SSO action/image targe
   assert.equal(f.api.snapshot().kind,'ready');
 }));
 
-test('proxy root CAPTCHA or form cannot escape the verified SSO proxy prefix', () => {
+test('a root CAPTCHA attribute still requires a verified loaded image source; form root action is normalized', () => {
   using({url: 'https://webvpn.cppu.edu.cn' + proxy + '/tpass/login', src: '/tpass/captcha.jpg'}, f => {
     assert.equal(f.api.snapshot().detailCode, 'unsupported-image');
   });
   using({url: 'https://webvpn.cppu.edu.cn' + proxy + '/tpass/login', action: '/tpass/login'}, f => {
-    assert.equal(f.api.snapshot().detailCode, 'wrong-action');
+    assert.equal(f.api.snapshot().kind, 'ready');
+    assert.equal(new URL(f.w.document.querySelector('form').action).pathname, proxy + '/tpass/login');
+    assert.equal(f.state.requests, 0); assert.equal(f.state.submits, 0);
   });
 });
+
+test('school original root-relative form and image attributes coexist with proxied getters', () => using({
+  url: 'https://webvpn.cppu.edu.cn' + proxy + '/tpass/login?service=secret-service',
+  action: '/tpass/login?execution=secret-execution', src: '/tpass/captcha.jpg?cache=secret-cache',
+  currentSrc: 'https://webvpn.cppu.edu.cn' + proxy + '/tpass/captcha.jpg?cache=secret-cache'
+}, f => {
+  Object.defineProperty(f.w.document.querySelector('form'), 'action', {
+    get: () => 'https://sso.cppu.edu.cn/tpass/login?execution=secret-execution'
+  });
+  const ready = f.api.snapshot(); assert.equal(ready.kind, 'ready');
+  assert.equal(f.api.fill(ready.token, '0123').kind, 'filled');
+  assert.equal(f.api.snapshot().kind, 'filled');
+  assert.doesNotMatch(JSON.stringify(ready), /secret-|execution|service|https:/);
+  assert.equal(f.state.requests, 0); assert.equal(f.state.submits, 0);
+}));
+
+test('normalizing a known original action preserves its query and never refreshes the CAPTCHA', () => using({
+  url: 'https://webvpn.cppu.edu.cn' + proxy + '/tpass/login', action: '/tpass/login?execution=fixture-execution'
+}, f => {
+  const source = f.image.src;
+  const ready = f.api.snapshot(); assert.equal(ready.kind, 'ready');
+  const action = new URL(f.w.document.querySelector('form').action);
+  assert.equal(action.origin, 'https://webvpn.cppu.edu.cn');
+  assert.equal(action.pathname, proxy + '/tpass/login');
+  assert.equal(action.search, '?execution=fixture-execution');
+  assert.equal(f.image.src, source); assert.equal(f.state.requests, 0); assert.equal(f.state.submits, 0);
+}));
+
+test('a valid original attribute cannot conceal a foreign action getter or an explicit portal action', () => {
+  using({url:'https://webvpn.cppu.edu.cn'+proxy+'/tpass/login',action:'/tpass/login'}, f => {
+    Object.defineProperty(f.w.document.querySelector('form'),'action',{get:()=> 'https://attacker.example/tpass/login'});
+    assert.equal(f.api.snapshot().detailCode, 'wrong-action-property');
+    assert.equal(f.state.requests,0); assert.equal(f.state.submits,0);
+  });
+  using({url:'https://webvpn.cppu.edu.cn'+proxy+'/tpass/login',action:'https://webvpn.cppu.edu.cn/tpass/login'}, f => {
+    assert.equal(f.api.snapshot().detailCode,'wrong-action-attribute');
+    assert.equal(f.state.draws,0);
+  });
+});
+
+test('a refused root-action rewrite stops before capture or authentication', () => using({url:'https://webvpn.cppu.edu.cn'+proxy+'/tpass/login'}, f => {
+  const form=f.w.document.querySelector('form');
+  form.setAttribute('action','/tpass/login');
+  form.setAttribute=()=>{};
+  assert.equal(f.api.snapshot().detailCode,'wrong-action-rewrite');
+  assert.equal(f.state.draws,0); assert.equal(f.state.requests,0); assert.equal(f.state.submits,0);
+}));
 
 test('hidden CAPTCHA, hidden parent and invisible input are not processed', () => {
   for (const selector of ['img', 'form', '#authcode']) using({}, f => {

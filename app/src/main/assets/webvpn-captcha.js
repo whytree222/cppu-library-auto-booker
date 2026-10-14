@@ -28,6 +28,35 @@
     }
     return null;
   }
+  function attributeResource(raw, route) {
+    // The proxy's getAttribute can retain the original root-relative SSO path.
+    // Interpret only that representation against the known upstream, not the VPN portal.
+    const text = (raw || '').trim();
+    const base = route.prefix === proxyPrefix && /^\/tpass\//.test(text)
+      ? 'https://sso.cppu.edu.cn/tpass/login' : location.href;
+    return new URL(text || location.href, base);
+  }
+  function formAction(form, route) {
+    let raw = form.getAttribute('action') || '';
+    let attribute = attributeResource(raw, route);
+    if (!target(attribute, route, '/tpass/login')) return {error: result('stopped', 'wrong-action-attribute')};
+    let action = new URL(form.action, location.href);
+    if (!target(action, route, '/tpass/login')) {
+      // If DOM rewriting has not occurred, repair ONLY the verified original relative action.
+      // No credentials are read, and changing a form action sends no request.
+      const rootRelative = /^\/(?!\/)/.test(raw.trim());
+      if (route.prefix !== proxyPrefix || !rootRelative || action.origin !== route.origin ||
+          action.pathname !== '/tpass/login' || action.username || action.password || action.port || action.hash)
+        return {error: result('stopped', 'wrong-action-property')};
+      form.setAttribute('action', route.prefix + attribute.pathname + attribute.search);
+      raw = form.getAttribute('action') || '';
+      attribute = attributeResource(raw, route);
+      action = new URL(form.action, location.href);
+      if (!target(action, route, '/tpass/login') || !target(attribute, route, '/tpass/login'))
+        return {error: result('stopped', 'wrong-action-rewrite')};
+    }
+    return {action, attribute};
+  }
   function visible(element) {
     if (!element || !element.isConnected) return false;
     const rects = element.getClientRects();
@@ -64,11 +93,10 @@
         !['text', 'tel', 'number'].includes(input.type) || input.disabled || input.readOnly ||
         form.method.toLowerCase() !== 'post') return {error: result('stopped', 'unsupported-structure')};
     try {
-      const action = new URL(form.action, location.href);
-      const actionAttribute = new URL(form.getAttribute('action') || location.href, location.href);
-      if (!target(action, route, '/tpass/login') || !target(actionAttribute, route, '/tpass/login'))
-        return {error: result('stopped', 'wrong-action')};
-      const source = new URL(image.getAttribute('src') || '', location.href);
+      const destination = formAction(form, route);
+      if (destination.error) return destination;
+      const action = destination.action, actionAttribute = destination.attribute;
+      const source = attributeResource(image.getAttribute('src') || '', route);
       const currentSource = new URL(image.currentSrc || image.src, location.href);
       if (!image.getAttribute('src') || image.getAttribute('srcset') ||
           !target(source, route, '/tpass/captcha.jpg') || !target(currentSource, route, '/tpass/captcha.jpg')) {

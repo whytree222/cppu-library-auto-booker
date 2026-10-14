@@ -29,6 +29,31 @@ test('known proxy target supports an original DOM action getter',()=>use({proxy:
   Object.defineProperty(f.w.document.querySelector('form'),'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
   assert.equal(f.api.prepare(f.credentials).kind,'prepared');assert.equal(f.api.submit().kind,'submitted');
 }));
+test('school root-relative action is normalized before either credential is written',()=>use({proxy:true,action:'/tpass/login?execution=fixture-execution'},f=>{
+  assert.equal(f.api.prepare(f.credentials).kind,'prepared');
+  const action=new URL(f.w.document.querySelector('form').action);
+  assert.equal(action.origin,'https://webvpn.cppu.edu.cn');
+  assert.equal(action.pathname,prefix+'/tpass/login');
+  assert.equal(action.search,'?execution=fixture-execution');
+  assert.equal(f.api.submit().kind,'submitted'); assert.equal(f.state.posted,1); assert.equal(f.state.encrypted,true);
+}));
+test('root-relative action attribute supports the WebVPN original upstream getter without changing it',()=>use({proxy:true,action:'/tpass/login'},f=>{
+  const form=f.w.document.querySelector('form');
+  Object.defineProperty(form,'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
+  assert.equal(f.api.prepare(f.credentials).kind,'prepared');
+  assert.equal(form.getAttribute('action'),'/tpass/login');
+  assert.equal(f.api.submit().kind,'submitted'); assert.equal(f.state.posted,1);
+}));
+test('root-relative compatibility does not permit foreign targets or explicit VPN portal forms',()=>{
+  for(const getter of ['https://attacker.example/tpass/login','http://sso.cppu.edu.cn/tpass/login']) use({proxy:true,action:'/tpass/login'},f=>{
+    Object.defineProperty(f.w.document.querySelector('form'),'action',{get:()=>getter});
+    assert.equal(f.api.prepare(f.credentials).kind,'stopped');
+    assert.equal(f.user.value,''); assert.equal(f.pass.value,''); assert.equal(f.state.posted,0);
+  });
+  use({proxy:true,action:'https://webvpn.cppu.edu.cn/tpass/login'},f=>{
+    assert.equal(f.api.prepare(f.credentials).kind,'stopped'); assert.equal(f.user.value,''); assert.equal(f.pass.value,'');
+  });
+});
 test('wrong origin/action never receives credentials',()=>{
   for(const options of [{url:'https://attacker.example/tpass/login'},{action:'https://attacker.example/login'},{url:'http://sso.cppu.edu.cn/tpass/login'},{proxy:true,action:'/other'}])use(options,f=>{
     assert.equal(f.api.prepare(f.credentials).kind,'stopped');assert.equal(f.user.value,'');assert.equal(f.pass.value,'');assert.equal(f.state.posted,0);

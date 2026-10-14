@@ -18,8 +18,22 @@
       return (url.origin === page.origin && url.pathname === prefix + '/tpass/login') ||
         (prefix && url.origin === 'https://sso.cppu.edu.cn' && url.pathname === '/tpass/login');
     }
-    if (form.method.toLowerCase() !== 'post' || (form.target && form.target !== '_self') ||
-        !matches(form.action) || !matches(form.getAttribute('action'))) return null;
+    if (form.method.toLowerCase() !== 'post' || (form.target && form.target !== '_self')) return null;
+    let raw = form.getAttribute('action') || '';
+    const resolveAttribute = text => new URL(text || location.href,
+      prefix && /^\/tpass\//.test(text.trim()) ? 'https://sso.cppu.edu.cn/tpass/login' : location.href);
+    let attribute = resolveAttribute(raw);
+    if (!matches(attribute.href)) return null;
+    if (!matches(form.action)) {
+      const action = new URL(form.action, location.href);
+      if (!prefix || !/^\/(?!\/)/.test(raw.trim()) || action.origin !== page.origin ||
+          action.pathname !== '/tpass/login' || action.username || action.password || action.port || action.hash) return null;
+      // Normalize the school's known relative target before writing either credential.
+      form.setAttribute('action', prefix + attribute.pathname + attribute.search);
+      raw = form.getAttribute('action') || '';
+      attribute = resolveAttribute(raw);
+      if (!matches(form.action) || !matches(attribute.href)) return null;
+    }
     const user = form.querySelectorAll('#username'), password = form.querySelectorAll('#password');
     const button = form.querySelectorAll('#passbutton'), captcha = form.querySelectorAll('#authcode');
     if (user.length !== 1 || password.length !== 1 || button.length !== 1 || captcha.length !== 1 ||
