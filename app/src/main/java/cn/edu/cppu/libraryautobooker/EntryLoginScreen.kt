@@ -128,6 +128,9 @@ fun EntryLoginScreen(
                     schoolLogin.launch(Intent(context, LoginActivity::class.java).putExtra("webvpn", true))
                 }, enabled = !busy) { Text("WebVPN 统一认证 / 图书馆网页登录") }
                 LoginStatusCard(rememberLoginStatuses())
+                TextButton(onClick = {
+                    context.startActivity(Intent(context, OcrTrialActivity::class.java))
+                }, enabled = !busy) { Text("本地验证码 OCR 试验") }
             }
         }
         return
@@ -231,8 +234,10 @@ fun EntryLoginScreen(
                 SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}
                 SessionChecker.probe(app, LibraryRoute.WEBVPN, updateSession = false) {}
             })
+            TextButton(onClick = {
+                context.startActivity(Intent(context, OcrTrialActivity::class.java))
+            }, enabled = !busy) { Text("本地验证码 OCR 试验") }
             Text("直连图书馆使用 HTTP，请仅在可信校园网络中登录；WebVPN 使用 HTTPS。", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
-

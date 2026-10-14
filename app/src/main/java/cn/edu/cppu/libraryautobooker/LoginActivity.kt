@@ -2,6 +2,7 @@ package cn.edu.cppu.libraryautobooker
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
@@ -35,6 +36,10 @@ class LoginActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ))
+        if (route == LibraryRoute.WEBVPN) container.addView(Button(this).apply {
+            text = "本地验证码 OCR 试验（导入图片）"
+            setOnClickListener { startActivity(Intent(this@LoginActivity, OcrTrialActivity::class.java)) }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -89,4 +94,3 @@ class LoginActivity : Activity() {
         super.onDestroy()
     }
 }
-

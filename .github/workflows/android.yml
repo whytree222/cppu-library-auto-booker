@@ -25,6 +25,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare verified offline OCR model
+        run: python scripts/prepare_ocr.py
+      - name: Verify offline model contract (synthetic input only)
+        run: |
+          python -m pip install 'onnxruntime==1.24.3'
+          python scripts/verify_ocr_model.py
       - name: Install Android SDK
         run: |
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' | sort -V | tail -1)
@@ -51,9 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.11.1 >/dev/null 2>&1; then
-            gh release upload v0.11.1 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.12.0 >/dev/null 2>&1; then
+            gh release upload v0.12.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.11.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.11.1' --notes '分别显示直连图书馆、WebVPN统一认证、WebVPN图书馆登录状态及检查时间；无法验证不误报过期。登录和连接操作集中在蓝色登录区，权限与后台设置集中在紫色权限区，状态颜色和文字标签区分；详情可展开。安全备用切换和定时规则保持不变。'
+            gh release create v0.12.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.12.0 · 本地 OCR 试验' --notes '新增 ddddocr 本机四位数字图片识别试验：相册导入、预览、识别、手动核对与主动复制；不上传图片、不记录识别内容、退出不保存。模型固定版本并校验完整性，随 APK 打包。可从登录页及登录操作区进入。试验版尚未自动读取或填写统一认证验证码，也未改变后台登录和预约规则。'
           fi
-

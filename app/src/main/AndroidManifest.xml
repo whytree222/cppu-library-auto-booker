@@ -21,6 +21,9 @@
             android:name=".LoginActivity"
             android:exported="false" />
         <activity
+            android:name=".OcrTrialActivity"
+            android:exported="false" />
+        <activity
             android:name=".SeatPickerActivity"
             android:exported="false" />
         <activity
