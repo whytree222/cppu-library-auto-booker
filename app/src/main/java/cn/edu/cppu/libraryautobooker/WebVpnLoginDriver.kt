@@ -41,6 +41,7 @@ class WebVpnLoginDriver internal constructor(
     private var loading = false
     private var prepared = false
     private var ssoSubmitted = false
+    private var ssoConfirmed = false
     private var librarySubmitted = false
     private var ssoVersion = ""
     private var libraryVersion = ""
@@ -52,7 +53,10 @@ class WebVpnLoginDriver internal constructor(
     private val captcha = WebVpnCaptchaController(app, view, onFilled = { submitSso() }, onStopped = {
         captchaFailure = it
         if (prepared && !ssoSubmitted && !stopped) fail(it, "vpn_login_required", "expired")
-    }) { if (!closed && (!stopped || CaptchaPagePolicy.isTrusted(view.url))) onStatus(it) }
+    }) {
+        if (!closed && (!stopped || CaptchaPagePolicy.isTrusted(view.url)))
+            onStatus(if (stopped) "$it；自动登录已停止，可手动继续或检查两套账号设置" else it)
+    }
 
     init {
         captcha.setEnabled(ocrEnabled)
@@ -164,7 +168,10 @@ class WebVpnLoginDriver internal constructor(
         probe { result ->
             if (!live(id)) return@probe
             probing = false
-            if (result.vpnAuthState == "valid" && ssoSubmitted && sso.revision == ssoVersion && sso.enabled) sso.markVerified()
+            if (result.vpnAuthState == "valid" && ssoSubmitted) {
+                ssoConfirmed = true
+                if (sso.revision == ssoVersion && sso.enabled) sso.markVerified()
+            }
             when {
                 result.state == "valid" -> {
                     if (librarySubmitted && library.revision == libraryVersion && library.enabled) library.markVerified()
@@ -255,8 +262,8 @@ class WebVpnLoginDriver internal constructor(
         if (closed) return
         // Cancelling after a POST cannot establish its outcome. Require explicit user retry.
         if (!stopped) {
-            if (librarySubmitted && library.revision == libraryVersion && !library.verified) library.pause()
-            if (ssoSubmitted && sso.revision == ssoVersion && !sso.verified) sso.pause()
+            if (librarySubmitted && library.revision == libraryVersion) library.pause()
+            if (ssoSubmitted && !ssoConfirmed && sso.revision == ssoVersion) sso.pause()
         }
         if (CaptchaPagePolicy.isTrusted(view.url))
             runCatching { view.evaluateJavascript("window.SchoolSsoAutoLogin?.cancel()", null) }

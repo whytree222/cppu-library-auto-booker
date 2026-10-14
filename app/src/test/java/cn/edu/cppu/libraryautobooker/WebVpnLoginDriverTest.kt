@@ -339,6 +339,8 @@ class WebVpnLoginDriverTest {
     @Test fun closeAfterUnconfirmedSsoOrLibrarySubmissionPausesOnlyCorrespondingAccount() {
         repeat(2) { account ->
             Fixture().use { f ->
+                // A previous successful login must not masquerade as this POST's outcome.
+                if (account == 0) f.sso.markVerified() else f.library.markVerified()
                 if (account == 0) {
                     f.start(SSO_URL)
                     f.prepareSso()
