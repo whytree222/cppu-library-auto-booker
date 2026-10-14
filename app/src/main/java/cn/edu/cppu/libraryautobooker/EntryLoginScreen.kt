@@ -128,6 +128,9 @@ fun EntryLoginScreen(
                     schoolLogin.launch(Intent(context, LoginActivity::class.java).putExtra("webvpn", true))
                 }, enabled = !busy) { Text("WebVPN 统一认证 / 图书馆网页登录") }
                 LoginStatusCard(rememberLoginStatuses())
+                TextButton(onClick = { context.startActivity(Intent(context, WebVpnAccountsActivity::class.java)) }, enabled = !busy) {
+                    Text("WebVPN 两套账号与自动登录")
+                }
                 TextButton(onClick = {
                     context.startActivity(Intent(context, OcrTrialActivity::class.java))
                 }, enabled = !busy) { Text("本地验证码 OCR 试验") }
@@ -234,6 +237,9 @@ fun EntryLoginScreen(
                 SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}
                 SessionChecker.probe(app, LibraryRoute.WEBVPN, updateSession = false) {}
             })
+            TextButton(onClick = { context.startActivity(Intent(context, WebVpnAccountsActivity::class.java)) }, enabled = !busy) {
+                Text("WebVPN 两套账号与自动登录")
+            }
             TextButton(onClick = {
                 context.startActivity(Intent(context, OcrTrialActivity::class.java))
             }, enabled = !busy) { Text("本地验证码 OCR 试验") }

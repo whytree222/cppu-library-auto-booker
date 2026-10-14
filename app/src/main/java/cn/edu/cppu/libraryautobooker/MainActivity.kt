@@ -201,6 +201,7 @@ class MainActivity : ComponentActivity() {
                             OutlinedButton(onClick = { managingLogin = true; loginEntryVisible = true }) { Text("登录 / 管理账号") }
                             OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java)) }) { Text("直连 · 图书馆网页登录") }
                             OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java).putExtra("webvpn", true)) }) { Text("WebVPN 统一认证 / 图书馆网页登录") }
+                            OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, WebVpnAccountsActivity::class.java)) }) { Text("WebVPN 两套账号与自动登录") }
                             OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, OcrTrialActivity::class.java)) }) { Text("本地验证码 OCR 试验") }
                             SettingSwitch(
                                 title = "直连优先，WebVPN 自动备用",

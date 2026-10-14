@@ -15,6 +15,7 @@ import java.net.SocketTimeoutException
 import java.net.NoRouteToHostException
 import java.net.SocketException
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
+import cn.edu.cppu.libraryautobooker.ocr.CaptchaPagePolicy
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -101,6 +102,8 @@ object SessionChecker {
             if (route.pathOf(destination)?.trimEnd('/') == "/login")
                 return Result("expired", "WebVPN 通道的图书馆登录已过期或未登录", vpnAuthState = "valid")
             val uri = runCatching { java.net.URI(destination) }.getOrNull()
+            if (CaptchaPagePolicy.isTrusted(destination))
+                return Result("vpn_login_required", "学校要求重新进行统一认证，可使用独立保存的 WebVPN 账号恢复", vpnAuthState = "expired")
             if (uri?.scheme == "https" && uri.userInfo == null &&
                 uri.host == "webvpn.cppu.edu.cn" && uri.path.orEmpty().trimEnd('/') == "/login")
                 return Result("vpn_login_required", "WebVPN 要求重新统一认证，请打开网页登录完成认证（可本机识别验证码）", vpnAuthState = "expired")
@@ -113,7 +116,7 @@ object SessionChecker {
                 return Result("expired", "已到达图书馆登录页面，需要重新登录图书馆", vpnAuthState = "valid")
             if (Regex("<input[^>]+type=[\"']password[\"']", RegexOption.IGNORE_CASE).containsMatchIn(body) &&
                 Regex("统一(?:身份)?认证|WebVPN", RegexOption.IGNORE_CASE).containsMatchIn(body))
-                return Result("vpn_login_required", "学校返回 WebVPN 认证页面，请手动完成认证", vpnAuthState = "expired")
+                return Result("vpn_login_required", "学校返回 WebVPN 认证页面，需要完成统一认证", vpnAuthState = "expired")
         }
         val decoded = decode(code, location, body)
         return Result(decoded.first, "${route.label}：${decoded.second}", code in listOf(408, 502, 503, 504),

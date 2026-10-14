@@ -43,9 +43,9 @@ class LoginActivityOcrUiTest {
             assertTrue("重新识别当前验证码" in labels)
             assertTrue("本地验证码 OCR 试验（导入图片）" in labels)
             assertTrue("返回应用" in labels)
-            assertTrue(views.filterIsInstance<TextView>().any {
-                it.text.contains("不自动提交登录") && it.text.contains("不保存统一认证账号或密码")
-            })
+            assertTrue("两套账号设置" in labels)
+            assertTrue("更多操作" in labels)
+            assertTrue(views.filterIsInstance<TextView>().any { it.text.contains("仅本机加密保存") })
             checkbox.isChecked = false
             assertFalse(preferences.getBoolean("enabled", true))
         } finally {

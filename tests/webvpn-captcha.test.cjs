@@ -18,7 +18,7 @@ function fixture(options = {}) {
   w.HTMLElement.prototype.getClientRects = function () { return [{width: 120, height: 50}]; };
   Object.defineProperties(image, {
     complete: {get: () => state.complete}, naturalWidth: {get: () => state.width}, naturalHeight: {get: () => state.height},
-    currentSrc: {get: () => options.currentSrc || image.src}
+    currentSrc: {get: () => options.currentSrc || image.src, configurable:true}
   });
   w.HTMLCanvasElement.prototype.getContext = () => ({drawImage: img => {assert.equal(img, image); state.draws++;}});
   w.HTMLCanvasElement.prototype.toDataURL = () => options.dataUrl || 'data:image/png;base64,' + Buffer.from(state.pixels).toString('base64');
@@ -70,7 +70,6 @@ for (const [name, options, code] of [
   ['data image', {src: 'data:image/png;base64,abcd'}, 'unsupported-image'],
   ['unsupported current source', {currentSrc: 'https://attacker.example/tpass/captcha.jpg'}, 'unsupported-image'],
   ['duplicate form', {extra: '<form id="fm1"></form>'}, 'unsupported-structure'],
-  ['duplicate CAPTCHA', {extra: '<img class="codeImg" src="/tpass/captcha.jpg">'}, 'unsupported-structure'],
   ['duplicate input', {extra: '<input id="authcode" name="authcode">'}, 'unsupported-structure'],
   ['duplicate input with other name', {extra: '<input id="authcode" name="other">'}, 'unsupported-structure'],
   ['duplicate username', {extra: '<input id="username">'}, 'unsupported-structure'],
@@ -78,6 +77,17 @@ for (const [name, options, code] of [
 ]) test(`fail closed: ${name}`, () => using(options, f => {
   assert.deepEqual(plain(f.api.snapshot()), {kind: 'stopped', detailCode: code});
   assert.equal(f.state.draws, 0); assert.equal(f.state.requests, 0); assert.equal(f.state.submits, 0);
+}));
+
+test('unrelated image outside the password form does not prevent a unique CAPTCHA match',()=>using({extra:'<img class="codeImg" src="/tpass/captcha.jpg">'},f=>{
+  assert.equal(f.api.snapshot().kind,'ready');
+  const duplicate=f.image.cloneNode();f.w.document.querySelector('form').appendChild(duplicate);
+  assert.equal(f.api.snapshot().detailCode,'unsupported-structure');
+}));
+test('proxy DOM getters may expose only the same original SSO action/image target',()=>using({url:'https://webvpn.cppu.edu.cn'+proxy+'/tpass/login'},f=>{
+  Object.defineProperty(f.w.document.querySelector('form'),'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
+  Object.defineProperty(f.image,'currentSrc',{get:()=> 'https://sso.cppu.edu.cn/tpass/captcha.jpg?cache=test'});
+  assert.equal(f.api.snapshot().kind,'ready');
 }));
 
 test('proxy root CAPTCHA or form cannot escape the verified SSO proxy prefix', () => {

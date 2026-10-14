@@ -12,12 +12,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Foreground-only CAPTCHA reading/filling. No password access, JS bridge, network client,
+ * CAPTCHA reading/filling during an active foreground page or opted-in login run.
+ * No password access, JS bridge, network client,
  * login submission, server challenge refresh, persistent images or diagnostic logging.
  */
 class WebVpnCaptchaController(
     context: Context,
     private val webView: WebView,
+    private val onFilled: () -> Unit = {},
+    private val onStopped: (String) -> Unit = {},
     private val onStatus: (String) -> Unit
 ) : AutoCloseable {
     private val app = context.applicationContext
@@ -53,7 +56,7 @@ class WebVpnCaptchaController(
         pageUrl = url
         budget = CaptchaAttemptBudget(SystemClock.elapsedRealtime())
         status(if (enabled && CaptchaPagePolicy.isTrusted(url)) "统一认证页面正在加载验证码…"
-            else if (enabled) "等待学校统一认证验证码页面；不会自动提交登录"
+            else if (enabled) "等待学校统一认证验证码页面"
             else "自动识别已关闭，可手动输入验证码")
     }
 
@@ -134,11 +137,11 @@ class WebVpnCaptchaController(
             pending = false
             when (result.optString("kind")) {
                 "ready" -> recognize(result, token)
-                "filled" -> { status("验证码已自动填写，请核对并使用学校登录按钮"); schedule() }
+                "filled" -> { status("验证码已自动填写"); onFilled(); schedule() }
                 "waiting" -> { status("等待当前页面的验证码图片加载；不会额外刷新图片"); schedule() }
                 "unavailable" -> stop("当前网页验证码图片无法安全读取，自动识别已停止；请手动输入")
                 "manual" -> stop("检测到手动输入，自动填写已停止；不会覆盖你的内容")
-                else -> stop("验证码页面不符合识别规则或图片无法读取，请手动输入")
+                else -> stop("验证码定位失败：${explain(result.optString("detailCode"))}；请手动输入")
             }
         }
     }
@@ -204,7 +207,7 @@ class WebVpnCaptchaController(
         evaluate("JSON.stringify(window.LibraryCaptchaOcr?.fill($ticketJson,$textJson) || {kind:'stopped'})", token) { result ->
             pending = false
             when (result.optString("kind")) {
-                "filled" -> { status("验证码已自动填写，请核对并使用学校登录按钮"); schedule() }
+                "filled" -> { status("验证码已自动填写"); onFilled(); schedule() }
                 "stale", "waiting" -> { status("验证码已变化，旧识别结果已丢弃；检查当前图片…"); schedule() }
                 "manual" -> stop("你已手动输入，识别结果已丢弃；不会覆盖你的内容")
                 else -> if (result.optString("detailCode") == "image-changed") {
@@ -244,6 +247,18 @@ class WebVpnCaptchaController(
         pending = false
         handler.removeCallbacks(poll)
         status(message)
+        onStopped(message)
+    }
+
+    private fun explain(code: String): String = when (code) {
+        "unsupported-page" -> "当前不是已适配的统一认证地址"
+        "unsupported-structure" -> "密码登录表单或验证码元素不唯一/尚未就绪"
+        "wrong-action" -> "登录表单的代理目标尚未匹配"
+        "unsupported-image" -> "验证码图片的代理路径尚未匹配"
+        "image-too-large" -> "验证码图片尺寸超出限制"
+        "invalid-image-data" -> "图片数据不符合规则"
+        "document-changed" -> "网页已切换"
+        else -> "网页没有返回可安全识别的验证码"
     }
 
     private fun status(message: String) { if (!closed.get()) onStatus(message) }

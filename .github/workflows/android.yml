@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.12.1 >/dev/null 2>&1; then
-            gh release upload v0.12.1 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.0 >/dev/null 2>&1; then
+            gh release upload v0.13.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.12.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.12.1 · WebVPN 验证码自动填写' --notes '适配学校统一认证真实页面，在 WebVPN 登录前台自动读取当前已加载的验证码，用本机 ddddocr 识别并填写；不再需要截图导入。默认启用，可关闭或主动重新识别。保护手动输入、页面跳转及图片变化后的旧结果，识别失败停止；不上传图片，不请求新验证码，不保存统一认证账号密码，不自动点击登录。账号密码和登录按钮仍由用户在学校页面操作；后台统一认证无人值守重登尚未实现。原有预约及安全备用切换规则不变。'
+            gh release create v0.13.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.0 · WebVPN 两步自动登录' --notes '新增独立的统一认证、WebVPN 内图书馆两套账号设置；用户明确开启后分别本机加密保存。修复验证码原始地址和代理地址混用时的定位，使用本机 ddddocr 读取当前图片并通过学校原登录按钮提交，保留学校密码加密流程；认证后再用第二套账号登录图书馆。两层分别校验，不以已填验证码当作成功；失败或提交结果不明停止并暂停对应账号，避免连续登录。登录页顶部精简并避让系统状态栏。仅在提交预约前按既有直连网络故障规则使用 WebVPN，业务拒绝不切换，提交后不明不重发。请先在前台设置两套账号并实测；未使用真实账号代测，不保证验证码准确率或手机整夜后台运行。'
           fi

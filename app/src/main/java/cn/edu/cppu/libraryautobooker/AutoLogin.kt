@@ -128,30 +128,78 @@ object AutoLogin {
 }
 
 object SessionCoordinator {
-    fun check(context: Context, callback: (Boolean, String) -> Unit = { _, _ -> }) {
-        checkPreferred(context) { result -> callback(result.state == "valid", result.detail) }
+    fun check(context: Context, callback: (Boolean, String) -> Unit = { _, _ -> }): AutoCloseable {
+        return checkPreferred(context) { result -> callback(result.state == "valid", result.detail) }
     }
 
-    private fun checkPreferred(context: Context, callback: (SessionChecker.Result) -> Unit) {
-        checkRoute(context, LibraryRoute.DIRECT) { result ->
+    private fun checkPreferred(context: Context, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
+        val request = CheckRequest()
+        request.attach(checkRoute(context, LibraryRoute.DIRECT) { result ->
+            if (!request.active) return@checkRoute
             if (result.networkFailure && ConfigStore(context).load().webVpnBackup) {
-                checkRoute(context, LibraryRoute.WEBVPN, callback)
-            } else callback(result)
-        }
+                request.attach(checkRoute(context, LibraryRoute.WEBVPN) { recovered ->
+                    request.deliver { callback(recovered) }
+                })
+            } else request.deliver { callback(result) }
+        })
+        return request
     }
 
-    fun checkState(context: Context, callback: (String) -> Unit) {
-        checkPreferred(context) { callback(it.state) }
+    fun checkState(context: Context, callback: (String) -> Unit): AutoCloseable {
+        return checkPreferred(context) { callback(it.state) }
     }
 
-    fun checkRoute(context: Context, route: LibraryRoute, callback: (SessionChecker.Result) -> Unit) {
+    fun checkRoute(context: Context, route: LibraryRoute, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
+        val request = CheckRequest()
         SessionChecker.probe(context, route) { result ->
+            // The read-only probe may already be in flight. Cancellation still prevents it
+            // from starting a credential-bearing login or waking a stopped reservation task.
+            if (!request.active) return@probe
             if (route == LibraryRoute.DIRECT && result.state == "expired" && CredentialStore(context).enabled) {
                 AutoLogin.login(context) { valid, detail ->
-                    callback(SessionChecker.Result(if (valid) "valid" else RuntimeStore(context).prefs.getString("session_state", "unknown").orEmpty(), detail))
+                    request.deliver {
+                        callback(SessionChecker.Result(if (valid) "valid" else RuntimeStore(context).prefs.getString("session_state", "unknown").orEmpty(), detail))
+                    }
                 }
-            } else callback(result)
+            } else if (route == LibraryRoute.WEBVPN && WebVpnAutoLogin.canRecover(context, result)) {
+                request.attach(WebVpnAutoLogin.ensure(context) { recovered ->
+                    request.deliver { callback(recovered) }
+                })
+            } else request.deliver { callback(result) }
+        }
+        return request
+    }
+
+    /** Main-thread ownership of an asynchronous probe and its optional shared recovery. */
+    internal class CheckRequest : AutoCloseable {
+        private var closed = false
+        private var completed = false
+        private var child: AutoCloseable? = null
+        val active get() = !closed && !completed
+
+        fun attach(value: AutoCloseable) {
+            if (!active) value.close()
+            else {
+                child?.close()
+                child = value
+            }
+        }
+
+        fun deliver(action: () -> Unit) {
+            if (!active) return
+            completed = true
+            val previous = child
+            child = null
+            previous?.close()
+            action()
+        }
+
+        override fun close() {
+            if (closed) return
+            closed = true
+            val previous = child
+            child = null
+            previous?.close()
         }
     }
 }
-

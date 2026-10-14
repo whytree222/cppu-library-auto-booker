@@ -61,6 +61,14 @@ class WebVpnTest {
         assertEquals("expired", SessionChecker.decodeRoute(vpn, 302, vpn.prefix + "/login", "").state)
         assertEquals("valid", SessionChecker.decodeRoute(vpn, 200, null, "{\"ReturnValue\":1}").state)
     }
+    @Test fun exactSchoolSsoRedirectIsRecognizedButLookalikeIsNot() {
+        listOf("https://sso.cppu.edu.cn/tpass/login", "https://webvpn.cppu.edu.cn${cn.edu.cppu.libraryautobooker.ocr.CaptchaPagePolicy.SSO_PROXY_PREFIX}/tpass/login").forEach {
+            val result = SessionChecker.decodeRoute(vpn, 302, it, "")
+            assertEquals("vpn_login_required", result.state)
+            assertEquals("expired", result.vpnAuthState)
+        }
+        assertEquals("unknown", SessionChecker.decodeRoute(vpn, 302, "https://sso.cppu.edu.cn.attacker.example/tpass/login", "").state)
+    }
     @Test fun webViewCookiesRemainInTheirOwnHostScope() {
         val manager = CookieManager.getInstance()
         manager.setCookie(LibraryRoute.DIRECT.url("/login"), "direct_session=fictional-direct; Path=/")
@@ -71,4 +79,3 @@ class WebVpnTest {
         assertFalse(manager.getCookie(LibraryRoute.DIRECT.url("/isLogin")).orEmpty().contains("fictional-vpn"))
     }
 }
-

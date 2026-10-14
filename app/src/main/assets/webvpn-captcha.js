@@ -13,6 +13,13 @@
   let nonceCount = 0;
 
   const result = (kind, detailCode) => detailCode ? {kind, detailCode} : {kind};
+  // WebVPN may expose original upstream URLs through patched DOM property getters.
+  // Both representations must resolve to the SAME known SSO resource, never another host.
+  function target(url, route, path) {
+    if (url.username || url.password || url.port || url.hash) return false;
+    return (url.origin === route.origin && url.pathname === route.prefix + path) ||
+      (route.prefix === proxyPrefix && url.origin === 'https://sso.cppu.edu.cn' && url.pathname === path);
+  }
   function resourceFor(url) {
     if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
     if (url.hostname === 'sso.cppu.edu.cn') return {origin: url.origin, prefix: ''};
@@ -43,12 +50,14 @@
       return {error: result('stopped', 'unsupported-page')};
     }
     const forms = document.querySelectorAll('#fm1');
-    const inputs = document.querySelectorAll('#authcode');
-    const images = document.querySelectorAll('img.codeImg');
-    const users = document.querySelectorAll('#username');
-    const passwords = document.querySelectorAll('#password');
-    if (forms.length !== 1 || forms[0].tagName !== 'FORM' || inputs.length !== 1 || images.length !== 1 ||
-        users.length !== 1 || passwords.length !== 1) return {error: result('stopped', 'unsupported-structure')};
+    if (forms.length !== 1 || forms[0].tagName !== 'FORM') return {error: result('stopped', 'unsupported-structure')};
+    const inputs = forms[0].querySelectorAll('#authcode');
+    const images = forms[0].querySelectorAll('img.codeImg');
+    const users = forms[0].querySelectorAll('#username');
+    const passwords = forms[0].querySelectorAll('#password');
+    if (inputs.length !== 1 || images.length !== 1 || users.length !== 1 || passwords.length !== 1 ||
+        document.querySelectorAll('#authcode').length !== 1 || document.querySelectorAll('#username').length !== 1 ||
+        document.querySelectorAll('#password').length !== 1) return {error: result('stopped', 'unsupported-structure')};
     const form = forms[0], input = inputs[0], image = images[0];
     if (input.tagName !== 'INPUT' || input.name !== 'authcode' || users[0].tagName !== 'INPUT' || passwords[0].tagName !== 'INPUT' ||
         !form.contains(input) || !form.contains(image) || !form.contains(users[0]) || !form.contains(passwords[0]) ||
@@ -56,19 +65,17 @@
         form.method.toLowerCase() !== 'post') return {error: result('stopped', 'unsupported-structure')};
     try {
       const action = new URL(form.action, location.href);
-      if (action.origin !== route.origin || action.username || action.password ||
-          action.pathname !== route.prefix + '/tpass/login') return {error: result('stopped', 'wrong-action')};
+      const actionAttribute = new URL(form.getAttribute('action') || location.href, location.href);
+      if (!target(action, route, '/tpass/login') || !target(actionAttribute, route, '/tpass/login'))
+        return {error: result('stopped', 'wrong-action')};
       const source = new URL(image.getAttribute('src') || '', location.href);
       const currentSource = new URL(image.currentSrc || image.src, location.href);
       if (!image.getAttribute('src') || image.getAttribute('srcset') ||
-          source.origin !== route.origin || currentSource.origin !== route.origin ||
-          source.username || source.password || currentSource.username || currentSource.password ||
-          source.pathname !== route.prefix + '/tpass/captcha.jpg' ||
-          currentSource.pathname !== route.prefix + '/tpass/captcha.jpg') {
+          !target(source, route, '/tpass/captcha.jpg') || !target(currentSource, route, '/tpass/captcha.jpg')) {
         return {error: result('stopped', 'unsupported-image')};
       }
       if (!visible(input) || !visible(image)) return {error: result('waiting', 'not-visible')};
-      return {form, input, image, pageHref: current.href, actionHref: action.href,
+      return {form, input, image, pageHref: current.href, actionHref: action.href, actionAttribute: actionAttribute.href,
         source: source.href, currentSource: currentSource.href};
     } catch (_) { return {error: result('stopped', 'unsupported-structure')}; }
   }
@@ -126,6 +133,7 @@
     // The hash is for the native attempt counter only; filling requires exact pixels.
     return left && right && left.form === right.form && left.input === right.input && left.image === right.image &&
       left.pageHref === right.pageHref && left.actionHref === right.actionHref &&
+      left.actionAttribute === right.actionAttribute &&
       left.source === right.source && left.currentSource === right.currentSource &&
       left.width === right.width && left.height === right.height && left.data === right.data;
   }
