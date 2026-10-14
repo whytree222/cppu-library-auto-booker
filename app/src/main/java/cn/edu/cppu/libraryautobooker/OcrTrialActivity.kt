@@ -10,7 +10,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -76,7 +75,6 @@ class OcrTrialActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Imported authentication images and recognized text stay in memory only.
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setResult(RESULT_CANCELED)
         setContent {
             MaterialTheme {

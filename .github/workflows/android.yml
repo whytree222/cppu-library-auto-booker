@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.0 >/dev/null 2>&1; then
-            gh release upload v0.13.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.1 >/dev/null 2>&1; then
+            gh release upload v0.13.1 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.0 · WebVPN 两步自动登录' --notes '新增独立的统一认证、WebVPN 内图书馆两套账号设置；用户明确开启后分别本机加密保存。修复验证码原始地址和代理地址混用时的定位，使用本机 ddddocr 读取当前图片并通过学校原登录按钮提交，保留学校密码加密流程；认证后再用第二套账号登录图书馆。两层分别校验，不以已填验证码当作成功；失败或提交结果不明停止并暂停对应账号，避免连续登录。登录页顶部精简并避让系统状态栏。仅在提交预约前按既有直连网络故障规则使用 WebVPN，业务拒绝不切换，提交后不明不重发。请先在前台设置两套账号并实测；未使用真实账号代测，不保证验证码准确率或手机整夜后台运行。'
+            gh release create v0.13.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.1 · 恢复截屏' --notes '按用户要求撤掉应用添加的防截屏限制：直连/WebVPN 登录页、两套账号设置页和本机 OCR 试验页均可截屏，方便反馈登录报错。两步登录、账号加密保存与预约安全逻辑不变；本版本不宣称已修复尚未取得具体报错的登录问题。分享截图前请自行遮住账号、密码及登录凭据。'
           fi

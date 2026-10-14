@@ -39,7 +39,6 @@ class LoginActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         if (route == LibraryRoute.WEBVPN) WebVpnAutoLogin.cancel()
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         CookieManager.getInstance().setAcceptCookie(true)
