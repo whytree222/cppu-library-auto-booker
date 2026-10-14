@@ -112,7 +112,7 @@ test('equivalent original/proxy action representations retain the prepared accou
   Object.defineProperty(form,'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
   assert.equal(f.api.submit().kind,'submitted'); assert.equal(f.state.posted,1);
 }));
-test('real browser submit event follows CAPTCHA fill, five-day selection and school RSA validation exactly once',()=>use({proxy:true,remember:true},f=>{
+test('DOM submit event follows CAPTCHA fill, five-day selection and simulated school validation exactly once',()=>use({proxy:true,remember:true},f=>{
   const captchaScript=fs.readFileSync('app/src/main/assets/webvpn-captcha.js','utf8');
   delete f.w.LibraryCaptchaOcr;
   const form=f.w.document.querySelector('form'),image=f.w.document.createElement('img');
