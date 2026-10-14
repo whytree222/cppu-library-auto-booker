@@ -2,6 +2,7 @@ package cn.edu.cppu.libraryautobooker.booking
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Looper
 import android.view.WindowManager
 import cn.edu.cppu.libraryautobooker.LoginActivity
 import cn.edu.cppu.libraryautobooker.OcrTrialActivity
@@ -12,6 +13,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 
@@ -31,6 +33,8 @@ class ScreenshotPolicyTest {
             assertEquals(0, controller.get().window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE)
         } finally {
             controller.pause().stop().destroy()
+            // Drain lifecycle/recomposer cancellation before the next Compose test starts.
+            shadowOf(Looper.getMainLooper()).idle()
         }
     }
 }
