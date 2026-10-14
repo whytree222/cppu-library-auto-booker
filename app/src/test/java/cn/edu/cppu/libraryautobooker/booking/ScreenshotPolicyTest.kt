@@ -26,11 +26,11 @@ class ScreenshotPolicyTest {
 
     private fun <T : Activity> assertCaptureAllowed(type: Class<T>, webVpn: Boolean = false) {
         val app = RuntimeEnvironment.getApplication()
-        val controller = Robolectric.buildActivity(type, Intent(app, type).putExtra("webvpn", webVpn)).create()
+        val controller = Robolectric.buildActivity(type, Intent(app, type).putExtra("webvpn", webVpn)).setup()
         try {
             assertEquals(0, controller.get().window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE)
         } finally {
-            controller.destroy()
+            controller.pause().stop().destroy()
         }
     }
 }
