@@ -78,7 +78,7 @@ fun EntryLoginScreen(
             "valid" -> "当前登录仍有效，可以直接继续"
             "expired" -> if (RuntimeStore(app).prefs.getString("session_route", "DIRECT") == "WEBVPN")
                 "WebVPN 通道的图书馆登录过期，请使用下方 WebVPN 网页登录" else "请登录学校图书馆账号"
-            "vpn_login_required" -> "学校 WebVPN 统一认证已过期，请手动认证并输入验证码"
+            "vpn_login_required" -> "学校 WebVPN 需要重新认证，请打开网页登录；可本机识别并填写验证码"
             else -> "无法验证登录，可重新检查或使用下方 WebVPN 认证入口"
         }
     }

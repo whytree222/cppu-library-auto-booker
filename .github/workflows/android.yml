@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.12.0 >/dev/null 2>&1; then
-            gh release upload v0.12.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.12.1 >/dev/null 2>&1; then
+            gh release upload v0.12.1 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.12.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.12.0 · 本地 OCR 试验' --notes '新增 ddddocr 本机四位数字图片识别试验：相册导入、预览、识别、手动核对与主动复制；不上传图片、不记录识别内容、退出不保存。模型固定版本并校验完整性，随 APK 打包。可从登录页及登录操作区进入。试验版尚未自动读取或填写统一认证验证码，也未改变后台登录和预约规则。'
+            gh release create v0.12.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.12.1 · WebVPN 验证码自动填写' --notes '适配学校统一认证真实页面，在 WebVPN 登录前台自动读取当前已加载的验证码，用本机 ddddocr 识别并填写；不再需要截图导入。默认启用，可关闭或主动重新识别。保护手动输入、页面跳转及图片变化后的旧结果，识别失败停止；不上传图片，不请求新验证码，不保存统一认证账号密码，不自动点击登录。账号密码和登录按钮仍由用户在学校页面操作；后台统一认证无人值守重登尚未实现。原有预约及安全备用切换规则不变。'
           fi

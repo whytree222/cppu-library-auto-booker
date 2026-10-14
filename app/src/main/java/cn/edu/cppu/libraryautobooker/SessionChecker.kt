@@ -103,7 +103,7 @@ object SessionChecker {
             val uri = runCatching { java.net.URI(destination) }.getOrNull()
             if (uri?.scheme == "https" && uri.userInfo == null &&
                 uri.host == "webvpn.cppu.edu.cn" && uri.path.orEmpty().trimEnd('/') == "/login")
-                return Result("vpn_login_required", "WebVPN 要求重新统一认证，请手动登录并完成验证码", vpnAuthState = "expired")
+                return Result("vpn_login_required", "WebVPN 要求重新统一认证，请打开网页登录完成认证（可本机识别验证码）", vpnAuthState = "expired")
             return Result("unknown", "WebVPN 返回未识别的跳转，无法确认两层登录状态")
         }
         if (route == LibraryRoute.WEBVPN && code == 200) {
@@ -131,4 +131,3 @@ object SessionChecker {
         } catch (_: Exception) { "unknown" to "服务器返回格式不符，无法验证登录" }
     }
 }
-
