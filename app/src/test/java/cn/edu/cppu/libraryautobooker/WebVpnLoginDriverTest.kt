@@ -94,7 +94,7 @@ class WebVpnLoginDriverTest {
         fun completeCaptchaAndSubmitSso() {
             view.answerFirst({ it.contains("Object.defineProperty(window, 'LibraryCaptchaOcr'") }, "{\"kind\":\"installed\"}")
             shadowOf(Looper.getMainLooper()).idle()
-            view.answerFirst({ it.contains("window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
+            view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
             assertEquals(1, view.submissionCount())
             view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }, "{\"kind\":\"submitted\"}")
         }
@@ -154,7 +154,7 @@ class WebVpnLoginDriverTest {
             f.prepareSso()
             f.completeCaptchaAndSubmitSso()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
-            f.view.answerFirst({ it.contains("window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
             assertEquals(1, f.view.submissionCount())
             f.finish(SSO_PROXY_URL)
             assertEquals("vpn_login_required", f.results.single().state)
@@ -321,7 +321,7 @@ class WebVpnLoginDriverTest {
             f.start(SSO_URL)
             f.view.answerFirst({ it.contains("Object.defineProperty(window, 'LibraryCaptchaOcr'") }, "{\"kind\":\"installed\"}")
             shadowOf(Looper.getMainLooper()).idle()
-            f.view.answerFirst({ it.contains("window.LibraryCaptchaOcr?.snapshot()") },
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") },
                 "{\"kind\":\"stopped\",\"detailCode\":\"unsupported-image\"}")
             assertTrue(f.results.isEmpty())
             f.prepareSso()
