@@ -46,7 +46,7 @@ import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 @Composable
 fun EntryLoginScreen(
     autoEnterValid: Boolean = true,
-    sessionCheck: (Context, (String) -> Unit) -> Unit = { context, callback -> SessionChecker.checkDetailed(context, callback) },
+    sessionCheck: (Context, (String) -> Unit) -> Unit = { context, callback -> SessionCoordinator.checkState(context, callback) },
     onAuthenticated: () -> Unit
 ) {
     val context = LocalContext.current
@@ -75,8 +75,10 @@ fun EntryLoginScreen(
         gateOnly = autoEnterValid && state != "expired"
         detail = when (state) {
             "valid" -> "当前登录仍有效，可以直接继续"
-            "expired" -> "请登录学校图书馆账号"
-            else -> "无法验证登录，请检查校园网络后重试"
+            "expired" -> if (RuntimeStore(app).prefs.getString("session_route", "DIRECT") == "WEBVPN")
+                "WebVPN 通道的图书馆登录过期，请使用下方 WebVPN 网页登录" else "请登录学校图书馆账号"
+            "vpn_login_required" -> "学校 WebVPN 统一认证已过期，请手动认证并输入验证码"
+            else -> "无法验证登录，可重新检查或使用下方 WebVPN 认证入口"
         }
     }
     LaunchedEffect(checkAttempt) {
@@ -86,7 +88,8 @@ fun EntryLoginScreen(
             checked(if (valid) "valid" else RuntimeStore(app).prefs.getString("session_state", "unknown").orEmpty())
         }
         else sessionCheck(app) { state ->
-            if (active && state == "expired" && store.enabled && !store.paused) {
+            if (active && state == "expired" && store.enabled && !store.paused &&
+                RuntimeStore(app).prefs.getString("session_route", "DIRECT") != "WEBVPN") {
                 detail = "登录已过期，正在自动重新登录…"
                 AutoLogin.login(app) { valid, message ->
                     if (active) {
@@ -119,6 +122,10 @@ fun EntryLoginScreen(
                 if (busy) CircularProgressIndicator()
                 Text(detail)
                 if (!busy) Button(onClick = { checkAttempt++ }) { Text("重新检查") }
+                TextButton(onClick = {
+                    store.setEnabled(false)
+                    schoolLogin.launch(Intent(context, LoginActivity::class.java).putExtra("webvpn", true))
+                }, enabled = !busy) { Text("WebVPN 统一认证 / 图书馆网页登录") }
             }
         }
         return
@@ -209,6 +216,10 @@ fun EntryLoginScreen(
                 store.setPreference(autoRelogin)
                 schoolLogin.launch(Intent(context, LoginActivity::class.java))
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("使用学校网页登录") }
+            TextButton(onClick = {
+                password = ""; store.setEnabled(false)
+                schoolLogin.launch(Intent(context, LoginActivity::class.java).putExtra("webvpn", true))
+            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 统一认证 / 图书馆网页登录") }
             if (store.configured) TextButton(onClick = {
                 runCatching { store.clear(); store.setPreference(autoRelogin) }.onSuccess {
                     username = ""; password = ""; detail = "已删除保存的账号密码，当前网页会话不受影响"
@@ -218,3 +229,4 @@ fun EntryLoginScreen(
         }
     }
 }
+

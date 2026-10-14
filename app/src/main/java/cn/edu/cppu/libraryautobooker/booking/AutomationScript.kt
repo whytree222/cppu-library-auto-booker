@@ -4,8 +4,12 @@ import cn.edu.cppu.libraryautobooker.data.BookingConfig
 import cn.edu.cppu.libraryautobooker.data.SeatCatalog
 import org.json.JSONArray
 import org.json.JSONObject
+import cn.edu.cppu.libraryautobooker.network.LibraryRoute
+import android.content.Context
 
 object AutomationScript {
+    fun transport(context: Context, route: LibraryRoute): String = context.assets.open("transport.js").bufferedReader().use { it.readText() }
+        .replace("__TRANSPORT_CONFIG__", JSONObject().put("origin", route.origin).put("prefix", route.prefix).toString())
     fun build(template: String, config: BookingConfig, targetDate: String? = null): String {
         val json = JSONObject().apply {
             put("dryRun", config.dryRun)

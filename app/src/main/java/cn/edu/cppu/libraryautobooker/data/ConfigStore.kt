@@ -26,7 +26,8 @@ class ConfigStore(context: Context) {
         scheduledAtMillis = prefs.getLong("scheduled_at", 0L),
         releaseTimes = readLongs("release_times").filter { it in 0..1439 }.map { it.toInt() },
         scheduledTimes = readLongs("scheduled_times").filter { it > 0 },
-        waitForRelease = prefs.getBoolean("wait_for_release", false)
+        waitForRelease = prefs.getBoolean("wait_for_release", false),
+        webVpnBackup = prefs.getBoolean("webvpn_backup", true)
     )
 
     fun save(config: BookingConfig) {
@@ -34,6 +35,7 @@ class ConfigStore(context: Context) {
             .putBoolean("enabled", config.enabled)
             .putBoolean("dry_run", config.dryRun)
             .putBoolean("wait_for_release", config.waitForRelease)
+            .putBoolean("webvpn_backup", config.webVpnBackup)
             .putBoolean("reserve_tomorrow", config.reserveTomorrow)
             .putInt("release_hour", config.releaseHour)
             .putInt("release_minute", config.releaseMinute)

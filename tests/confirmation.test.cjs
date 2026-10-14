@@ -24,7 +24,8 @@ function fixture(options = {}) {
       <button class="ui positive button">确认</button><button>取消</button></div></div></div>
     <div id="result" class="alertify ajs-hidden"><div class="ajs-dialog">
       <div class="ajs-content"></div><div class="ajs-footer"><button>确认</button></div></div></div>
-    </body>`, { url: 'http://mlib.cppu.edu.cn/multireadingroomtablelist', runScripts: 'outside-only' });
+    </body>`, { url: options.proxy ? 'https://webvpn.cppu.edu.cn/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b/multireadingroomtablelist'
+      : 'http://mlib.cppu.edu.cn/multireadingroomtablelist', runScripts: 'outside-only' });
   const w = dom.window;
   const d = w.document;
   const messages = [];
@@ -45,6 +46,10 @@ function fixture(options = {}) {
     return [{ width: 25, height: 25 }];
   };
   w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
+  if (options.guard) w.AutoBooker.beginSubmission = () => !options.denySubmission;
+  if (options.proxy) w.eval(fs.readFileSync('app/src/main/assets/transport.js', 'utf8').replace('__TRANSPORT_CONFIG__', JSON.stringify({
+    origin:'https://webvpn.cppu.edu.cn', prefix:'/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b'
+  })));
   if (options.nativeBridge) w.AutoBooker.booked = (seat, detail) => messages.push({ state: 'success', detail, seat });
   for (const seat of d.querySelectorAll('#seat-map .seatCharts-seat[id]')) {
     if (options.realMap && !options.keepStatus) seat.className = 'seatCharts-seat available';
@@ -119,7 +124,8 @@ function fixture(options = {}) {
 
 for (const [name, options] of [
   ['tomorrow', {}], ['today', { today: true }], ['two time slots', { multi: true }],
-  ['confirmation delayed beyond the old 500 ms check', { delay: 2000 }]
+  ['confirmation delayed beyond the old 500 ms check', { delay: 2000 }],
+  ['WebVPN path and native submission guard', { proxy: true, guard: true }]
 ]) test(`confirm once and recognize success: ${name}`, async () => {
   const f = fixture(options);
   try {
@@ -131,9 +137,9 @@ for (const [name, options] of [
   } finally { f.close(); }
 });
 
-for (const option of ['wrongSeat', 'wrongDate', 'wrongTime', 'emptyField', 'noConfirmation']) {
+for (const option of ['wrongSeat', 'wrongDate', 'wrongTime', 'emptyField', 'noConfirmation', 'denySubmission']) {
   test(`do not send request: ${option}`, async () => {
-    const f = fixture({ [option]: true });
+    const f = fixture({ [option]: true, guard: option === 'denySubmission' });
     try { await f.advance(12000); assert.equal(f.requests(), 0); assert.equal(f.messages.at(-1).state, 'error'); }
     finally { f.close(); }
   });

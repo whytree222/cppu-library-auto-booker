@@ -6,7 +6,7 @@
   const numbers = (config.seatNumbers || []).map(value => String(value).trim().toUpperCase()).filter(Boolean);
   const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
   const text = el => (el.textContent || el.value || '').replace(/\s+/g, '');
-  if (location.pathname === '/login' || document.querySelector('form#fromuser input#passwd')) {
+  if ((window.LibraryTransport?.path() || location.pathname) === '/login' || document.querySelector('form#fromuser input#passwd')) {
     report('error', '登录已失效，请先在应用内重新登录');
     return;
   }
@@ -137,6 +137,8 @@
           .filter(button => visible(button) && !button.disabled && /^(确认|确定)$/.test(text(button))) : [];
         if (buttons.length !== 1) return finish('error', '已出现预约确认框，但无法唯一识别确认按钮；未提交');
         confirmationAt = Date.now();
+        if (window.AutoBooker?.beginSubmission && !window.AutoBooker.beginSubmission())
+          return finish('error', '当前任务已停止或通道已切换；未确认提交');
         report('progress', `已核对 ${number} 的日期和时段，正在确认预约`);
         buttons[0].click();
         return;

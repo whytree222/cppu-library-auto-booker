@@ -40,7 +40,7 @@
         if (finished || expired()) return;
         callback(result);
       },
-      error: xhr => finish('error', xhr?.status === 429
+      error: xhr => finish([0, 408, 502, 503, 504].includes(xhr?.status) ? 'network-error' : 'error', xhr?.status === 429
         ? '学校系统要求降低请求频率，已停止等待'
         : '开放检查网络失败或响应异常，已停止等待；请检查登录和校园网') });
   };

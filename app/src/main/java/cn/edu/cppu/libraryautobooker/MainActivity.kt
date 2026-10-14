@@ -333,6 +333,15 @@ class MainActivity : ComponentActivity() {
                         checked = config.waitForRelease,
                         onChecked = { config = config.copy(waitForRelease = it) }
                     )
+                    SettingSwitch(
+                        title = "直连优先，WebVPN 自动备用",
+                        detail = "仅提交前直连网络故障才切换学校代理；业务拒绝不切换。须提前在应用内完成 WebVPN 统一认证和图书馆网页登录；可在学校页勾选五天自动登录。",
+                        checked = config.webVpnBackup,
+                        onChecked = { config = config.copy(webVpnBackup = it) }
+                    )
+                    OutlinedButton(onClick = {
+                        startActivity(Intent(this@MainActivity, LoginActivity::class.java).putExtra("webvpn", true))
+                    }, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 统一认证 / 图书馆网页登录") }
                     OutlinedButton(onClick = {
                         startService(Intent(this@MainActivity, BookingService::class.java).setAction(BookingService.ACTION_CANCEL))
                         status = "已请求停止当前任务；不取消已成功的学校预约，也不取消其他定时计划"

@@ -16,7 +16,8 @@ function run(options = {}) {
     <div id="dates" style="display:none"><div onclick="selectusedaybuttonclick('${offset}','0','${targetDate}')">${targetDate}</div></div>
     <div id="slots" style="display:none"><form action="/multireadingroomtablelist"><div id="selectdate"></div>
     <button type="button">下一步</button></form></div></body>`,
-    { url: 'http://mlib.cppu.edu.cn/selectreadingroom', runScripts: 'outside-only' });
+    { url: options.proxy ? 'https://webvpn.cppu.edu.cn/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b/selectreadingroom'
+      : 'http://mlib.cppu.edu.cn/selectreadingroom', runScripts: 'outside-only' });
   const w = dom.window;
   const d = w.document;
   const messages = [];
@@ -24,6 +25,9 @@ function run(options = {}) {
   let next = 0;
   w.setTimeout = fn => { timers.push(fn); return timers.length; };
   w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
+  if (options.proxy) w.eval(fs.readFileSync('app/src/main/assets/transport.js', 'utf8').replace('__TRANSPORT_CONFIG__', JSON.stringify({
+    origin:'https://webvpn.cppu.edu.cn', prefix:'/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b'
+  })));
   d.querySelector('#roomdata div').onclick = () => { d.getElementById('dates').style.display = ''; };
   d.querySelector('#dates div').onclick = () => {
     d.getElementById('dates').style.display = 'none';
@@ -64,7 +68,8 @@ function run(options = {}) {
 for (const [name, options] of [
   ['today full date', {}], ['today relative zero', { rawDate: '0' }],
   ['today missing date', { rawDate: null }], ['today label', { rawDate: '今日' }],
-  ['tomorrow full date', { tomorrow: true }], ['hidden previous tomorrow options', { stale: true }]
+  ['tomorrow full date', { tomorrow: true }], ['hidden previous tomorrow options', { stale: true }],
+  ['WebVPN proxy path and form action', { proxy: true, tomorrow: true }]
 ]) test(`select requested date and time slots: ${name}`, () => {
   const result = run(options);
   assert.equal(result.next, 1, JSON.stringify(result.messages));

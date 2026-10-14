@@ -90,7 +90,7 @@
     report('progress', detail);
   };
   const tick = () => {
-    if (finished || location.pathname === '/multireadingroomtablelist') return;
+    if (finished || (window.LibraryTransport?.path() || location.pathname) === '/multireadingroomtablelist') return;
     if (roomClicked) {
       const notice = queryAll('.alertify:not(.ajs-hidden) .ajs-content,.alertify-message,[role="alert"]')
         .filter(visible).map(text).join(' ');

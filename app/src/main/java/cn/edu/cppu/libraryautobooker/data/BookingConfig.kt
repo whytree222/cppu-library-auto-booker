@@ -18,7 +18,8 @@ data class BookingConfig(
     val scheduledAtMillis: Long = 0L,
     val releaseTimes: List<Int> = emptyList(),
     val scheduledTimes: List<Long> = emptyList(),
-    val waitForRelease: Boolean = false
+    val waitForRelease: Boolean = false,
+    val webVpnBackup: Boolean = true
 ) {
     fun times(): List<Int> = (if (releaseTimes.isEmpty()) listOf(releaseHour * 60 + releaseMinute)
         else releaseTimes).distinct()

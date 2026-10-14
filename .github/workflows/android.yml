@@ -51,9 +51,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.10.0 >/dev/null 2>&1; then
-            gh release upload v0.10.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.11.0 >/dev/null 2>&1; then
+            gh release upload v0.11.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.10.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.10.0' --notes '可选10分钟限时等待，学校明确未开放时约每秒串行检查开放接口，通过后继续原选座确认流程；不重载整页，不对未知提交结果重试。读取下一步被拒绝时的学校弹窗原因，支持停止当前任务。首次后台唤醒仍可能延迟，校园网实测待用户验证。'
+            gh release create v0.11.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.11.0' --notes '本地转换图书馆 WebVPN 地址；提供应用内统一认证及图书馆网页登录入口，复用学校会话。仅提交前直连传输故障切换备用代理，业务拒绝不切换，确认提交后未知结果不切换不重发。代理路径、接口、表单适配及安全分类测试通过；手机真实认证和预约仍需实测。'
           fi
 

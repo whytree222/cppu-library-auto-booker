@@ -8,10 +8,17 @@ import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.UnknownHostException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.NoRouteToHostException
+import java.net.SocketException
+import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 object SessionChecker {
+    data class Result(val state: String, val detail: String, val networkFailure: Boolean = false)
     private val executor = Executors.newSingleThreadExecutor()
     private val generation = AtomicInteger()
     private val main = Handler(Looper.getMainLooper())
@@ -23,15 +30,21 @@ object SessionChecker {
     }
 
     fun checkDetailed(context: Context, callback: (String) -> Unit) {
+        probe(context, LibraryRoute.DIRECT) { callback(it.state) }
+    }
+
+    fun probe(context: Context, route: LibraryRoute, callback: (Result) -> Unit) {
         val id = generation.incrementAndGet()
         val app = context.applicationContext
         RuntimeStore(app).prefs.edit().putString("session_state", "checking")
-            .putString("session_detail", "正在向学校系统验证登录…").apply()
-        val cookie = CookieManager.getInstance().getCookie("http://mlib.cppu.edu.cn")
+            .putString("session_detail", "正在通过${route.label}验证图书馆登录…").apply()
+        val url = route.url("/isLogin")
+        val cookie = CookieManager.getInstance().getCookie(url)
         executor.execute {
             var connection: HttpURLConnection? = null
+            var responseCookies = emptyList<String>()
             val result = try {
-                connection = URL("http://mlib.cppu.edu.cn/isLogin").openConnection() as HttpURLConnection
+                connection = URL(url).openConnection() as HttpURLConnection
                 connection.apply {
                     requestMethod = "POST"
                     connectTimeout = 7000
@@ -39,9 +52,13 @@ object SessionChecker {
                     instanceFollowRedirects = false
                     useCaches = false
                     setRequestProperty("X-Requested-With", "XMLHttpRequest")
+                    setRequestProperty("Origin", route.origin)
+                    setRequestProperty("Referer", route.url("/selectreadingroom"))
                     if (!cookie.isNullOrBlank()) setRequestProperty("Cookie", cookie)
                 }
                 val code = connection.responseCode
+                responseCookies = connection.headerFields.filterKeys { it.equals("Set-Cookie", ignoreCase = true) }
+                    .values.flatten().filterNotNull()
                 val body = if (code == 200) connection.inputStream.bufferedReader().use { reader ->
                     val buffer = CharArray(65536)
                     var total = 0
@@ -52,17 +69,35 @@ object SessionChecker {
                     }
                     String(buffer, 0, total)
                 } else ""
-                decode(code, connection.getHeaderField("Location"), body)
-            } catch (_: Exception) {
-                "unknown" to "无法验证登录状态，请检查校园网络"
+                decodeRoute(route, code, connection.getHeaderField("Location"), body)
+            } catch (error: Exception) {
+                Result("unknown", "${route.label}登录检查失败：${error.javaClass.simpleName}", isNetworkFailure(error))
             } finally { connection?.disconnect() }
             main.post {
+                responseCookies.forEach { CookieManager.getInstance().setCookie(url, it) }
+                if (responseCookies.isNotEmpty()) CookieManager.getInstance().flush()
                 if (id == generation.get()) {
-                    RuntimeStore(app).session(result.first, result.second)
+                    RuntimeStore(app).session(result.state, result.detail)
+                    RuntimeStore(app).prefs.edit().putString("session_route", route.name).apply()
+                    if (result.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", route.name).apply()
                 }
-                callback(result.first)
+                callback(result)
             }
         }
+    }
+
+    internal fun isNetworkFailure(error: Exception) = error is UnknownHostException ||
+        error is ConnectException || error is SocketTimeoutException ||
+        error is NoRouteToHostException || error is SocketException
+
+    internal fun decodeRoute(route: LibraryRoute, code: Int, location: String?, body: String): Result {
+        if (route == LibraryRoute.WEBVPN && code in 300..399) {
+            val destination = runCatching { java.net.URI(route.url("/isLogin")).resolve(location.orEmpty()).toString() }.getOrDefault("")
+            if (route.pathOf(destination) != "/login")
+                return Result("vpn_login_required", "WebVPN 统一认证已过期或需要验证码，请在应用内手动认证")
+        }
+        val decoded = decode(code, location, body)
+        return Result(decoded.first, "${route.label}：${decoded.second}", code in listOf(408, 502, 503, 504))
     }
 
     internal fun decode(code: Int, location: String?, body: String): Pair<String, String> = when {

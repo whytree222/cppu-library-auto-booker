@@ -11,6 +11,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
+import cn.edu.cppu.libraryautobooker.data.ConfigStore
+import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import org.json.JSONObject
 
 /** All callers share one login request and the app's WebView cookie store. */
@@ -127,10 +129,29 @@ object AutoLogin {
 
 object SessionCoordinator {
     fun check(context: Context, callback: (Boolean, String) -> Unit = { _, _ -> }) {
-        if (AutoLogin.running) { AutoLogin.login(context, callback = callback); return }
-        SessionChecker.checkDetailed(context) { state ->
-            if (state == "expired" && CredentialStore(context).enabled) AutoLogin.login(context, callback = callback)
-            else callback(state == "valid", RuntimeStore(context).prefs.getString("session_detail", "无法验证登录状态").orEmpty())
+        checkPreferred(context) { result -> callback(result.state == "valid", result.detail) }
+    }
+
+    private fun checkPreferred(context: Context, callback: (SessionChecker.Result) -> Unit) {
+        checkRoute(context, LibraryRoute.DIRECT) { result ->
+            if (result.networkFailure && ConfigStore(context).load().webVpnBackup) {
+                checkRoute(context, LibraryRoute.WEBVPN, callback)
+            } else callback(result)
+        }
+    }
+
+    fun checkState(context: Context, callback: (String) -> Unit) {
+        checkPreferred(context) { callback(it.state) }
+    }
+
+    fun checkRoute(context: Context, route: LibraryRoute, callback: (SessionChecker.Result) -> Unit) {
+        SessionChecker.probe(context, route) { result ->
+            if (route == LibraryRoute.DIRECT && result.state == "expired" && CredentialStore(context).enabled) {
+                AutoLogin.login(context) { valid, detail ->
+                    callback(SessionChecker.Result(if (valid) "valid" else RuntimeStore(context).prefs.getString("session_state", "unknown").orEmpty(), detail))
+                }
+            } else callback(result)
         }
     }
 }
+
