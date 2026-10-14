@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.3 >/dev/null 2>&1; then
-            gh release upload v0.13.3 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.4 >/dev/null 2>&1; then
+            gh release upload v0.13.4 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.3 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.3 · 两步登录衔接与五天选项' --notes '修复图书馆页的主表单与页头登录框同名导致误判，凭据只填入主表单。兼容代理下主表单原始相对地址；保留提交函数的密码编码、目标校验、手动输入优先和单次提交保护。统一认证与验证码绑定使用等价原始/代理地址，避免正常改写被当成用户修改；验证码先于账号准备完成时也能在准备后提交一次。新增自动勾选校方五天内自动登录选项，默认开启，在更多操作中可关闭，支持移动/桌面重复选项且不覆盖手动修改，实际有效期由校方决定。细化当前阶段和图书馆失败原因，继续允许截屏。未使用真实账号提交学校认证，需手机前台复测；验证码未能安全识别时不会自动登录。'
+            gh release create v0.13.4 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.4 · 进入网页自动接续登录' --notes '修复首次进入或返回前台时将提前出现的网址当作已加载文档的问题，等待真实网页完成回调后自动接续统一认证和图书馆登录。重复页面完成回调不再重新准备账号或误判尚在等待结果的登录。初次进入、主动重启和后台恢复使用相同启动入口，无需将重新开始按钮作为正常登录步骤。保留两套独立加密账号、当前验证码校验、五天选项、手动优先、单次提交及未知结果暂停保护，不擅自重新启用已暂停账号，继续允许截屏。新增无需点击重启的两步流程及加载时序模拟回归；未使用真实账号提交学校认证，仍需手机复测。'
           fi

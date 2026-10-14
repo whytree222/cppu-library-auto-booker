@@ -39,6 +39,11 @@ class WebVpnLoginDriver internal constructor(
     private var active = false
     private var probing = false
     private var loading = false
+    // A URL can be available before WebView's first page callbacks or redirect completes.
+    // Only a matching onPageFinished establishes a document we may inspect/fill.
+    private var pageReady = false
+    private var finishedUrl: String? = null
+    private var dispatchedEpoch = -1L
     private var prepared = false
     private var ssoSubmitted = false
     private var ssoConfirmed = false
@@ -50,6 +55,7 @@ class WebVpnLoginDriver internal constructor(
     private var finishedWhilePaused = false
     private var captchaFailure: String? = null
     private var captchaReady = false
+    internal val running get() = !closed && !stopped
     private var ocrEnabled = app.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("enabled", true)
     private var rememberMe = app.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("remember_me", true)
     private val captcha = WebVpnCaptchaController(app, view, onFilled = { captchaReady = true; submitSso() }, onStopped = {
@@ -74,11 +80,20 @@ class WebVpnLoginDriver internal constructor(
         if (closed) return
         active = true
         captcha.onResume()
-        if (!stopped && !loading && view.url != null) {
+        if (!stopped && !loading && pageReady && finishedUrl == view.url) {
             if (ssoSubmitted && CaptchaPagePolicy.isTrusted(view.url) && !finishedWhilePaused)
                 verifyLater(epoch, Kind.SSO)
-            else onPageFinished(view.url.orEmpty())
+            else dispatchReadyPage(view.url.orEmpty())
         }
+    }
+    /** Used on initial entry and explicit restart; neither requires a second button press. */
+    fun openLoginPage() { navigate(LibraryRoute.WEBVPN.url("/login")) }
+
+    private fun navigate(url: String) {
+        if (closed || stopped) return
+        // Invalidate the old document synchronously, before loadUrl schedules its callbacks.
+        onPageStarted(url)
+        view.loadUrl(url)
     }
     fun onPause() { active = false; epoch++; probing = false; preparing = false; captcha.onPause() }
     fun setOcrEnabled(enabled: Boolean) { ocrEnabled = enabled; captcha.setEnabled(enabled) }
@@ -92,6 +107,7 @@ class WebVpnLoginDriver internal constructor(
     fun onPageStarted(url: String) {
         if (closed) return
         epoch++; loading = true; probing = false; preparing = false; prepared = false
+        pageReady = false; finishedUrl = null
         captchaFailure = null; captchaReady = false; finishedWhilePaused = false
         captcha.onPageStarted(url)
     }
@@ -99,10 +115,19 @@ class WebVpnLoginDriver internal constructor(
     fun onPageFinished(url: String) {
         if (closed || url != view.url) return
         loading = false
-        captcha.onPageFinished(url)
+        if (!pageReady || finishedUrl != url) captcha.onPageFinished(url)
+        pageReady = true
+        finishedUrl = url
         if (!active) { finishedWhilePaused = true; return }
         finishedWhilePaused = false
+        dispatchReadyPage(url)
+    }
+
+    private fun dispatchReadyPage(url: String) {
+        if (!pageReady || loading || finishedUrl != url || url != view.url || !active || dispatchedEpoch == epoch) return
         if (stopped) return
+        // Duplicate finish callbacks must not cancel an in-flight preparation or POST.
+        dispatchedEpoch = epoch
         when {
             CaptchaPagePolicy.isTrusted(url) -> {
                 if (ssoSubmitted) fail("统一认证仍停留在登录页，可能账号密码、验证码或校方校验未通过；已暂停自动重试", "vpn_login_required", "expired", Kind.SSO)
@@ -112,7 +137,7 @@ class WebVpnLoginDriver internal constructor(
             isPortal(url) && !portalRedirected -> {
                 portalRedirected = true
                 onStatus("正在恢复 WebVPN 会话并进入图书馆…")
-                view.loadUrl(LibraryRoute.WEBVPN.url("/login"))
+                navigate(LibraryRoute.WEBVPN.url("/login"))
             }
             else -> fail("登录跳转地址尚未适配，已停止自动填写", "unknown")
         }
@@ -194,9 +219,9 @@ class WebVpnLoginDriver internal constructor(
                 result.state == "expired" && result.vpnAuthState == "valid" -> {
                     if (librarySubmitted) fail("WebVPN 已认证，但图书馆未接受本次登录；请核对图书馆账号密码，已暂停自动重试", "expired", "valid", Kind.LIBRARY)
                     else if (LibraryRoute.WEBVPN.pathOf(view.url.orEmpty()) == "/login") submitLibrary()
-                    else view.loadUrl(LibraryRoute.WEBVPN.url("/login"))
+                    else navigate(LibraryRoute.WEBVPN.url("/login"))
                 }
-                result.state == "vpn_login_required" && !ssoSubmitted && !librarySubmitted -> view.loadUrl(LibraryRoute.WEBVPN.url("/login"))
+                result.state == "vpn_login_required" && !ssoSubmitted && !librarySubmitted -> navigate(LibraryRoute.WEBVPN.url("/login"))
                 else -> fail(if (ssoSubmitted || librarySubmitted) "登录提交后无法确认学校结果，已停止且不会重发；请核对网页登录状态"
                     else result.detail, result.state, result.vpnAuthState, if (librarySubmitted) Kind.LIBRARY else if (ssoSubmitted) Kind.SSO else null)
             }

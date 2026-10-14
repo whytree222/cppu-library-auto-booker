@@ -92,7 +92,7 @@ class LoginActivity : Activity() {
             })
             details.addView(Button(this).apply {
                 text = "使用已保存账号重新开始"
-                setOnClickListener { createDriver(); webView.loadUrl(route.url("/login")) }
+                setOnClickListener { beginLogin() }
             })
             details.addView(Button(this).apply {
                 text = "重新识别当前验证码"; setOnClickListener { driver?.retryCaptcha() }
@@ -120,7 +120,9 @@ class LoginActivity : Activity() {
                     if (path == "/login") view.evaluateJavascript(
                         "document.querySelector('form#fromuser input#url')?.setAttribute('value','selectreadingroom')", null)
                     CookieManager.getInstance().flush()
-                    verifyLogin(false)
+                    // The active two-step driver owns verification and credential bookkeeping.
+                    // A second Activity probe could finish/close it before its result arrives.
+                    if (route == LibraryRoute.DIRECT || driver?.running != true) verifyLogin(false)
                 }
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                     if (request.isForMainFrame) driver?.fail("登录页面连接失败（${error.errorCode}），请检查网络；未确认的登录不会自动重发")
@@ -134,11 +136,10 @@ class LoginActivity : Activity() {
                 }
             }
         }
-        if (route == LibraryRoute.WEBVPN) createDriver()
         container.addView(webView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(container)
         ViewCompat.requestApplyInsets(container)
-        webView.loadUrl(route.url("/login"))
+        beginLogin()
     }
     private fun accountConfig() = WebVpnCredentialStore.Kind.entries.joinToString("|") { kind ->
         val store = WebVpnCredentialStore(this, kind)
@@ -148,10 +149,16 @@ class LoginActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 201 && accountConfigBefore != null && accountConfigBefore != accountConfig()) {
-            createDriver()
-            webView.loadUrl(route.url("/login"))
+            beginLogin()
         }
         accountConfigBefore = null
+    }
+
+    private fun beginLogin() {
+        if (route == LibraryRoute.WEBVPN) {
+            createDriver()
+            driver?.openLoginPage()
+        } else webView.loadUrl(route.url("/login"))
     }
 
     private fun createDriver() {

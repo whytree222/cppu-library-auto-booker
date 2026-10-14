@@ -102,7 +102,7 @@ object WebVpnAutoLogin {
                 View.MeasureSpec.makeMeasureSpec(metrics.heightPixels, View.MeasureSpec.EXACTLY))
             web.layout(0, 0, metrics.widthPixels, metrics.heightPixels)
             driver?.onResume()
-            web.loadUrl(LibraryRoute.WEBVPN.url("/login"))
+            driver?.openLoginPage()
             handler.postDelayed({ finish(SessionChecker.Result("unknown", "WebVPN 自动登录超时；未继续预约，请核对登录状态")) }, 95_000L)
         }
 

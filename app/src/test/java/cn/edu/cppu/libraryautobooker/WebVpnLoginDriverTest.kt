@@ -139,6 +139,133 @@ class WebVpnLoginDriverTest {
         }
     }
 
+    @Test fun firstResumeDoesNotTreatAnAvailableUrlAsAFinishedDocument() {
+        listOf(SSO_URL, LIBRARY_LOGIN, "about:blank").forEach { address ->
+            Fixture().use { f ->
+                f.view.address = address
+                f.driver.onResume()
+                assertTrue(f.view.calls.isEmpty())
+                assertTrue(f.probes.isEmpty())
+                assertTrue(f.results.isEmpty())
+                f.driver.openLoginPage()
+                assertEquals(listOf(LIBRARY_LOGIN), f.view.navigations)
+                assertTrue(f.view.calls.isEmpty())
+                f.finish(SSO_PROXY_URL)
+                f.prepareSso()
+                f.completeCaptchaAndSubmitSso()
+                assertEquals(1, f.view.submissionCount())
+                assertTrue(f.results.isEmpty())
+            }
+        }
+    }
+
+    @Test fun initialEntryAutomaticallyCompletesBothStagesWithoutExplicitRestart() {
+        Fixture().use { f ->
+            // Activity may resume before WebView delivers its first start callback.
+            f.driver.openLoginPage()
+            f.driver.onResume()
+            f.finish(SSO_PROXY_URL)
+            f.prepareSso()
+            f.completeCaptchaAndSubmitSso()
+            f.finish(LIBRARY_LOGIN)
+            f.answerProbe("expired", "valid")
+            f.submitLibrary()
+            f.finish(LibraryRoute.WEBVPN.url("/selectreadingroom"))
+            f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
+            assertTrue(f.sso.verified)
+            assertTrue(f.library.verified)
+        }
+    }
+
+    @Test fun loadingBeforeFirstResumeWaitsAndSkipsExpiredSsoWhenAlreadyAuthenticated() {
+        Fixture().use { f ->
+            f.driver.openLoginPage()
+            f.driver.onResume()
+            assertTrue(f.probes.isEmpty())
+            assertTrue(f.view.calls.isEmpty())
+            f.driver.onPageFinished(LIBRARY_LOGIN)
+            f.answerProbe("expired", "valid")
+            f.submitLibrary()
+            assertEquals(0, f.view.submissionCount())
+            assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
+        }
+    }
+
+    @Test fun duplicateFinishDoesNotRestartCaptchaPreparationOrRejectAnInFlightSsoPost() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL)
+            val before = f.view.calls.size
+            f.driver.onPageFinished(SSO_PROXY_URL)
+            assertEquals(before, f.view.calls.size)
+            f.prepareSso()
+            f.completeCaptchaAndSubmitSso()
+            val after = f.view.calls.size
+            f.driver.onPageFinished(SSO_PROXY_URL)
+            assertEquals(after, f.view.calls.size)
+            assertTrue(f.results.isEmpty())
+            assertFalse(f.sso.paused)
+            assertEquals(1, f.view.submissionCount())
+            // A real subsequent load returning to the login page still counts as rejection.
+            f.finish(SSO_PROXY_URL)
+            assertEquals("vpn_login_required", f.results.single().state)
+            assertTrue(f.sso.paused)
+            assertEquals(1, f.view.submissionCount())
+        }
+    }
+
+    @Test fun duplicateLibraryFinishDoesNotProbeAgainWhileSubmissionIsPending() {
+        Fixture().use { f ->
+            f.start(LIBRARY_LOGIN)
+            f.answerProbe("expired", "valid")
+            f.submitLibrary()
+            f.driver.onPageFinished(LIBRARY_LOGIN)
+            assertTrue(f.probes.isEmpty())
+            assertTrue(f.results.isEmpty())
+            assertFalse(f.library.paused)
+            assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
+            // Read-only verification still occurs even if the school does not navigate.
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+        }
+    }
+
+    @Test fun redirectBeforeRealStartCallbackInvalidatesOldDocumentImmediately() {
+        Fixture().use { f ->
+            f.start("https://webvpn.cppu.edu.cn/")
+            assertEquals(listOf(LIBRARY_LOGIN), f.view.navigations)
+            f.driver.onPause()
+            f.driver.onResume()
+            assertTrue(f.probes.isEmpty())
+            assertTrue(f.view.calls.isEmpty())
+            assertTrue(f.results.isEmpty())
+            f.driver.onPageFinished(LIBRARY_LOGIN)
+            f.answerProbe("expired", "valid")
+            f.submitLibrary()
+            assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
+        }
+    }
+
+    @Test fun automaticEntryNeverReactivatesAPausedOrDisabledSsoAccount() {
+        repeat(2) { variant ->
+            Fixture().use { f ->
+                if (variant == 0) f.sso.pause() else f.sso.setEnabled(false)
+                f.driver.openLoginPage()
+                f.driver.onResume()
+                f.finish(SSO_URL)
+                assertEquals("vpn_login_required", f.results.single().state)
+                assertFalse(f.view.calls.any { it.script.contains(SSO_PASSWORD) })
+                assertEquals(0, f.view.submissionCount())
+                f.driver.onResume()
+                f.driver.onPageFinished(SSO_URL)
+                assertEquals(1, f.results.size)
+            }
+        }
+    }
+
     @Test fun absentSsoAccountNeverFallsBackToLibraryPassword() {
         Fixture(saveSso = false).use { f ->
             f.start(SSO_URL)
