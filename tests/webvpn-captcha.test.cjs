@@ -283,3 +283,14 @@ test('the value is never followed by an automatic login or image refresh', () =>
   const before = f.image.src; f.api.fill(f.api.snapshot().token, '0123'); f.api.snapshot(); f.api.reset();
   assert.equal(f.image.src, before); assert.equal(f.state.requests, 0); assert.equal(f.state.submits, 0);
 }));
+
+test('representation-only proxy rewriting does not invalidate the same CAPTCHA pixels and query',()=>using({url:'https://webvpn.cppu.edu.cn'+proxy+'/tpass/login'},f=>{
+  const ready=f.api.snapshot();
+  const form=f.w.document.querySelector('form');
+  Object.defineProperty(form,'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login?execution=secret-execution'});
+  form.setAttribute('action','/tpass/login?execution=secret-execution');
+  f.image.setAttribute('src','/tpass/captcha.jpg?cache=secret-cache');
+  Object.defineProperty(f.image,'currentSrc',{get:()=> 'https://sso.cppu.edu.cn/tpass/captcha.jpg?cache=secret-cache'});
+  assert.equal(f.api.fill(ready.token,'0123').kind,'filled');
+  assert.equal(f.api.snapshot().kind,'filled'); assert.equal(f.state.requests,0); assert.equal(f.state.submits,0);
+}));

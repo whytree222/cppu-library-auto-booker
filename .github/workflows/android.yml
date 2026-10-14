@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.2 >/dev/null 2>&1; then
-            gh release upload v0.13.2 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.3 >/dev/null 2>&1; then
+            gh release upload v0.13.3 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.2 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.2 · 修复统一认证相对路径' --notes '校方公开统一认证表单使用 /tpass/login，验证码使用 /tpass/captcha.jpg；WebVPN 可保留这些原始根相对属性。修复旧版按门户地址解析而误报目标不匹配的问题：兼容学校原始属性与代理属性，必要时在填写凭据前将已验证的原始表单目标转成同一学校代理路径，保留查询参数；仍检查实际提交地址与已加载图片，不额外刷新验证码、不允许其他主机。细分原始地址、实际地址及转换失败原因。两步账号独立保存、提交后不明停止等保护不变，继续允许截屏。模拟回归与构建通过不等于真实账号实测，安装后请重新打开 WebVPN 登录页验证。'
+            gh release create v0.13.3 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.3 · 两步登录衔接与五天选项' --notes '修复图书馆页的主表单与页头登录框同名导致误判，凭据只填入主表单。兼容代理下主表单原始相对地址；保留提交函数的密码编码、目标校验、手动输入优先和单次提交保护。统一认证与验证码绑定使用等价原始/代理地址，避免正常改写被当成用户修改；验证码先于账号准备完成时也能在准备后提交一次。新增自动勾选校方五天内自动登录选项，默认开启，在更多操作中可关闭，支持移动/桌面重复选项且不覆盖手动修改，实际有效期由校方决定。细化当前阶段和图书馆失败原因，继续允许截屏。未使用真实账号提交学校认证，需手机前台复测；验证码未能安全识别时不会自动登录。'
           fi

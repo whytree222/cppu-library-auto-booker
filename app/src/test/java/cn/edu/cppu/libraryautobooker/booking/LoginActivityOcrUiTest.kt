@@ -36,7 +36,8 @@ class LoginActivityOcrUiTest {
             .setup()
         try {
             val views = children(activity.get().window.decorView)
-            val checkbox = views.filterIsInstance<CheckBox>().single()
+            val checkbox = views.filterIsInstance<CheckBox>().single { it.text.toString() == "自动识别并填写验证码" }
+            assertTrue(views.filterIsInstance<CheckBox>().single { it.text.toString() == "自动勾选学校“五天内自动登录”" }.isChecked)
             assertEquals("自动识别并填写验证码", checkbox.text.toString())
             assertTrue(checkbox.isChecked)
             val labels = views.filterIsInstance<Button>().map { it.text.toString() }
@@ -59,7 +60,8 @@ class LoginActivityOcrUiTest {
             Intent(RuntimeEnvironment.getApplication(), LoginActivity::class.java).putExtra("webvpn", true))
             .setup()
         try {
-            assertFalse(children(vpn.get().window.decorView).filterIsInstance<CheckBox>().single().isChecked)
+            assertFalse(children(vpn.get().window.decorView).filterIsInstance<CheckBox>()
+                .single { it.text.toString() == "自动识别并填写验证码" }.isChecked)
         } finally {
             vpn.pause().stop().destroy()
         }
@@ -72,6 +74,22 @@ class LoginActivityOcrUiTest {
         } finally {
             direct.pause().stop().destroy()
         }
+    }
+
+    @Test fun fiveDayPreferenceCanBeDisabledAndSurvivesReopening() {
+        val first = Robolectric.buildActivity(LoginActivity::class.java,
+            Intent(RuntimeEnvironment.getApplication(), LoginActivity::class.java).putExtra("webvpn", true)).setup()
+        try {
+            children(first.get().window.decorView).filterIsInstance<CheckBox>()
+                .single { it.text.toString() == "自动勾选学校“五天内自动登录”" }.isChecked = false
+            assertFalse(preferences.getBoolean("remember_me", true))
+        } finally { first.pause().stop().destroy() }
+        val second = Robolectric.buildActivity(LoginActivity::class.java,
+            Intent(RuntimeEnvironment.getApplication(), LoginActivity::class.java).putExtra("webvpn", true)).setup()
+        try {
+            assertFalse(children(second.get().window.decorView).filterIsInstance<CheckBox>()
+                .single { it.text.toString() == "自动勾选学校“五天内自动登录”" }.isChecked)
+        } finally { second.pause().stop().destroy() }
     }
 
     private fun children(view: View): List<View> = buildList {

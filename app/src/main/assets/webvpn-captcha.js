@@ -36,6 +36,11 @@
       ? 'https://sso.cppu.edu.cn/tpass/login' : location.href;
     return new URL(text || location.href, base);
   }
+  function logicalHref(url) {
+    // Target was already checked. Representation-only VPN rewriting is not a new challenge.
+    const originalPath = url.origin === 'https://webvpn.cppu.edu.cn' ? url.pathname.slice(proxyPrefix.length) : url.pathname;
+    return 'https://sso.cppu.edu.cn' + originalPath + url.search;
+  }
   function formAction(form, route) {
     let raw = form.getAttribute('action') || '';
     let attribute = attributeResource(raw, route);
@@ -103,8 +108,8 @@
         return {error: result('stopped', 'unsupported-image')};
       }
       if (!visible(input) || !visible(image)) return {error: result('waiting', 'not-visible')};
-      return {form, input, image, pageHref: current.href, actionHref: action.href, actionAttribute: actionAttribute.href,
-        source: source.href, currentSource: currentSource.href};
+      return {form, input, image, pageHref: current.href, actionHref: logicalHref(action), actionAttribute: logicalHref(actionAttribute),
+        source: logicalHref(source), currentSource: logicalHref(currentSource)};
     } catch (_) { return {error: result('stopped', 'unsupported-structure')}; }
   }
   function watch(input) {

@@ -128,6 +128,7 @@ class WebVpnLoginDriverTest {
             val credentialCall = f.view.calls.single { it.script.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepare(") }.script
             assertTrue(credentialCall.contains(SSO_USER))
             assertTrue(credentialCall.contains(SSO_PASSWORD))
+            assertTrue(credentialCall.contains("\"rememberMe\":true"))
             assertFalse(credentialCall.contains(LIBRARY_USER))
             assertFalse(credentialCall.contains(LIBRARY_PASSWORD))
             assertEquals(0, f.view.submissionCount())
@@ -363,6 +364,48 @@ class WebVpnLoginDriverTest {
                 assertFalse(f.sso.verified)
                 assertFalse(f.library.verified)
             }
+        }
+    }
+
+    @Test fun captchaCompletedBeforeAccountPreparationSubmitsImmediatelyAfterPreparationOnce() {
+        Fixture().use { f ->
+            f.start(SSO_URL)
+            f.view.answerFirst({ it.contains("Object.defineProperty(window, 'LibraryCaptchaOcr'") }, "{\"kind\":\"installed\"}")
+            shadowOf(Looper.getMainLooper()).idle()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
+            assertEquals(0, f.view.submissionCount())
+            f.prepareSso()
+            assertEquals(1, f.view.submissionCount())
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }, "{\"kind\":\"submitted\"}")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
+            assertEquals(1, f.view.submissionCount())
+            assertTrue(f.results.isEmpty())
+        }
+    }
+
+    @Test fun rememberPreferenceIsPassedWithoutChangingEitherAccount() {
+        app.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).edit().putBoolean("remember_me", false).commit()
+        Fixture().use { f ->
+            f.start(SSO_URL)
+            f.prepareSso()
+            val call = f.view.calls.single { it.script.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepare(") }.script
+            assertTrue(call.contains("\"rememberMe\":false"))
+            assertEquals(0, f.view.submissionCount())
+            assertFalse(f.library.paused)
+        }
+    }
+
+    @Test fun libraryStructureFailureIsNotMislabeledAsChangedAccountSettings() {
+        Fixture().use { f ->
+            f.start(LIBRARY_LOGIN)
+            f.answerProbe("expired", "valid")
+            f.view.answerFirst({ it.contains("__libraryVpnLoginSubmitted") }, "{\"kind\":\"stopped\",\"detailCode\":\"unsupported-structure\"}")
+            assertEquals("expired", f.results.single().state)
+            assertTrue(f.results.single().detail.contains("主登录表单"))
+            assertFalse(f.results.single().detail.contains("账号设置已改变"))
+            assertFalse(f.library.paused)
+            assertFalse(f.view.calls.any { it.script.contains(LIBRARY_PASSWORD) })
         }
     }
 

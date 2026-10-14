@@ -49,13 +49,17 @@ class WebVpnLoginDriver internal constructor(
     private var preparing = false
     private var finishedWhilePaused = false
     private var captchaFailure: String? = null
+    private var captchaReady = false
     private var ocrEnabled = app.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("enabled", true)
-    private val captcha = WebVpnCaptchaController(app, view, onFilled = { submitSso() }, onStopped = {
+    private var rememberMe = app.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("remember_me", true)
+    private val captcha = WebVpnCaptchaController(app, view, onFilled = { captchaReady = true; submitSso() }, onStopped = {
+        captchaReady = false
         captchaFailure = it
         if (prepared && !ssoSubmitted && !stopped) fail(it, "vpn_login_required", "expired")
     }) {
         if (!closed && (!stopped || CaptchaPagePolicy.isTrusted(view.url)))
-            onStatus(if (stopped) "$it；自动登录已停止，可手动继续或检查两套账号设置" else it)
+            onStatus(if (stopped) "$it；自动登录已停止，可手动继续或检查两套账号设置"
+                else if (ssoSubmitted) "统一认证已提交，正在等待学校结果（不能视为登录成功）" else it)
     }
 
     init {
@@ -78,12 +82,17 @@ class WebVpnLoginDriver internal constructor(
     }
     fun onPause() { active = false; epoch++; probing = false; preparing = false; captcha.onPause() }
     fun setOcrEnabled(enabled: Boolean) { ocrEnabled = enabled; captcha.setEnabled(enabled) }
+    fun setRememberMe(enabled: Boolean) {
+        rememberMe = enabled
+        if (prepared && !ssoSubmitted && !stopped && CaptchaPagePolicy.isTrusted(view.url))
+            evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.setRememberMe($enabled) || {kind:'stopped'})", epoch) {}
+    }
     fun retryCaptcha() { captchaFailure = null; captcha.retry() }
 
     fun onPageStarted(url: String) {
         if (closed) return
         epoch++; loading = true; probing = false; preparing = false; prepared = false
-        captchaFailure = null; finishedWhilePaused = false
+        captchaFailure = null; captchaReady = false; finishedWhilePaused = false
         captcha.onPageStarted(url)
     }
 
@@ -124,7 +133,8 @@ class WebVpnLoginDriver internal constructor(
         val id = epoch
         preparing = true
         evaluate(ssoScript, id) {
-            val json = JSONObject().put("username", credentials.username).put("password", credentials.password).toString()
+            val json = JSONObject().put("username", credentials.username).put("password", credentials.password)
+                .put("rememberMe", rememberMe).toString()
             evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.prepare($json) || {kind:'stopped'})", id) { result ->
                 preparing = false
                 if (!sso.enabled || sso.paused || sso.revision != ssoVersion) { fail("统一认证账号设置已改变，已停止本次自动登录", "vpn_login_required"); return@evaluate }
@@ -133,7 +143,8 @@ class WebVpnLoginDriver internal constructor(
                         prepared = true
                         val failure = captchaFailure
                         if (failure != null) fail(failure, "vpn_login_required", "expired")
-                        else onStatus("已填写统一认证账号，正在等待本机验证码识别；不会使用图书馆密码")
+                        else if (captchaReady) submitSso()
+                        else onStatus("统一认证账号已填写；等待验证码完成后自动提交登录")
                     }
                     "manual" -> fail("检测到手动填写的统一认证账号，自动登录已停止，不会覆盖", "vpn_login_required", "expired")
                     else -> fail("统一认证密码表单尚未适配，已停止自动填写（sso-form）", "vpn_login_required", "expired")
@@ -154,6 +165,7 @@ class WebVpnLoginDriver internal constructor(
                 if (result.optString("kind") == "waiting") {
                     // No submission took place; a newly current CAPTCHA may complete this preparation.
                     ssoSubmitted = false
+                    captchaReady = false
                     onStatus("验证码已更新，等待当前图片重新识别")
                 } else fail("统一认证未能安全提交，已停止；请在网页核对", "vpn_login_required", "expired", Kind.SSO)
             } else verifyLater(id, Kind.SSO)
@@ -208,8 +220,12 @@ class WebVpnLoginDriver internal constructor(
                 main.postDelayed({ if (live(id)) submitLibrary() }, 700L)
                 return@evaluate
             }
-            if (state.optString("kind") != "ready" || !library.enabled || library.paused || library.revision != libraryVersion) {
-                fail("图书馆表单需要手动处理或账号设置已改变；已停止自动登录", "expired", "valid")
+            if (!library.enabled || library.paused || library.revision != libraryVersion) {
+                fail("图书馆账号设置已改变；已停止本次自动登录", "expired", "valid")
+                return@evaluate
+            }
+            if (state.optString("kind") != "ready") {
+                fail("图书馆自动登录停止：${libraryReason(state.optString("detailCode"))}", "expired", "valid")
                 return@evaluate
             }
             val json = JSONObject().put("username", credentials.username).put("password", credentials.password).toString()
@@ -221,6 +237,15 @@ class WebVpnLoginDriver internal constructor(
                 else fail("图书馆未能安全提交或结果不明；不会自动重发，请核对网页", "expired", "valid", Kind.LIBRARY)
             }
         }
+    }
+
+    private fun libraryReason(code: String) = when (code) {
+        "wrong-page" -> "未到达已适配的图书馆登录页"
+        "wrong-action" -> "图书馆表单的提交地址未匹配"
+        "unsupported-structure" -> "主登录表单的账号或密码输入框未匹配"
+        "user-edited", "occupied-fields" -> "检测到手动或已有填写，不会覆盖"
+        "additional-verification" -> "学校要求额外验证，请手动完成"
+        else -> "图书馆表单尚未适配，请手动完成"
     }
 
     private fun verifyLater(id: Long, kind: Kind) {

@@ -7,11 +7,11 @@ const prefix = '/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d
 const login = prefix + '/login';
 
 function fixture(options = {}) {
-  const dom = new JSDOM(`<form id="fromuser" method="${options.method || 'post'}" action="${options.action || login}" target="${options.target || ''}">
+  const dom = new JSDOM(`${options.before||''}<form id="fromuser" method="${options.method || 'post'}" action="${options.action || login}" target="${options.target || ''}">
     <input id="user" name="user"><input id="passwd" name="passwd" type="password"><input id="url" name="url" value="selectreadingroom">
     ${options.captcha ? '<input name="captcha">' : ''}</form>${options.extra || ''}`,
     {url: options.url || 'https://webvpn.cppu.edu.cn' + login, runScripts: 'outside-only'});
-  const w = dom.window, user = w.document.getElementById('user'), password = w.document.getElementById('passwd');
+  const w = dom.window, form=w.document.querySelector('form#fromuser'), user = form.querySelector('#user'), password = form.querySelector('#passwd');
   const state = {requests: 0, posted: null};
   w.submitForm = () => {
     password.value = Buffer.from(password.value, 'utf8').toString('base64');
@@ -64,14 +64,36 @@ for (const [name, options, detail] of [
   ['GET form', {method: 'get'}, 'wrong-action'],
   ['other browsing context', {target: '_blank'}, 'wrong-action'],
   ['duplicate form', {extra: '<form id="fromuser"></form>'}, 'unsupported-structure'],
-  ['duplicate username', {extra: '<input id="user" name="user">'}, 'unsupported-structure'],
   ['duplicate password', {extra: '<input id="passwd" name="passwd" type="password">'}, 'unsupported-structure'],
-  ['duplicate destination', {extra: '<input id="url" name="url">'}, 'unsupported-structure'],
   ['additional verification', {captcha: true}, 'additional-verification']
 ]) test(`no credential transmission: ${name}`, () => using(options, f => {
   const result = f.submit(); assert.equal(result.detailCode, detail);
   assert.equal(f.state.requests, 0); assert.equal(f.user.value, ''); assert.equal(f.password.value, '');
   assert.doesNotMatch(JSON.stringify(result), /library-only-account|密码|attacker|https:|http\//);
+}));
+
+test('real header login duplicate user ID does not block or receive the main form credentials',()=>using({
+  before:'<form id="fromuser1" method="post" action="/login"><input id="user" name="user"><input id="passwd1" name="passwd" type="password"></form>',
+  action:'login'
+},f=>{
+  assert.equal(f.inspect().kind,'ready'); assert.equal(f.submit().kind,'submitted');
+  assert.equal(f.state.requests,1); assert.equal(f.state.posted.user,f.credentials.username);
+  const header=f.w.document.querySelector('#fromuser1');
+  assert.equal(header.querySelector('#user').value,''); assert.equal(header.querySelector('#passwd1').value,'');
+}));
+test('main-form duplicates are still rejected while unrelated destination fields are not filled',()=>{
+  for(const id of ['user','url']) using({},f=>{
+    const form=f.w.document.querySelector('#fromuser'); form.appendChild(form.querySelector('#'+id).cloneNode());
+    assert.equal(f.submit().detailCode,'unsupported-structure'); assert.equal(f.state.requests,0); assert.equal(f.user.value,'');
+  });
+  using({extra:'<input id="url" name="url" value="unrelated">'},f=>{
+    assert.equal(f.submit().kind,'submitted'); assert.equal(f.w.document.querySelector('body > input#url').value,'unrelated');
+  });
+});
+test('WebVPN original root attribute with an upstream action getter stays within the verified main form',()=>using({action:'/login'},f=>{
+  const form=f.w.document.querySelector('#fromuser');
+  Object.defineProperty(form,'action',{get:()=> 'http://mlib.cppu.edu.cn/login'});
+  assert.equal(f.inspect().kind,'ready'); assert.equal(f.submit().kind,'submitted'); assert.equal(f.state.requests,1);
 }));
 
 test('unrewritten portal action waits without credentials, then accepts a verified rewrite', () => using({action: '/login'}, f => {

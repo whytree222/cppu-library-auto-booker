@@ -19,25 +19,30 @@
   }
   let action;
   try { action = new URL(form.action, location.href); } catch (_) { return reply('stopped', 'wrong-action'); }
-  const attribute = new URL(form.getAttribute('action') || location.href, location.href);
-  const transportSafe = url => url.origin === origin && !url.username && !url.password && url.pathname === loginPath;
-  const logicalSafe = url => url.origin === 'http://mlib.cppu.edu.cn' && !url.username && !url.password && url.pathname === '/login';
+  const raw = (form.getAttribute('action') || '').trim();
+  let attribute = new URL(raw || location.href, raw.startsWith('/login') ? 'http://mlib.cppu.edu.cn/login' : location.href);
+  const transportSafe = url => url.origin === origin && !url.username && !url.password && !url.hash && url.pathname === loginPath;
+  const logicalSafe = url => url.origin === 'http://mlib.cppu.edu.cn' && !url.username && !url.password && !url.hash && url.pathname === '/login';
   // A root /login still targets the WebVPN portal, not the library. Wait for its rewrite.
-  if (action.origin === origin && !action.username && !action.password && action.pathname === '/login') {
+  if ((transportSafe(attribute) || logicalSafe(attribute)) && /^\/(?!\/)/.test(raw) &&
+      action.origin === origin && !action.username && !action.password && !action.hash && action.pathname === '/login') {
     // Normalize a known original library action before any credential is written.
-    form.setAttribute('action', loginPath);
+    form.setAttribute('action', loginPath + attribute.search);
     return reply('waiting', 'action-not-rewritten');
   }
-  if (!transportSafe(attribute) || !(transportSafe(action) || logicalSafe(action))) {
+  if (!(transportSafe(attribute) || (/^\/(?!\/)/.test(raw) && logicalSafe(attribute))) || !(transportSafe(action) || logicalSafe(action))) {
     return reply('stopped', 'wrong-action');
   }
-  const users = document.querySelectorAll('input#user');
-  const passwords = document.querySelectorAll('input#passwd');
-  const destinations = document.querySelectorAll('input#url');
+  // The school's header has its own fromuser1/user/passwd1 login. Scope to the main form.
+  const users = form.querySelectorAll('input#user');
+  const passwords = form.querySelectorAll('input#passwd');
+  const destinations = form.querySelectorAll('input#url');
   if (users.length !== 1 || passwords.length !== 1 || destinations.length !== 1) {
     return reply('stopped', 'unsupported-structure');
   }
   const user = users[0], password = passwords[0], destination = destinations[0];
+  // submitForm uses the global #passwd encoder: this ID, unlike #user, must stay unique.
+  if (document.querySelectorAll('input#passwd').length !== 1) return reply('stopped', 'unsupported-structure');
   if (user.form !== form || password.form !== form || destination.form !== form ||
       user.name !== 'user' || password.name !== 'passwd' || destination.name !== 'url' ||
       !['text', 'email'].includes(user.type) || password.type !== 'password' ||
