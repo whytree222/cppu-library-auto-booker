@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
+import cn.edu.cppu.libraryautobooker.data.LoginStatusStore
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -18,9 +19,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 object SessionChecker {
-    data class Result(val state: String, val detail: String, val networkFailure: Boolean = false)
+    data class Result(val state: String, val detail: String, val networkFailure: Boolean = false, val vpnAuthState: String? = null)
     private val executor = Executors.newSingleThreadExecutor()
     private val generation = AtomicInteger()
+    private val routeGenerations = LibraryRoute.entries.associateWith { AtomicInteger() }
     private val main = Handler(Looper.getMainLooper())
 
     // Same read-only login probe used by the school's readingroommanage.js.
@@ -33,10 +35,12 @@ object SessionChecker {
         probe(context, LibraryRoute.DIRECT) { callback(it.state) }
     }
 
-    fun probe(context: Context, route: LibraryRoute, callback: (Result) -> Unit) {
-        val id = generation.incrementAndGet()
+    fun probe(context: Context, route: LibraryRoute, updateSession: Boolean = true, callback: (Result) -> Unit) {
+        val id = if (updateSession) generation.incrementAndGet() else -1
+        val routeId = routeGenerations.getValue(route).incrementAndGet()
         val app = context.applicationContext
-        RuntimeStore(app).prefs.edit().putString("session_state", "checking")
+        LoginStatusStore(app).checking(route)
+        if (updateSession) RuntimeStore(app).prefs.edit().putString("session_state", "checking")
             .putString("session_detail", "正在通过${route.label}验证图书馆登录…").apply()
         val url = route.url("/isLogin")
         val cookie = CookieManager.getInstance().getCookie(url)
@@ -76,7 +80,8 @@ object SessionChecker {
             main.post {
                 responseCookies.forEach { CookieManager.getInstance().setCookie(url, it) }
                 if (responseCookies.isNotEmpty()) CookieManager.getInstance().flush()
-                if (id == generation.get()) {
+                if (routeId == routeGenerations.getValue(route).get()) LoginStatusStore(app).record(route, result)
+                if (updateSession && id == generation.get()) {
                     RuntimeStore(app).session(result.state, result.detail)
                     RuntimeStore(app).prefs.edit().putString("session_route", route.name).apply()
                     if (result.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", route.name).apply()
@@ -93,11 +98,26 @@ object SessionChecker {
     internal fun decodeRoute(route: LibraryRoute, code: Int, location: String?, body: String): Result {
         if (route == LibraryRoute.WEBVPN && code in 300..399) {
             val destination = runCatching { java.net.URI(route.url("/isLogin")).resolve(location.orEmpty()).toString() }.getOrDefault("")
-            if (route.pathOf(destination) != "/login")
-                return Result("vpn_login_required", "WebVPN 统一认证已过期或需要验证码，请在应用内手动认证")
+            if (route.pathOf(destination)?.trimEnd('/') == "/login")
+                return Result("expired", "WebVPN 通道的图书馆登录已过期或未登录", vpnAuthState = "valid")
+            val uri = runCatching { java.net.URI(destination) }.getOrNull()
+            if (uri?.scheme == "https" && uri.userInfo == null &&
+                uri.host == "webvpn.cppu.edu.cn" && uri.path.orEmpty().trimEnd('/') == "/login")
+                return Result("vpn_login_required", "WebVPN 要求重新统一认证，请手动登录并完成验证码", vpnAuthState = "expired")
+            return Result("unknown", "WebVPN 返回未识别的跳转，无法确认两层登录状态")
+        }
+        if (route == LibraryRoute.WEBVPN && code == 200) {
+            // A login HTML page is not successful authentication just because HTTP is 200.
+            if (Regex("<form[^>]+id=[\"']fromuser[\"']", RegexOption.IGNORE_CASE).containsMatchIn(body) &&
+                Regex("<input[^>]+id=[\"']passwd[\"']", RegexOption.IGNORE_CASE).containsMatchIn(body))
+                return Result("expired", "已到达图书馆登录页面，需要重新登录图书馆", vpnAuthState = "valid")
+            if (Regex("<input[^>]+type=[\"']password[\"']", RegexOption.IGNORE_CASE).containsMatchIn(body) &&
+                Regex("统一(?:身份)?认证|WebVPN", RegexOption.IGNORE_CASE).containsMatchIn(body))
+                return Result("vpn_login_required", "学校返回 WebVPN 认证页面，请手动完成认证", vpnAuthState = "expired")
         }
         val decoded = decode(code, location, body)
-        return Result(decoded.first, "${route.label}：${decoded.second}", code in listOf(408, 502, 503, 504))
+        return Result(decoded.first, "${route.label}：${decoded.second}", code in listOf(408, 502, 503, 504),
+            if (route == LibraryRoute.WEBVPN && code == 200 && decoded.first in listOf("valid", "expired")) "valid" else null)
     }
 
     internal fun decode(code: Int, location: String?, body: String): Pair<String, String> = when {

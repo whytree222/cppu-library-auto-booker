@@ -48,6 +48,7 @@ import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.data.SeatCatalog
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
+import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.time.format.DateTimeFormatter
@@ -71,12 +72,14 @@ class MainActivity : ComponentActivity() {
                     loginEntryVisible = true
                 }
             }
+            SessionChecker.probe(this@MainActivity, LibraryRoute.WEBVPN, updateSession = false) {}
             uiHandler.postDelayed(this, 60_000L)
         }
     }
 
     override fun onResume() {
         super.onResume()
+        refreshVersion++
         val store = ConfigStore(this)
         val current = store.load()
         val runtime = RuntimeStore(this)
@@ -122,7 +125,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(0xFF176B4D))) {
                 LaunchedEffect(loginEntryVisible) {
                     uiHandler.removeCallbacks(sessionProbe)
-                    if (!loginEntryVisible) uiHandler.postDelayed(sessionProbe, 60_000L)
+                    if (!loginEntryVisible) uiHandler.post(sessionProbe)
                 }
                 var showPermissionSetup by rememberSaveable { mutableStateOf(!setupPrefs.getBoolean("shown", false)) }
                 if (showPermissionSetup && !loginEntryVisible) PermissionSetup {
@@ -170,7 +173,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val notificationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
-                ) { }
+                ) { refreshVersion++ }
                 var seatInput by remember { mutableStateOf(config.seatNumbers.joinToString("\n")) }
 
                 // Keep draft reservation settings alive while an expired session is restored.
@@ -186,32 +189,39 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text("图书馆自动预约", style = MaterialTheme.typography.headlineMedium)
-                    Text("过刊阅览室 · 仅在校园网络下运行")
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("登录状态", style = MaterialTheme.typography.titleMedium)
-                            Text(sessionDetail)
-                            Text("最近验证：${RuntimeStore.format(sessionAt)}；打开应用时及前台每分钟验证一次")
-                            OutlinedButton(onClick = { SessionCoordinator.check(this@MainActivity) }) { Text("立即检查登录") }
+                    Text("过刊阅览室 · 直连优先 / 学校 WebVPN 备用", style = MaterialTheme.typography.bodyMedium)
+                    LoginStatusCard(rememberLoginStatuses(), hasActions = true, onCheck = {
+                        SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
+                        SessionChecker.probe(this@MainActivity, LibraryRoute.WEBVPN, updateSession = false) {}
+                    }) {
                             val credentials = remember(refreshVersion) { CredentialStore(this@MainActivity) }
                             Text(if (!credentials.configured) "自动重新登录：未设置账号密码"
                                 else if (credentials.paused) "自动重新登录：已暂停，请核对账号密码后重新登录"
                                 else if (credentials.enabled) "自动重新登录：已开启" else "自动重新登录：已关闭")
                             OutlinedButton(onClick = { managingLogin = true; loginEntryVisible = true }) { Text("登录 / 管理账号") }
-                        }
+                            OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java)) }) { Text("直连 · 图书馆网页登录") }
+                            OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java).putExtra("webvpn", true)) }) { Text("WebVPN 统一认证 / 图书馆网页登录") }
+                            SettingSwitch(
+                                title = "直连优先，WebVPN 自动备用",
+                                detail = "仅提交前直连网络故障才切换；业务拒绝不切换。修改后需保存任务。",
+                                checked = config.webVpnBackup,
+                                onChecked = { config = config.copy(webVpnBackup = it) }
+                            )
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("定时任务与后台状态", style = MaterialTheme.typography.titleMedium)
+                            Text("预约计划与运行结果", style = MaterialTheme.typography.titleLarge)
                             Text(if (liveConfig.enabled) "等待 ${liveConfig.pendingTimes().size} 个时间 · ${if (liveConfig.dryRun) "演练，不提交" else "真实预约"}" else "当前没有等待触发的定时任务")
                             if (liveConfig.enabled) liveConfig.pendingTimes().forEach { at ->
                                 Text("计划：${RuntimeStore.format(at)}")
                             }
                             Text(taskDetail)
-                            Text("精确闹钟：${if (scheduler.canScheduleExact()) "已允许" else "未允许"}；通知：${if (NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()) "已允许" else "未允许"}")
-                            val power = getSystemService(PowerManager::class.java)
-                            Text("系统省电豁免：${if (power.isIgnoringBatteryOptimizations(packageName)) "已开启" else "未开启"}")
-                            Text("小米等机型还需在系统应用设置中检查后台运行、自启动和省电限制；测试时保持校园网络连接。")
+                        }
+                    }
+                    PermissionStatusCard(scheduler.canScheduleExact(),
+                        NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled(),
+                        getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) {
+                            OutlinedButton(onClick = { exactPermission.launch(scheduler.exactAlarmSettingsIntent()) }) { Text("设置闹钟和提醒") }
                             OutlinedButton(onClick = { showPermissionSetup = true }) { Text("重新查看权限引导") }
                             OutlinedButton(onClick = {
                                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
@@ -232,10 +242,9 @@ class MainActivity : ComponentActivity() {
                             }) { Text("60 秒后台唤醒测试（不预约）") }
                             Text("请避开放号前 20 分钟测试，以免连续闹钟受到系统频率限制。", style = MaterialTheme.typography.bodySmall)
                             Text(testDetail)
-                        }
                     }
                     Text(
-                        "安全提醒：校方系统目前使用 HTTP，登录信息没有 TLS 传输保护。请只在可信的校园局域网中登录。",
+                        "安全提醒：直连图书馆使用 HTTP，请使用可信校园网。WebVPN 使用 HTTPS，但会话可能提前过期。",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -243,10 +252,7 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("准备", style = MaterialTheme.typography.titleMedium)
-                            Text("1. 连接校园局域网并登录\n2. 每行输入一个座位号，越靠前优先级越高\n3. 设置放号时间，先演练一次")
-                            OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java)) }) {
-                                Text("打开预约系统 / 登录")
-                            }
+                            Text("1. 在上方登录区域检查直连或 WebVPN 会话\n2. 每行输入一个座位号，越靠前优先级越高\n3. 设置放号时间，先演练一次")
                         }
                     }
 
@@ -333,15 +339,6 @@ class MainActivity : ComponentActivity() {
                         checked = config.waitForRelease,
                         onChecked = { config = config.copy(waitForRelease = it) }
                     )
-                    SettingSwitch(
-                        title = "直连优先，WebVPN 自动备用",
-                        detail = "仅提交前直连网络故障才切换学校代理；业务拒绝不切换。须提前在应用内完成 WebVPN 统一认证和图书馆网页登录；可在学校页勾选五天自动登录。",
-                        checked = config.webVpnBackup,
-                        onChecked = { config = config.copy(webVpnBackup = it) }
-                    )
-                    OutlinedButton(onClick = {
-                        startActivity(Intent(this@MainActivity, LoginActivity::class.java).putExtra("webvpn", true))
-                    }, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 统一认证 / 图书馆网页登录") }
                     OutlinedButton(onClick = {
                         startService(Intent(this@MainActivity, BookingService::class.java).setAction(BookingService.ACTION_CANCEL))
                         status = "已请求停止当前任务；不取消已成功的学校预约，也不取消其他定时计划"

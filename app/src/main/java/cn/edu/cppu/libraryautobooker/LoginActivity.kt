@@ -53,6 +53,7 @@ class LoginActivity : Activity() {
                             "document.querySelector('form#fromuser input#url')?.setAttribute('value', 'selectreadingroom')",
                             null
                         )
+                        if (route == LibraryRoute.WEBVPN) verifyLogin()
                     } else {
                         CookieManager.getInstance().flush()
                         verifyLogin()

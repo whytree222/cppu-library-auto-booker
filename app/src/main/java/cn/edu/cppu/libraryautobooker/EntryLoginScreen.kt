@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
+import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 
 /** The entry page contains only login controls, not the reservation dashboard. */
 @Composable
@@ -117,7 +118,7 @@ fun EntryLoginScreen(
 
     if (gateOnly) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(Modifier.padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally,
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 if (busy) CircularProgressIndicator()
                 Text(detail)
@@ -126,6 +127,7 @@ fun EntryLoginScreen(
                     store.setEnabled(false)
                     schoolLogin.launch(Intent(context, LoginActivity::class.java).putExtra("webvpn", true))
                 }, enabled = !busy) { Text("WebVPN 统一认证 / 图书馆网页登录") }
+                LoginStatusCard(rememberLoginStatuses())
             }
         }
         return
@@ -225,7 +227,11 @@ fun EntryLoginScreen(
                     username = ""; password = ""; detail = "已删除保存的账号密码，当前网页会话不受影响"
                 }.onFailure { detail = "删除失败，请重试" }
             }, enabled = !busy) { Text("删除已保存的账号密码") }
-            Text("学校使用 HTTP，请仅在可信校园网络中登录。", style = MaterialTheme.typography.bodySmall)
+            LoginStatusCard(rememberLoginStatuses(), onCheck = {
+                SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}
+                SessionChecker.probe(app, LibraryRoute.WEBVPN, updateSession = false) {}
+            })
+            Text("直连图书馆使用 HTTP，请仅在可信校园网络中登录；WebVPN 使用 HTTPS。", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
