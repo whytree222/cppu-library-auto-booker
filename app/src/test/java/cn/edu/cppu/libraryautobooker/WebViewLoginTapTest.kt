@@ -26,6 +26,12 @@ class WebViewLoginTapTest {
         var throwOnDown = false
         val events = mutableListOf<List<Number>>()
         override fun getUrl() = address
+        // Robolectric's stub WebView provider returns false from setFrame and has
+        // no Chromium layout. Supply actual View bounds for this input fake only.
+        override fun setFrame(l: Int, t: Int, r: Int, b: Int): Boolean {
+            left = l; top = t; right = r; bottom = b
+            return true
+        }
         override fun dispatchTouchEvent(event: MotionEvent): Boolean {
             events.add(listOf(event.actionMasked, event.x, event.y, event.source, event.getToolType(0), event.downTime))
             if (throwOnDown && event.actionMasked == MotionEvent.ACTION_DOWN) throw IllegalStateException("synthetic")

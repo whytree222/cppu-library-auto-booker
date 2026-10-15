@@ -43,6 +43,12 @@ class WebVpnLoginDriverTest {
         var acceptTouch = true
         var throwAfterDown = false
         override fun getUrl(): String = address
+        // This fake has no Chromium provider; model the real layout bounds rather
+        // than accepting the stub provider's no-op setFrame result.
+        override fun setFrame(l: Int, t: Int, r: Int, b: Int): Boolean {
+            left = l; top = t; right = r; bottom = b
+            return true
+        }
         override fun evaluateJavascript(script: String, resultCallback: ValueCallback<String>?) {
             calls.add(Call(script, resultCallback))
         }
