@@ -3,6 +3,7 @@ package cn.edu.cppu.libraryautobooker
 import android.content.Context
 import android.os.Looper
 import android.view.MotionEvent
+import android.view.View
 import android.webkit.ValueCallback
 import android.webkit.WebView
 import cn.edu.cppu.libraryautobooker.data.WebVpnCredentialStore
@@ -73,6 +74,8 @@ class WebVpnLoginDriverTest {
         init {
             if (saveSso) sso.save(SSO_USER, SSO_PASSWORD)
             if (saveLibrary) library.save(LIBRARY_USER, LIBRARY_PASSWORD)
+            view.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY))
             view.layout(0, 0, 1080, 1920)
             driver = WebVpnLoginDriver(app, view, { statuses.add(it) }, { results.add(it) },
                 ssoStore = sso, libraryStore = library, probe = { probes.addLast(it) })

@@ -3,6 +3,7 @@ package cn.edu.cppu.libraryautobooker
 import android.os.Looper
 import android.view.InputDevice
 import android.view.MotionEvent
+import android.view.View
 import android.webkit.WebView
 import org.junit.Assert.*
 import org.junit.Test
@@ -33,7 +34,10 @@ class WebViewLoginTapTest {
     }
     private val point = WebViewLoginTap.Target(100.0, 200.0, 360.0, 640.0)
     private fun withTap(block: (FakeView, WebViewLoginTap) -> Unit) {
-        val view = FakeView(); view.layout(0, 0, 1080, 1920)
+        val view = FakeView()
+        view.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY))
+        view.layout(0, 0, 1080, 1920)
         val tap = WebViewLoginTap(view)
         try { block(view, tap) } finally { tap.close(); view.destroy() }
     }
@@ -41,7 +45,8 @@ class WebViewLoginTapTest {
     @Test fun oneDownUpUsesWebViewLocalPixelsFingerAndTouchscreen() = withTap { view, tap ->
         val completed = mutableListOf<Boolean>()
         tap.tap(point, { true }, completed::add)
-        assertEquals(1, view.events.size); assertTrue(completed.isEmpty())
+        assertEquals("layout=${view.width}x${view.height}, enabled=${view.isEnabled}, visibility=${view.visibility}, scroll=${view.scrollX},${view.scrollY}", 1, view.events.size)
+        assertTrue(completed.isEmpty())
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
         assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP), view.events.map { it[0] })
         assertEquals(300f, view.events[0][1]); assertEquals(600f, view.events[0][2])
