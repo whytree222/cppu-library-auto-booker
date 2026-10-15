@@ -88,6 +88,17 @@ test('explicit not-open notice can enter bounded wait but no-seat notice cannot'
   assert.equal(run({ schoolNotice: '没有空闲座位可以预约', wait: true }).messages.some(m => m.state === 'closed'), false);
 });
 
+test('actual school 未到可预约时间 notice enters waiting only when opted in', () => {
+  const schoolNotice = '当前时间为:00:55:01 未到可预约时间!';
+  const waiting = run({schoolNotice, wait: true});
+  assert.equal(waiting.next, 0);
+  assert.equal(waiting.messages.at(-1).state, 'closed');
+  const disabled = run({schoolNotice});
+  assert.equal(disabled.messages.at(-1).state, 'error');
+  const mixed = run({schoolNotice: '登录失效，' + schoolNotice, wait: true});
+  assert.equal(mixed.messages.at(-1).state, 'error');
+});
+
 for (const [name, options] of [
   ['explicit wrong date', { rawDate: dateString(1) }],
   ['relative day disagrees with date', { wrongOffset: true }],
@@ -99,4 +110,3 @@ for (const [name, options] of [
   assert.equal(result.next, 0);
   assert.ok(result.messages.some(m => m.state === 'error'));
 });
-

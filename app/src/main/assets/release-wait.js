@@ -6,8 +6,10 @@
   const started = Date.now();
   const deadline = started + Math.min(600000, Math.max(0, duration));
   const report = (state, detail) => window.AutoBooker?.report(state, detail);
+  // School checktimecanbesk also says “当前时间为:… 未到可预约时间!”.
+  // Keep this same explicit opening classifier in selection.js and automation.js.
   const closed = value => !/登录|登陆|会话|密码|验证码|重复|已有预约|已经预约|次数|上限|空闲座位|预约成功/.test(String(value || '')) &&
-    /未到(?:预约|开放)时间|尚未开放|暂未开放|未开放预约|还未开放|未开始预约|预约尚未开始|尚未到.*预约时间/.test(String(value || ''));
+    /未到(?:可预约|预约|开放)时间|尚未开放|暂未开放|未开放预约|还未开放|未开始预约|预约尚未开始|尚未到.*预约时间/.test(String(value || ''));
   let finished = false, count = 0;
   const finish = (state, detail) => {
     if (finished) return;
@@ -74,4 +76,3 @@
   };
   tick();
 })();
-

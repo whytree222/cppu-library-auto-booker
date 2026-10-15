@@ -23,12 +23,12 @@ function fixture(options = {}) {
       if (args.url.includes('checktimecanbesk')) {
         if (options.malformed) return args.success({});
         if (options.denied) return args.success({ReturnValue: -1, Msg: options.denied});
-        if (options.roomClosed && now - start < options.roomClosed) return args.success({ReturnValue: -1, Msg: '未到预约时间'});
+        if (options.roomClosed && now - start < options.roomClosed) return args.success({ReturnValue: -1, Msg: options.closedMessage || '未到预约时间'});
         args.success({ReturnValue: 0, Msg: '认证通过', CanBaskID: '72'});
       } else {
         if (options.dateDenied) return args.success({flagSign: 'false', strReturn: options.dateDenied});
         args.success(now - start < (options.openAfter || 0)
-          ? {flagSign: 'false', strReturn: '尚未开放预约'}
+          ? {flagSign: 'false', strReturn: options.closedMessage || '尚未开放预约'}
           : {flagSign: options.flag || 'true', strReturn: ''});
       }
     }, options.delay || 0);
@@ -68,7 +68,44 @@ test('ten minute deadline is not extended by repeated closed responses', () => {
   assert.equal(f.reports.some(r => r.state === 'opened'), false); f.dom.window.close();
 });
 
-for (const denied of ['登录已失效', '已超过预约次数上限', '没有共同的空闲座位', '座位号格式错误', '登录失效，尚未开放预约'])
+const exactSchoolMessage = '当前时间为:00:55:01 未到可预约时间!';
+for (const gate of ['room', 'date']) {
+  test(`actual school wording keeps waiting and proceeds when ${gate} opens after five minutes`, () => {
+    const f = fixture({closedMessage: exactSchoolMessage,
+      ...(gate === 'room' ? {roomClosed: 300000} : {openAfter: 300000})});
+    f.advance(299999);
+    assert.equal(f.reports.some(r => r.state === 'opened' || r.state === 'error'), false);
+    assert.ok(f.reports.some(r => r.state === 'progress' && r.detail.includes(exactSchoolMessage)));
+    f.advance(10001);
+    assert.equal(f.reports.filter(r => r.state === 'opened').length, 1);
+    assert.equal(f.requests.filter(r => r.url.includes('checktimecanbesk')).length, 301);
+    assert.ok(f.requests.every(r => /checktimecanbesk|getYY/.test(r.url)));
+    assert.equal(f.maxFlight(), 1);
+    f.dom.window.close();
+  });
+  test(`actual school wording at ${gate} never resets the ten-minute deadline`, () => {
+    const f = fixture({closedMessage: exactSchoolMessage,
+      ...(gate === 'room' ? {roomClosed: 900000} : {openAfter: 900000})});
+    f.advance(700000);
+    assert.equal(f.requests.filter(r => r.url.includes('checktimecanbesk')).length, 600);
+    assert.equal(f.reports.at(-1).state, 'error');
+    assert.match(f.reports.at(-1).detail, /10 分钟/);
+    assert.equal(f.reports.some(r => r.state === 'opened'), false);
+    f.dom.window.close();
+  });
+}
+
+test('actual school wording also honors a remaining window of only two seconds', () => {
+  const f = fixture({roomClosed: 60000, duration: 2000, closedMessage: exactSchoolMessage});
+  f.advance(20000);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.reports.at(-1).state, 'error');
+  assert.match(f.reports.at(-1).detail, /10 分钟/);
+  f.dom.window.close();
+});
+
+for (const denied of ['登录已失效', '已超过预约次数上限', '没有共同的空闲座位', '座位号格式错误', '登录失效，尚未开放预约',
+  '登录失效，未到可预约时间!', '已有预约，未到可预约时间!', '已超过预约次数上限，未到可预约时间!'])
   test(`no repeated checks for non-opening refusal: ${denied}`, () => {
     const f = fixture({denied}); f.advance(60000);
     assert.equal(f.requests.length, 1); assert.equal(f.reports.at(-1).state, 'error'); f.dom.window.close();
@@ -90,4 +127,3 @@ test('remaining deadline is honored when re-entering wait after definite refusal
   const f = fixture({roomClosed: 60000, duration: 2000}); f.advance(20000);
   assert.equal(f.requests.length, 2); assert.equal(f.reports.at(-1).state, 'error'); f.dom.window.close();
 });
-

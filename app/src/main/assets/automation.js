@@ -77,7 +77,7 @@
     } else report(state, detail);
   };
   const closed = value => !/登录|登陆|会话|密码|验证码|重复|已有预约|已经预约|次数|上限|空闲座位|预约成功/.test(value) &&
-    /未到(?:预约|开放)时间|尚未开放|暂未开放|未开放预约|还未开放|未开始预约|预约尚未开始|尚未到.*预约时间/.test(value);
+    /未到(?:可预约|预约|开放)时间|尚未开放|暂未开放|未开放预约|还未开放|未开始预约|预约尚未开始|尚未到.*预约时间/.test(value);
   const tryNext = () => {
     if (finished || active) return;
     const number = numbers.find(value => !attempted.has(value) && locate(value));
@@ -246,4 +246,3 @@
   };
   tryNext();
 })();
-

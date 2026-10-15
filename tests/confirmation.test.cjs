@@ -172,6 +172,17 @@ test('explicit not-open rejection resumes checking without another submission in
   } finally { f.close(); }
 });
 
+test('actual school 未到可预约时间 result resumes waiting without resubmitting the old page', async () => {
+  for (const wait of [true, false]) {
+    const f = fixture({wait, result: '当前时间为:00:55:01 未到可预约时间!'});
+    try {
+      await f.advance(50000);
+      assert.equal(f.requests(), 1);
+      assert.equal(f.messages.at(-1).state, wait ? 'closed' : 'error');
+    } finally { f.close(); }
+  }
+});
+
 test('wait mode stops on unknown submitted results and duplicate limits', async () => {
   for (const options of [{ noResponse: true }, { result: '已有预约，请勿重复预约' }]) {
     const f = fixture({ ...options, wait: true });
@@ -263,4 +274,3 @@ for (const [message, reason] of [
   try { await f.advance(5000); assert.equal(f.requests(), 1); assert.match(f.messages.at(-1).detail, reason); }
   finally { f.close(); }
 });
-

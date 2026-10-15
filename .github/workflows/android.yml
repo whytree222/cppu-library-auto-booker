@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.4 >/dev/null 2>&1; then
-            gh release upload v0.13.4 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.5 >/dev/null 2>&1; then
+            gh release upload v0.13.5 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.4 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.4 · 进入网页自动接续登录' --notes '修复首次进入或返回前台时将提前出现的网址当作已加载文档的问题，等待真实网页完成回调后自动接续统一认证和图书馆登录。重复页面完成回调不再重新准备账号或误判尚在等待结果的登录。初次进入、主动重启和后台恢复使用相同启动入口，无需将重新开始按钮作为正常登录步骤。保留两套独立加密账号、当前验证码校验、五天选项、手动优先、单次提交及未知结果暂停保护，不擅自重新启用已暂停账号，继续允许截屏。新增无需点击重启的两步流程及加载时序模拟回归；未使用真实账号提交学校认证，仍需手机复测。'
+            gh release create v0.13.5 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.5 · 修复未开放等待误判' --notes '修复学校提示“当前时间为:… 未到可预约时间!”因漏匹配可字而立即停止等待的问题，开放检查、时段选择及明确预约结果三处同步适配。开启等待后继续在服务实际启动的十分钟窗口内串行检查，开放后进入原选座流程，拒绝和返回检查不会重置窗口。未开启等待、登录失效、已有预约、次数限制、网络异常及未知提交结果等仍按原保护停止，不以业务拒绝切换通道，不盲目重发结果不明的预约。新增截图原文的五分钟后开放、十分钟截止、剩余窗口、时段及确认结果和混合拒绝模拟回归；未向学校真实提交预约，仍需手机复测。'
           fi
