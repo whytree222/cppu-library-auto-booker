@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.8 >/dev/null 2>&1; then
-            gh release upload v0.13.8 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.9 >/dev/null 2>&1; then
+            gh release upload v0.13.9 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.8 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.8 · 会话隔离与验证码失效自动重启' --notes '阻止过时探测写回旧 Cookie/状态，离开页面取消恢复订阅；前台 WebVPN 登录与隐藏登录互斥，防止验证码会话争用。仅在提交后新文档明确返回验证码无效/错误/过期时，间隔至少 1.5 秒自动从登录入口重新开始，最多两次，仍遵守同一 90 秒总上限。用户操作优先，账号密码错误、锁定、限流、额外验证、混合错误或未知提交结果不重发；验证码失败不冒充密码错误，不擅自解除已暂停账号。模拟网页与原生回归通过后构建，没有使用真实账号代登录；需手机复测首次自动进入以及图书馆第二层登录。'
+            gh release create v0.13.9 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.9 · 原登录按钮应用内触控' --notes '实际 WebVPN 会包装原登录按钮的点击处理。本版首次提交改为核验原表单、已填写账号和当前验证码后，在本应用 WebView 内发送一次按下/抬起，保留校方及代理原点击校验、RSA 与提交；不预先执行旧表单提交再补点。坐标、遮挡、缩放、布局、页面、账号及生命周期有变化时停止或取消输入；触摸结果不明绝不改走其它方式重发。不使用系统输入、无障碍或伪造窗口焦点。保留会话隔离、12 秒只读结果检查、90 秒总上限和明确验证码失效最多两次新页面重启。新增代理按钮包装模拟与原生输入回归，没有真实账号代登录；需手机分别复测首次自动跳转和后台恢复。'
           fi

@@ -2,6 +2,7 @@ package cn.edu.cppu.libraryautobooker
 
 import android.content.Context
 import android.os.Looper
+import android.view.MotionEvent
 import android.webkit.ValueCallback
 import android.webkit.WebView
 import cn.edu.cppu.libraryautobooker.data.WebVpnCredentialStore
@@ -37,18 +38,26 @@ class WebVpnLoginDriverTest {
         var address = SSO_URL
         val calls = mutableListOf<Call>()
         val navigations = mutableListOf<String>()
+        val touches = mutableListOf<Int>()
+        var acceptTouch = true
+        var throwAfterDown = false
         override fun getUrl(): String = address
         override fun evaluateJavascript(script: String, resultCallback: ValueCallback<String>?) {
             calls.add(Call(script, resultCallback))
         }
         override fun loadUrl(url: String) { navigations.add(url); address = url }
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            touches.add(event.actionMasked)
+            if (throwAfterDown && event.actionMasked == MotionEvent.ACTION_DOWN) throw IllegalStateException("Synthetic input failure")
+            return acceptTouch
+        }
         fun answerFirst(match: (String) -> Boolean, json: String) {
             val call = calls.firstOrNull { !it.answered && it.callback != null && match(it.script) }
                 ?: throw AssertionError("No matching pending fake JavaScript callback")
             call.answered = true
             call.callback?.onReceiveValue(json)
         }
-        fun submissionCount() = calls.count { it.script.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }
+        fun activationCount() = calls.count { it.script.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") }
     }
 
     private inner class Fixture(saveSso: Boolean = true, saveLibrary: Boolean = true) : AutoCloseable {
@@ -64,6 +73,7 @@ class WebVpnLoginDriverTest {
         init {
             if (saveSso) sso.save(SSO_USER, SSO_PASSWORD)
             if (saveLibrary) library.save(LIBRARY_USER, LIBRARY_PASSWORD)
+            view.layout(0, 0, 1080, 1920)
             driver = WebVpnLoginDriver(app, view, { statuses.add(it) }, { results.add(it) },
                 ssoStore = sso, libraryStore = library, probe = { probes.addLast(it) })
         }
@@ -92,16 +102,29 @@ class WebVpnLoginDriverTest {
         }
 
         fun completeCaptcha() {
-            val expectedSubmissions = view.submissionCount() + 1
+            val expectedSubmissions = view.activationCount() + 1
             view.answerFirst({ it.contains("Object.defineProperty(window, 'LibraryCaptchaOcr'") }, "{\"kind\":\"installed\"}")
             shadowOf(Looper.getMainLooper()).idle()
             view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
-            assertEquals(expectedSubmissions, view.submissionCount())
+            assertEquals(expectedSubmissions, view.activationCount())
         }
 
         fun completeCaptchaAndSubmitSso() {
             completeCaptcha()
-            view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }, "{\"kind\":\"submitted\"}")
+            activateOriginalButton()
+        }
+
+        fun activateOriginalButton(answerOutcome: Boolean = true) {
+            view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") }, "{\"kind\":\"activation-ready\"}")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            if (answerOutcome) view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.activationOutcome()") },
+                "{\"kind\":\"activation-observed\",\"detailCode\":\"original-submit-observed\"}")
+        }
+
+        fun answerActivationPoint(json: String = "{\"kind\":\"ready\",\"x\":540,\"y\":1000,\"viewportWidth\":1080,\"viewportHeight\":1920}") {
+            view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.activationPoint()") }, json)
         }
 
         fun answerReturnedSsoOutcome(kind: String, guard: String = "armed") {
@@ -147,7 +170,7 @@ class WebVpnLoginDriverTest {
             assertTrue(credentialCall.contains("\"rememberMe\":true"))
             assertFalse(credentialCall.contains(LIBRARY_USER))
             assertFalse(credentialCall.contains(LIBRARY_PASSWORD))
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             assertTrue(f.results.isEmpty())
             assertTrue(f.probes.isEmpty())
             assertFalse(f.sso.verified)
@@ -169,7 +192,7 @@ class WebVpnLoginDriverTest {
                 f.finish(SSO_PROXY_URL)
                 f.prepareSso()
                 f.completeCaptchaAndSubmitSso()
-                assertEquals(1, f.view.submissionCount())
+                assertEquals(1, f.view.activationCount())
                 assertTrue(f.results.isEmpty())
             }
         }
@@ -189,7 +212,7 @@ class WebVpnLoginDriverTest {
             f.finish(LibraryRoute.WEBVPN.url("/selectreadingroom"))
             f.answerProbe("valid", "valid")
             assertEquals("valid", f.results.single().state)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
             assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
             assertTrue(f.sso.verified)
             assertTrue(f.library.verified)
@@ -205,7 +228,7 @@ class WebVpnLoginDriverTest {
             f.driver.onPageFinished(LIBRARY_LOGIN)
             f.answerProbe("expired", "valid")
             f.submitLibrary()
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
         }
     }
@@ -223,13 +246,13 @@ class WebVpnLoginDriverTest {
             assertEquals(after, f.view.calls.size)
             assertTrue(f.results.isEmpty())
             assertFalse(f.sso.paused)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
             // A real subsequent load returning to the login page still counts as rejection.
             f.finish(SSO_PROXY_URL)
             f.answerReturnedSsoOutcome("unknown")
             assertEquals("vpn_login_required", f.results.single().state)
             assertTrue(f.sso.paused)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -275,7 +298,7 @@ class WebVpnLoginDriverTest {
                 f.finish(SSO_URL)
                 assertEquals("vpn_login_required", f.results.single().state)
                 assertFalse(f.view.calls.any { it.script.contains(SSO_PASSWORD) })
-                assertEquals(0, f.view.submissionCount())
+                assertEquals(0, f.view.activationCount())
                 f.driver.onResume()
                 f.driver.onPageFinished(SSO_URL)
                 assertEquals(1, f.results.size)
@@ -296,7 +319,8 @@ class WebVpnLoginDriverTest {
     @Test fun lostJavaScriptCallbackStillStartsReadOnlyOutcomeVerificationWithoutResubmission() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
-            // Deliberately never answer the submit() evaluateJavascript callback.
+            // Deliberately lose the read-only prepareActivation callback. No input
+            // may be sent, and the conservative watchdog still must not resubmit.
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
             assertEquals(1, f.probes.size)
             assertTrue(f.results.isEmpty())
@@ -305,7 +329,7 @@ class WebVpnLoginDriverTest {
             assertTrue(f.results.single().detail.contains("不重复提交"))
             assertTrue(f.sso.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -319,21 +343,20 @@ class WebVpnLoginDriverTest {
             f.finish(LIBRARY_LOGIN); f.answerProbe("expired", "valid"); f.submitLibrary()
             f.finish(LibraryRoute.WEBVPN.url("/selectreadingroom")); f.answerProbe("valid", "valid")
             assertEquals("valid", f.results.single().state)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
         }
     }
 
     @Test fun scriptReadinessWaitAutomaticallyContinuesAndOldWatchdogCannotPrematurelyFailTheNextCall() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
-            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") },
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
                 """{"kind":"waiting","detailCode":"school-scripts-loading"}""")
             assertTrue(f.statuses.last().contains("密码加密脚本"))
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(700))
-            assertEquals(2, f.view.submissionCount())
-            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") },
-                """{"kind":"submitted","detailCode":"form-submit-observed"}""")
-            assertTrue(f.statuses.last().contains("已触发学校统一认证表单"))
+            assertEquals(2, f.view.activationCount())
+            f.activateOriginalButton()
+            assertTrue(f.statuses.last().contains("学校原登录按钮触发表单"))
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(11300))
             assertTrue(f.probes.isEmpty())
             assertTrue(f.results.isEmpty())
@@ -345,14 +368,167 @@ class WebVpnLoginDriverTest {
     @Test fun provenLocalValidationFailureReportsNoSubmissionWithoutPausingTheAccount() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
-            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") },
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
                 """{"kind":"blocked","detailCode":"school-validation-rejected"}""")
             assertTrue(f.results.single().detail.contains("本地校验未通过"))
             assertFalse(f.sso.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
             assertTrue(f.probes.isEmpty())
             assertEquals(1, f.results.size)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
+        }
+    }
+
+    @Test fun originalButtonUsesExactlyOneNativeTouchAndNeverTheLegacyJavaScriptSubmit() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            assertTrue(f.view.touches.isEmpty())
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            assertTrue(f.view.touches.isEmpty())
+            f.answerActivationPoint()
+            assertEquals(listOf(MotionEvent.ACTION_DOWN), f.view.touches)
+            f.driver.onPageFinished(SSO_PROXY_URL)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP), f.view.touches)
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.activationOutcome()") },
+                """{"kind":"activation-observed","detailCode":"original-click-observed"}""")
+            assertTrue(f.statuses.last().contains("不重复点击"))
+            assertFalse(f.view.calls.any { it.script.contains("SchoolSsoAutoLogin?.submit()") ||
+                it.script.contains("requestSubmit(") && !it.script.contains("sso-helper-ready") })
+            assertEquals(1, f.view.activationCount())
+            assertTrue(f.results.isEmpty())
+        }
+    }
+
+    @Test fun invalidOrChangedActivationTargetNeverDispatchesInputOrPausesThePassword() {
+        val points = listOf(
+            """{"kind":"blocked"}""",
+            """{"kind":"ready","x":"NaN","y":1000,"viewportWidth":1080,"viewportHeight":1920}""",
+            """{"kind":"ready","x":540,"y":1000,"viewportWidth":0,"viewportHeight":1920}""",
+            """{"kind":"ready","x":1080,"y":1000,"viewportWidth":1080,"viewportHeight":1920}"""
+        )
+        for (point in points) Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerActivationPoint(point)
+            assertTrue(f.view.touches.isEmpty())
+            assertTrue(f.results.single().detail.contains("未发送登录触控"))
+            assertFalse(f.sso.paused); assertFalse(f.library.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
+            assertTrue(f.probes.isEmpty()); assertEquals(1, f.view.activationCount())
+        }
+    }
+
+    @Test fun accountOrOcrChangeAfterReadinessCancelsBeforeAnyNativeInput() {
+        repeat(2) { change -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            if (change == 0) f.sso.save("changed-synthetic-student", "changed-synthetic-password")
+            else f.driver.setOcrEnabled(false)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            assertTrue(f.view.touches.isEmpty())
+            assertEquals(1, f.results.size); assertFalse(f.sso.paused)
+            assertFalse(f.view.calls.any { it.script.contains("?.activationPoint()") })
+        } }
+    }
+
+    @Test fun changedAccountWhilePointCallbackWasPendingNeverDispatchesNativeInput() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.sso.save("changed-synthetic-student", "changed-synthetic-password")
+            f.answerActivationPoint()
+            assertTrue(f.view.touches.isEmpty()); assertEquals(1, f.results.size)
+            assertFalse(f.sso.paused)
+        }
+    }
+
+    @Test fun zeroSizedWebViewStopsBeforeDispatchingAnyInput() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.view.layout(0, 0, 0, 0)
+            f.answerActivationPoint()
+            assertTrue(f.view.touches.isEmpty()); assertFalse(f.sso.paused)
+            assertEquals(1, f.results.size)
+        }
+    }
+
+    @Test fun pauseOrCloseAfterDownCancelsTheGestureWithoutAnUpOrFallback() {
+        repeat(2) { cause -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerActivationPoint()
+            assertEquals(listOf(MotionEvent.ACTION_DOWN), f.view.touches)
+            if (cause == 0) f.driver.onPause() else f.driver.close()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL), f.view.touches)
+            assertEquals(1, f.view.activationCount()); assertTrue(f.results.isEmpty())
+            assertFalse(f.view.calls.any { it.script.contains("?.activationOutcome()") })
+            if (cause == 1) assertTrue(f.sso.paused)
+        } }
+    }
+
+    @Test fun rejectedOrThrowingNativeDownStopsUnknownAndNeverFallsBackToAnotherSubmission() {
+        repeat(2) { cause -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            if (cause == 0) f.view.acceptTouch = false else f.view.throwAfterDown = true
+            f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
+            assertEquals(1, f.view.touches.count { it == MotionEvent.ACTION_DOWN })
+            assertFalse(f.view.touches.contains(MotionEvent.ACTION_UP))
+            assertTrue(f.sso.paused); assertFalse(f.library.paused)
+            assertEquals(1, f.results.size); assertEquals(1, f.view.activationCount())
+            assertTrue(f.probes.isEmpty())
+            assertFalse(f.view.calls.any { it.script.contains("SchoolSsoAutoLogin?.submit()") })
+        } }
+    }
+
+    @Test fun newDocumentAfterDownCancelsTheOldGestureAndIgnoresItsCompletion() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
+                """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerActivationPoint()
+            f.view.address = LIBRARY_LOGIN
+            f.driver.onPageStarted(LIBRARY_LOGIN)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+            assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL), f.view.touches)
+            assertTrue(f.results.isEmpty()); assertTrue(f.probes.isEmpty())
+            assertFalse(f.view.calls.any { it.script.contains("?.activationOutcome()") })
+            f.driver.onPageFinished(LIBRARY_LOGIN)
+            f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertFalse(f.sso.paused); assertTrue(f.sso.verified)
+            assertEquals(1, f.view.activationCount())
+        }
+    }
+
+    @Test fun lostActivationObservationAfterNativeTouchStillChecksTheSchoolWithoutAnotherTouch() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.activateOriginalButton(answerOutcome = false)
+            assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP), f.view.touches)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertEquals(1, f.view.activationCount())
+            assertEquals(2, f.view.touches.size); assertFalse(f.sso.paused)
         }
     }
 
@@ -363,17 +539,17 @@ class WebVpnLoginDriverTest {
             f.completeCaptchaAndSubmitSso()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
             assertEquals(1, f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") })
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
             f.finish(SSO_PROXY_URL)
             f.answerReturnedSsoOutcome("other-rejected")
             assertEquals("vpn_login_required", f.results.single().state)
             assertTrue(f.sso.paused)
             assertFalse(f.library.paused)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
             assertFalse(f.view.calls.any { it.script.contains(LIBRARY_PASSWORD) })
             f.driver.onPageFinished(SSO_PROXY_URL)
             assertEquals(1, f.results.size)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -394,9 +570,9 @@ class WebVpnLoginDriverTest {
             assertTrue(f.view.navigations.isEmpty()) // Last-moment interaction guard must still approve.
             f.answerRestartGuard()
             assertEquals(listOf(LIBRARY_LOGIN), f.view.navigations)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
             f.finish(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
-            assertEquals(2, f.view.submissionCount())
+            assertEquals(2, f.view.activationCount())
             f.finish(LIBRARY_LOGIN); f.answerProbe("expired", "valid"); f.submitLibrary()
             f.finish(LibraryRoute.WEBVPN.url("/selectreadingroom")); f.answerProbe("valid", "valid")
             assertEquals("valid", f.results.single().state)
@@ -410,7 +586,7 @@ class WebVpnLoginDriverTest {
             repeat(3) { round ->
                 if (round > 0) f.finish(SSO_PROXY_URL)
                 f.prepareSso(); f.completeCaptchaAndSubmitSso()
-                assertEquals(round + 1, f.view.submissionCount())
+                assertEquals(round + 1, f.view.activationCount())
                 f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome("captcha-rejected")
                 if (round < 2) {
                     assertTrue(f.results.isEmpty())
@@ -419,11 +595,11 @@ class WebVpnLoginDriverTest {
                 }
             }
             assertEquals(2, f.view.navigations.size)
-            assertEquals(3, f.view.submissionCount())
+            assertEquals(3, f.view.activationCount())
             assertTrue(f.results.single().detail.contains("两次自动重新开始上限"))
             assertFalse(f.sso.paused); assertFalse(f.library.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
-            assertEquals(3, f.view.submissionCount()); assertEquals(1, f.results.size)
+            assertEquals(3, f.view.activationCount()); assertEquals(1, f.results.size)
         }
     }
 
@@ -434,7 +610,7 @@ class WebVpnLoginDriverTest {
             assertEquals("vpn_login_required", f.results.single().state)
             assertTrue(f.sso.paused); assertFalse(f.library.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
-            assertTrue(f.view.navigations.isEmpty()); assertEquals(1, f.view.submissionCount())
+            assertTrue(f.view.navigations.isEmpty()); assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -447,7 +623,7 @@ class WebVpnLoginDriverTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
             f.answerProbe("vpn_login_required", "expired")
             assertTrue(f.sso.paused); assertTrue(f.view.navigations.isEmpty())
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -463,7 +639,7 @@ class WebVpnLoginDriverTest {
             }
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
             assertEquals(1, f.results.size); assertTrue(f.view.navigations.isEmpty())
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
             assertEquals(change == 1, f.sso.paused); assertFalse(f.library.paused)
         } }
     }
@@ -479,7 +655,7 @@ class WebVpnLoginDriverTest {
             }
             assertEquals(1, f.results.size); assertTrue(f.view.navigations.isEmpty())
             assertFalse(f.sso.paused); assertFalse(f.library.paused)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
         } }
     }
 
@@ -509,7 +685,7 @@ class WebVpnLoginDriverTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
             assertEquals(1, f.probes.size)
             f.answerProbe("vpn_login_required", "expired")
-            assertTrue(f.sso.paused); assertEquals(2, f.view.submissionCount())
+            assertTrue(f.sso.paused); assertEquals(2, f.view.activationCount())
         }
     }
 
@@ -522,7 +698,7 @@ class WebVpnLoginDriverTest {
             assertTrue(f.results.single().detail.contains("超过 90 秒"))
             assertTrue(f.view.navigations.isEmpty()); assertFalse(f.sso.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
-            assertTrue(f.view.navigations.isEmpty()); assertEquals(1, f.view.submissionCount())
+            assertTrue(f.view.navigations.isEmpty()); assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -539,7 +715,7 @@ class WebVpnLoginDriverTest {
             assertTrue(login.contains(LIBRARY_USER))
             assertFalse(login.contains(SSO_USER))
             assertFalse(login.contains(SSO_PASSWORD))
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             assertFalse(f.library.verified)
             f.finish(LIBRARY_LOGIN)
             f.answerProbe("valid", "valid")
@@ -566,7 +742,7 @@ class WebVpnLoginDriverTest {
             assertTrue(f.sso.verified)
             assertTrue(f.library.verified)
             assertEquals("valid", f.results.single().state)
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -601,7 +777,7 @@ class WebVpnLoginDriverTest {
             assertTrue(f.library.paused)
             assertFalse(f.sso.paused)
             assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             assertTrue(f.view.navigations.isEmpty())
         }
     }
@@ -631,7 +807,7 @@ class WebVpnLoginDriverTest {
             f.sso.save("new-synthetic-student", "new-synthetic-password")
             f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepare(") }, "{\"kind\":\"prepared\"}")
             assertEquals("vpn_login_required", f.results.single().state)
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             assertFalse(f.sso.paused)
             assertFalse(f.library.paused)
             assertFalse(f.statuses.any { it.contains(SSO_PASSWORD) || it.contains(LIBRARY_PASSWORD) })
@@ -666,7 +842,7 @@ class WebVpnLoginDriverTest {
             f.answerProbe("expired", "valid")
             f.submitLibrary()
             assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             f.finish(LIBRARY_LOGIN)
             f.answerProbe("valid", "valid")
             assertEquals("valid", f.results.single().state)
@@ -684,13 +860,13 @@ class WebVpnLoginDriverTest {
             assertTrue(f.results.isEmpty())
             f.prepareSso()
             assertEquals("vpn_login_required", f.results.single().state)
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             assertFalse(f.sso.paused)
             assertFalse(f.library.paused)
             assertFalse(f.statuses.any { it.contains("90 秒") })
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
             assertEquals(1, f.results.size)
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
         }
     }
 
@@ -703,7 +879,7 @@ class WebVpnLoginDriverTest {
                     f.start(SSO_URL)
                     f.prepareSso()
                     f.completeCaptchaAndSubmitSso()
-                    assertEquals(1, f.view.submissionCount())
+                    assertEquals(1, f.view.activationCount())
                 } else {
                     f.start(LIBRARY_LOGIN)
                     f.answerProbe("expired", "valid")
@@ -730,13 +906,13 @@ class WebVpnLoginDriverTest {
             f.view.answerFirst({ it.contains("Object.defineProperty(window, 'LibraryCaptchaOcr'") }, "{\"kind\":\"installed\"}")
             shadowOf(Looper.getMainLooper()).idle()
             f.view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             f.prepareSso()
-            assertEquals(1, f.view.submissionCount())
-            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }, "{\"kind\":\"submitted\"}")
+            assertEquals(1, f.view.activationCount())
+            f.activateOriginalButton()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
             assertEquals(1, f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") })
-            assertEquals(1, f.view.submissionCount())
+            assertEquals(1, f.view.activationCount())
             assertTrue(f.results.isEmpty())
         }
     }
@@ -748,7 +924,7 @@ class WebVpnLoginDriverTest {
             f.prepareSso()
             val call = f.view.calls.single { it.script.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepare(") }.script
             assertTrue(call.contains("\"rememberMe\":false"))
-            assertEquals(0, f.view.submissionCount())
+            assertEquals(0, f.view.activationCount())
             assertFalse(f.library.paused)
         }
     }

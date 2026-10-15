@@ -45,6 +45,158 @@ function feedback(f, text, id = 'msg1', parent = f.w.document.body) {
   parent.appendChild(node); return node;
 }
 
+function useActivation(fn) {
+  use({proxy:true,remember:true}, f=>{
+    const {w,state}=f, button=w.document.querySelector('#passbutton'), form=w.document.querySelector('#fm1');
+    // Exact public WebVPN-rewritten attribute; its click handler remains the owner
+    // of proxy processing and the school's original validation/RSA.
+    button.setAttribute('onclick','var vpn_return;eval(vpn_rewrite_js((function () { return checkPassLogin(); }).toString().slice(14, -2), 2));return vpn_return;');
+    state.validations=0;state.proxyClicks=0;state.scrolled=0;
+    w.checkPassLogin=()=>{state.validations++;f.pass.value='RSA:'+f.pass.value;state.encrypted=true;return true;};
+    button.onclick=()=>{state.proxyClicks++;return w.checkPassLogin();};
+    form.addEventListener('submit',e=>{e.preventDefault();state.posted++;});
+    form.requestSubmit=()=>{throw Error('must-not-use-requestSubmit');};
+    button.scrollIntoView=()=>{state.scrolled++;};
+    button.getBoundingClientRect=()=>({left:100,top:400,right:500,bottom:460,width:400,height:60});
+    Object.defineProperties(w,{innerWidth:{value:600,configurable:true},innerHeight:{value:800,configurable:true}});
+    w.visualViewport={scale:1,offsetLeft:0,offsetTop:0,width:600,height:800};
+    w.document.elementFromPoint=()=>button;
+    fn({...f,button,form});
+  });
+}
+
+test('native activation preflight preserves the WebVPN original button handler and does not click/encrypt/POST',()=>useActivation(f=>{
+  f.api.prepare({...f.credentials,rememberMe:true});
+  assert.equal(f.api.prepareActivation().kind,'activation-ready');
+  assert.equal(f.state.scrolled,1);
+  const point=f.api.activationPoint();
+  assert.equal(point.kind,'ready');assert.equal(point.x,300);assert.equal(point.y,430);
+  assert.equal(point.viewportWidth,600);assert.equal(point.viewportHeight,800);
+  assert.equal(f.state.validations,0);assert.equal(f.state.proxyClicks,0);assert.equal(f.state.posted,0);
+  assert.equal(f.api.activationOutcome().detailCode,'activation-unobserved');
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.state.validations,1);assert.equal(f.state.proxyClicks,1);assert.equal(f.state.posted,1);
+  assert.equal(f.api.activationOutcome().detailCode,'original-submit-observed');
+  assert.equal(f.api.prepareActivation().kind,'blocked');
+  f.api.submit();assert.equal(f.state.posted,1); // Legacy API cannot introduce a fallback.
+}));
+
+test('native activation waits for both owned fields and current CAPTCHA, and for RSA readiness without invoking RSA',()=>{
+  useActivation(f=>{
+    assert.equal(f.api.prepareActivation().kind,'blocked');
+    f.api.prepare(f.credentials);f.state.captcha='manual';
+    assert.equal(f.api.prepareActivation().kind,'waiting');
+    assert.equal(f.state.validations,0);assert.equal(f.state.posted,0);
+  });
+  useActivation(f=>{
+    const encrypted=f.w.document.createElement('input');encrypted.id='encrypted';f.form.appendChild(encrypted);
+    f.api.prepare(f.credentials);
+    assert.equal(f.api.prepareActivation().detailCode,'school-scripts-loading');
+    f.w.RSAUtils={setMaxDigits(){throw Error('must-not-encrypt');},getKeyPair(){},encryptedString(){}};
+    assert.equal(f.api.prepareActivation().kind,'activation-ready');
+    assert.equal(f.state.validations,0);assert.equal(f.state.posted,0);
+  });
+});
+
+test('native activation refuses unsupported viewport, nonfinite rectangles, hidden or fully covered buttons',()=>{
+  for(const mutate of [
+    f=>{f.w.visualViewport.scale=1.5;}, f=>{f.w.visualViewport.offsetTop=10;},
+    f=>{f.w.visualViewport.width=400;}, f=>{f.button.style.display='none';},
+    f=>{f.button.style.pointerEvents='none';},
+    f=>{f.button.getBoundingClientRect=()=>({left:NaN,top:0,right:50,bottom:50,width:50,height:50});},
+    f=>{f.w.document.elementFromPoint=()=>f.w.document.body;}
+  ])useActivation(f=>{
+    f.api.prepare(f.credentials);assert.equal(f.api.prepareActivation().kind,'activation-ready');
+    mutate(f);assert.equal(f.api.activationPoint().kind,'blocked');assert.equal(f.state.posted,0);
+  });
+  useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();
+    f.w.document.elementFromPoint=x=>x===200?f.button:f.w.document.body;
+    assert.equal(f.api.activationPoint().x,200);assert.equal(f.state.posted,0);
+  });
+});
+
+test('native activation capture guard blocks changed fields, changed CAPTCHA, wrong target or changed action before original handlers',()=>{
+  for(const mutate of [
+    f=>{f.pass.value='manual';f.pass.dispatchEvent(new f.w.Event('input',{bubbles:true}));},
+    f=>{f.state.captcha='manual';}, f=>{f.form.action='https://other.example/login';},
+    f=>{f.w.history.replaceState({},'','?changed=fixture');}
+  ])useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();mutate(f);
+    f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    assert.equal(f.api.activationOutcome().detailCode,'activation-blocked');
+    assert.equal(f.state.validations,0);assert.equal(f.state.posted,0);
+  });
+  useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    let otherClicks=0;const other=f.w.document.createElement('button');
+    other.onclick=()=>{otherClicks++;};f.w.document.body.appendChild(other);
+    other.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    assert.equal(otherClicks,0);assert.equal(f.state.posted,0);
+    assert.equal(f.api.activationOutcome().detailCode,'activation-blocked');
+  });
+});
+
+test('cancelled native activation releases the event guard so later manual login remains possible',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();f.api.cancel();
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.state.validations,1);assert.equal(f.state.posted,1);
+  assert.doesNotMatch(JSON.stringify(f.api.activationOutcome()),/sso-secret|sso-only|https|0123/);
+}));
+
+test('native activation submit guard rejects targets changed by the original click handler before a POST',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  f.button.onclick=()=>{f.form.action='https://other.example/login';return true;};
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.api.activationOutcome().detailCode,'activation-blocked');assert.equal(f.state.posted,0);
+}));
+
+test('native activation stays fail-closed after point expiry, including a delayed click on another node',()=>{
+  for(const foreign of [false,true])useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    const now=f.w.Date.now();f.w.Date.now=()=>now+2100;
+    let foreignClicks=0;const other=f.w.document.createElement('button');other.onclick=()=>{foreignClicks++;};
+    f.w.document.body.appendChild(other);
+    (foreign?other:f.button).dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    assert.equal(f.api.activationOutcome().detailCode,'activation-blocked');
+    assert.equal(f.state.posted,0);assert.equal(f.state.validations,0);assert.equal(foreignClicks,0);
+  });
+});
+
+test('one manual click racing with native UP cannot trigger the original login handler or POST twice',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.state.validations,1);assert.equal(f.state.proxyClicks,1);assert.equal(f.state.posted,1);
+}));
+
+test('a late changed hit target cannot receive pointer-down or touch-start handlers before the click guard',()=>{
+  for(const event of ['pointerdown','touchstart','mousedown'])useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    const other=f.w.document.createElement('button');let actions=0;
+    other.addEventListener(event,()=>{actions++;});f.w.document.body.appendChild(other);
+    other.dispatchEvent(new f.w.Event(event,{bubbles:true,cancelable:true}));
+    assert.equal(actions,0);assert.equal(f.api.activationOutcome().detailCode,'activation-blocked');
+  });
+});
+
+test('manual submit before the reserved click takes over and blocks the later native activation',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  f.form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.state.posted,1);assert.equal(f.state.validations,0);
+  assert.equal(f.api.activationOutcome().detailCode,'activation-blocked');
+}));
+
+test('production driver uses only native original-button activation, never the legacy JS submit API',()=>{
+  const driver=fs.readFileSync('app/src/main/java/cn/edu/cppu/libraryautobooker/WebVpnLoginDriver.kt','utf8');
+  assert.match(driver,/SchoolSsoAutoLogin\?\.prepareActivation\(\)/);
+  assert.match(driver,/SchoolSsoAutoLogin\?\.activationPoint\(\)/);
+  assert.match(driver,/loginTap\.tap\(/);
+  assert.doesNotMatch(driver,/SchoolSsoAutoLogin\?\.submit\(\)/);
+});
+
 test('read-only SSO outcome recognizes only explicit visible CAPTCHA rejection variants',()=>{
   for(const text of ['验证码信息无效。','验证码无效','验证码错误！',' 验证码 不正确 ',
       '验证码已失效','验证码失效','验证码已过期','验证码过期',

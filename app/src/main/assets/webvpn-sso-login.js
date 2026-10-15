@@ -4,6 +4,7 @@
   const proxy = '/https/77726476706e69737468656265737421e3e44ed224207845300d8db9d6562d';
   let own = null, edited = false, writing = false, submitted = false, cancelled = false;
   let submissionResult = null;
+  let activation = null;
   let captchaRestartGuard = null;
   let restartInteraction = null;
   let remembered = null, rememberEdited = false, rememberWriting = false;
@@ -199,6 +200,126 @@
     const remember=setRememberMe(credentials.rememberMe===true);
     return {...result('prepared','sso-fields-ready'),rememberCode:remember.detailCode};
   }
+  function activationBinding() {
+    if (cancelled) return {error:result('manual','cancelled')};
+    let info; try {info=context(false);} catch (_) {return {error:result('blocked','unsupported-sso')};}
+    if (!info || !own) return {error:result('blocked','not-prepared')};
+    if (edited || info.form !== own.form || info.user !== own.user || info.password !== own.password ||
+        info.button !== own.button || info.href !== own.href || info.action !== own.action || info.attribute !== own.attribute ||
+        info.user.value !== own.username || info.password.value !== own.secret)
+      return {error:result('manual','user-edited')};
+    const state=window.LibraryCaptchaOcr?.snapshot();
+    if (!state || state.kind !== 'filled' || state.detailCode !== 'own-fill-current' || !/^\d{4}$/.test(info.captcha.value))
+      return {error:result('waiting','captcha-not-current')};
+    if (document.querySelector('#encrypted') && info.password.value.length !== 256 &&
+        (typeof window.RSAUtils?.setMaxDigits !== 'function' || typeof window.RSAUtils?.getKeyPair !== 'function' ||
+         typeof window.RSAUtils?.encryptedString !== 'function'))
+      return {error:result('waiting','school-scripts-loading')};
+    return {info};
+  }
+  function prepareActivation() {
+    // Production uses a single native WebView touch, not requestSubmit or JS click.
+    // In particular, do not pre-run RSA/checkPassLogin: the original button owns it.
+    if (submitted || activation) return result('blocked','activation-already-prepared');
+    const binding=activationBinding(); if(binding.error) return binding.error;
+    const info=binding.info;
+    if (!info.form.checkValidity()) return result('blocked','browser-validation-rejected');
+    try {
+      if (typeof info.button.scrollIntoView === 'function')
+        info.button.scrollIntoView({behavior:'instant',block:'center',inline:'nearest'});
+    } catch (_) {return result('blocked','button-scroll-failed');}
+    activation={info, armed:false, clickObserved:false, submitObserved:false, blocked:false, deadline:0};
+    submitted=true;
+    return result('activation-ready','original-button-ready');
+  }
+  function activationPoint() {
+    if (!activation || activation.clickObserved || activation.blocked || cancelled)
+      return result('blocked','activation-unavailable');
+    const binding=activationBinding(); if(binding.error) return binding.error;
+    const info=binding.info;
+    if (info.form!==activation.info.form || info.button!==activation.info.button || !visible(info.button))
+      return result('blocked','button-changed');
+    const width=window.innerWidth, height=window.innerHeight, viewport=window.visualViewport;
+    if (![width,height].every(n=>Number.isFinite(n)&&n>0&&n<100000) ||
+        (viewport && (!Number.isFinite(viewport.scale) || Math.abs(viewport.scale-1)>0.01 ||
+          Math.abs(viewport.offsetLeft)>0.5 || Math.abs(viewport.offsetTop)>0.5 ||
+          Math.abs(viewport.width-width)>2 || Math.abs(viewport.height-height)>2)))
+      return result('blocked','viewport-ambiguous');
+    const rect=info.button.getBoundingClientRect();
+    if (![rect.left,rect.top,rect.right,rect.bottom,rect.width,rect.height].every(Number.isFinite) ||
+        rect.width<8 || rect.height<8) return result('blocked','button-not-visible');
+    const style=window.getComputedStyle(info.button);
+    if(style.pointerEvents==='none') return result('blocked','button-not-interactive');
+    let point=null;
+    // A WebVPN floating widget can cover the right side of the original button.
+    // Only select an unobstructed point inside that same verified button.
+    for(const fraction of [0.5,0.25,0.75]) {
+      const x=rect.left+rect.width*fraction, y=rect.top+rect.height/2;
+      if(x<=1||x>=width-1||y<=1||y>=height-1)continue;
+      const hit=document.elementFromPoint(x,y);
+      if(hit===info.button||info.button.contains(hit)){point={x,y};break;}
+    }
+    if(!point)return result('blocked','button-obscured');
+    if (!activation.armed) {
+      activation.armed=true; activation.deadline=Date.now()+2000;
+      const current=activation;
+      const guardDown=event=>{
+        if(cancelled||activation!==current)return;
+        const targetMatches=event.target===info.button||info.button.contains(event.target);
+        const valid=!current.blocked&&!current.clickObserved&&Date.now()<=current.deadline&&targetMatches&&!activationBinding().error;
+        if(!valid){current.blocked=true;event.preventDefault();event.stopImmediatePropagation();}
+      };
+      const guard=event=>{
+        if(cancelled||activation!==current)return;
+        // A delayed UP or a manual click racing with that UP must not escape the
+        // one-shot guard. Failure/expiry stays closed until native cancel/navigation.
+        if(current.clickObserved||current.blocked||Date.now()>current.deadline){
+          if(!current.clickObserved)current.blocked=true;
+          event.preventDefault();event.stopImmediatePropagation();return;
+        }
+        const check=activationBinding();
+        if(check.error || (event.target!==info.button&&!info.button.contains(event.target))) {
+          current.blocked=true; event.preventDefault(); event.stopImmediatePropagation(); return;
+        }
+        current.clickObserved=true;
+        // Clear only our private copies. The original button still reads the DOM
+        // password and performs the school's own validation/encryption exactly once.
+        if(own){own.secret='';own.username='';}
+      };
+      const observe=event=>{
+        if(cancelled||activation!==current)return;
+        // Enter or another manual submission before the reserved click takes
+        // priority. Leave that manual event alone, but block the pending auto-UP.
+        if(!current.clickObserved){current.blocked=true;return;}
+        if(current.blocked||current.submitObserved||event.target!==info.form){
+          current.blocked=true;event.preventDefault();event.stopImmediatePropagation();return;
+        }
+        // The original/proxy handler may normalize a URL while encrypting. Only
+        // equivalent trusted targets survive; a changed target must not receive POST.
+        let target;try{target=context(false);}catch(_){target=null;}
+        if(!target||target.form!==info.form||target.button!==info.button||target.user!==info.user||
+            target.password!==info.password||target.captcha!==info.captcha||target.href!==info.href||
+            target.action!==info.action||target.attribute!==info.attribute||
+            (event.submitter&&event.submitter!==info.button)){
+          current.blocked=true;event.preventDefault();event.stopImmediatePropagation();return;
+        }
+        current.submitObserved=true;
+      };
+      const finish=event=>{if(current.clickObserved&&(event.target===info.button||info.button.contains(event.target))&&event.defaultPrevented)current.blocked=true;};
+      document.addEventListener('click',guard,true);
+      document.addEventListener('submit',observe,true);
+      document.addEventListener('click',finish,false);
+      for(const event of ['pointerdown','touchstart','mousedown'])document.addEventListener(event,guardDown,{capture:true,passive:false});
+      current.detach=()=>{document.removeEventListener('click',guard,true);document.removeEventListener('submit',observe,true);document.removeEventListener('click',finish,false);for(const event of ['pointerdown','touchstart','mousedown'])document.removeEventListener(event,guardDown,true);};
+    }
+    return {...result('ready','original-button-point'),x:point.x,y:point.y,viewportWidth:width,viewportHeight:height};
+  }
+  function activationOutcome() {
+    if(!activation)return result('activation-observed','activation-unobserved');
+    const code=activation.blocked?'activation-blocked':activation.submitObserved?'original-submit-observed':
+      activation.clickObserved?'original-click-observed':'activation-unobserved';
+    return result('activation-observed',code);
+  }
   function submit() {
     if (cancelled) return result('manual','cancelled');
     if (submitted) return submissionResult || result('submitted','already-submitted');
@@ -244,7 +365,7 @@
     catch (_) {return record(result('stopped','submit-uncertain'));}
     finally {own.secret=''; own.username='';}
   }
-  function cancel() {cancelled=true; if(own){own.secret='';own.username='';} return result('manual','cancelled');}
+  function cancel() {cancelled=true; activation?.detach?.(); if(own){own.secret='';own.username='';} return result('manual','cancelled');}
   // Track events from installation, including the small interval before native
   // asks for the outcome. This reads no field values and never prevents an event.
   try {
@@ -256,6 +377,6 @@
         initial.form.addEventListener(event, () => { observation.touched = true; }, true);
     }
   } catch (_) { /* Unknown pages remain ineligible for an automatic restart. */ }
-  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
+  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,prepareActivation,activationPoint,activationOutcome,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
   return result('installed','sso-helper-ready');
 })();

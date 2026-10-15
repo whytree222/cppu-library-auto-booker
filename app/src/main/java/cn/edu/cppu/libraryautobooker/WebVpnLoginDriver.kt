@@ -34,6 +34,7 @@ class WebVpnLoginDriver internal constructor(
     private val library = libraryStore
     private val ssoScript = app.assets.open("webvpn-sso-login.js").bufferedReader().use { it.readText() }
     private val libraryScript = app.assets.open("webvpn-library-login.js").bufferedReader().use { it.readText() }
+    private val loginTap = WebViewLoginTap(view)
     private val deadlineElapsed = SystemClock.elapsedRealtime() + 90_000L
     private var epoch = 0L
     // Unlike epoch, this changes only for main-frame navigation, never for pause/resume.
@@ -112,7 +113,7 @@ class WebVpnLoginDriver internal constructor(
         onPageStarted(url)
         view.loadUrl(url)
     }
-    fun onPause() { active = false; epoch++; probing = false; preparing = false; captcha.onPause() }
+    fun onPause() { active = false; epoch++; loginTap.cancel(); probing = false; preparing = false; captcha.onPause() }
     fun setOcrEnabled(enabled: Boolean) {
         ocrEnabled = enabled; captcha.setEnabled(enabled)
         if (!enabled && restartPending) fail("验证码识别已关闭，已取消统一认证自动重新开始", "vpn_login_required", "expired", pause = null)
@@ -135,7 +136,7 @@ class WebVpnLoginDriver internal constructor(
             fail("等待重新开始期间网页已由其它操作切换，已停止自动登录", "vpn_login_required", "expired", pause = null)
         }
         documentSerial++
-        epoch++; loading = true; probing = false; preparing = false; prepared = false
+        epoch++; loginTap.cancel(); loading = true; probing = false; preparing = false; prepared = false
         pageReady = false; finishedUrl = null
         captchaFailure = null; captchaReady = false
         captcha.onPageStarted(url)
@@ -280,19 +281,22 @@ class WebVpnLoginDriver internal constructor(
         if (!sso.enabled || sso.paused || sso.revision != ssoVersion) { fail("统一认证账号设置已改变，已停止", "vpn_login_required"); return }
         if (ssoAttempts >= 3) { fail("统一认证已达到本轮三次提交上限，已停止", "vpn_login_required", "expired", pause = null); return }
         val id = epoch
-        // Lock before invoking the school's button: an exception or delayed response must not resubmit.
+        // Lock before preparing a one-shot input sequence. Unknown or delayed callbacks
+        // must never fall back to requestSubmit(), JavaScript click(), or another touch.
         ssoSubmitted = true
         ssoSubmittedDocument = documentSerial
         ssoAttempts++
         val call = ++ssoCallSerial
         // Once the credential POST may start, OCR must not refresh another challenge.
         captcha.onPause()
-        onStatus("正在执行学校统一认证校验并启动登录表单…")
+        onStatus("正在核对学校原登录按钮及当前验证码，准备一次登录触控…")
         // Arm observation BEFORE evaluateJavascript: navigation can discard its callback.
         verifyLater(id, Kind.SSO, call)
         SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
-        evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.submit() || {kind:'stopped'})", id) { result ->
-            if (result.optString("kind") != "submitted") {
+        evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation() || {kind:'stopped'})", id) { result ->
+            if (result.optString("kind") == "activation-ready") {
+                activateSsoButton(id, call)
+            } else {
                 if (result.optString("kind") == "waiting") {
                     ssoSubmitted = false
                     ssoAttempts-- // Proven pre-submit waits do not consume a submission round.
@@ -305,21 +309,70 @@ class WebVpnLoginDriver internal constructor(
                         captcha.onResume()
                         onStatus("验证码已更新，等待当前图片重新识别")
                     }
-                } else if (result.optString("kind") == "blocked") {
+                } else if (result.optString("kind") in setOf("blocked", "manual")) {
                     ssoSubmitted = false
                     fail(when (result.optString("detailCode")) {
                         "school-validation-rejected" -> "学校页面本地校验未通过，未调用登录表单提交；请核对页面提示"
                         "browser-validation-rejected" -> "浏览器表单校验未通过，未调用登录表单提交；请核对必填项"
                         "form-changed-before-submit" -> "校验后登录表单或目标发生变化，未调用登录表单提交"
+                        "user-edited" -> "检测到手动填写或账号变化，未触发学校登录按钮；请手动继续"
                         else -> "统一认证表单未能启动，已停止；请核对学校页面"
                     }, "vpn_login_required", "expired", pause = null)
                 } else fail("统一认证未能安全提交，已停止；请在网页核对", "vpn_login_required", "expired", Kind.SSO)
-            } else onStatus(when (result.optString("detailCode")) {
-                "form-submit-observed" -> "已触发学校统一认证表单，正在等待学校确认登录（不代表成功）"
-                "form-submit-unconfirmed" -> "已调用学校登录表单，但尚未观察到提交事件；正在核对结果，不重复提交"
-                else -> "已调用学校登录按钮，正在等待统一认证结果；尚未确认登录成功"
-            })
+            }
         }
+    }
+
+    private fun activationCurrent(id: Long, call: Long, url: String) =
+        live(id) && ssoSubmitted && call == ssoCallSerial && prepared && !loading && pageReady &&
+            finishedUrl == url && view.url == url && CaptchaPagePolicy.isTrusted(url) && ocrEnabled &&
+            sso.enabled && !sso.paused && sso.revision == ssoVersion
+
+    /** The JavaScript stage only verifies and locates the school's original button.
+     * Its original click handler, including school validation/RSA, runs once through
+     * WebView input. No native or helper code invokes that school validator first. */
+    private fun activateSsoButton(id: Long, call: Long) {
+        val url = view.url.orEmpty()
+        // Let scrollIntoView settle before measuring. This is not a second login attempt.
+        main.postDelayed({
+            if (!live(id) || !ssoSubmitted || call != ssoCallSerial) return@postDelayed
+            if (!activationCurrent(id, call, url)) {
+                ssoSubmitted = false
+                fail("登录页面或账号设置在触控前发生变化，未触发学校登录按钮", "vpn_login_required", "expired", pause = null)
+                return@postDelayed
+            }
+            evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.activationPoint() || {kind:'stopped'})", id) { point ->
+                val x = point.optDouble("x", Double.NaN)
+                val y = point.optDouble("y", Double.NaN)
+                val width = point.optDouble("viewportWidth", Double.NaN)
+                val height = point.optDouble("viewportHeight", Double.NaN)
+                if (point.optString("kind") != "ready" || !activationCurrent(id, call, url) ||
+                    !x.isFinite() || !y.isFinite() || !width.isFinite() || !height.isFinite() ||
+                    width <= 0.0 || height <= 0.0 || x <= 0.0 || y <= 0.0 || x >= width || y >= height ||
+                    view.width <= 0 || view.height <= 0) {
+                    ssoSubmitted = false
+                    fail("原登录按钮定位或当前表单校验未通过，未发送登录触控；请核对页面", "vpn_login_required", "expired", pause = null)
+                    return@evaluate
+                }
+                onStatus("正在通过应用内网页的一次触控激活学校原登录按钮…")
+                loginTap.tap(WebViewLoginTap.Target(x, y, width, height),
+                    isCurrent = { activationCurrent(id, call, url) }) { dispatched ->
+                    if (!live(id) || !ssoSubmitted || call != ssoCallSerial) return@tap
+                    if (!dispatched) {
+                        fail("学校登录触控过程未能完整确认，已停止且不会补发；请核对学校结果", "vpn_login_required", "expired", Kind.SSO)
+                        return@tap
+                    }
+                    evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.activationOutcome() || {kind:'unknown'})", id) { outcome ->
+                        onStatus(when (outcome.optString("detailCode")) {
+                            "original-submit-observed" -> "已通过学校原登录按钮触发表单，正在等待学校确认登录（不代表成功）"
+                            "original-click-observed" -> "已观察到学校原登录按钮点击，正在只读核对登录结果；不重复点击"
+                            "activation-blocked" -> "学校原登录按钮的校验阻止了本次操作，正在核对登录结果；不重复点击"
+                            else -> "已发送一次学校登录触控，尚未观察到明确提交；正在核对结果，不重复点击"
+                        })
+                    }
+                }
+            }
+        }, 100L)
     }
 
     private fun checkLibrary() {
@@ -448,6 +501,7 @@ class WebVpnLoginDriver internal constructor(
         if (CaptchaPagePolicy.isTrusted(view.url)) runCatching { view.evaluateJavascript("window.SchoolSsoAutoLogin?.cancel()", null) }
         stopped = true
         restartPending = false
+        loginTap.cancel()
         captcha.onPause()
         if (pause == Kind.SSO && sso.revision == ssoVersion) sso.pause()
         if (pause == Kind.LIBRARY && library.revision == libraryVersion) library.pause()
@@ -464,7 +518,7 @@ class WebVpnLoginDriver internal constructor(
         }
         if (CaptchaPagePolicy.isTrusted(view.url))
             runCatching { view.evaluateJavascript("window.SchoolSsoAutoLogin?.cancel()", null) }
-        closed = true; epoch++; main.removeCallbacksAndMessages(null); captcha.close()
+        closed = true; epoch++; loginTap.close(); main.removeCallbacksAndMessages(null); captcha.close()
     }
 
     companion object {
