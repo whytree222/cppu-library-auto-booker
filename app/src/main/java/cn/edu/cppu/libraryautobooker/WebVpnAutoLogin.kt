@@ -23,9 +23,26 @@ import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 /** Single shared recovery run, callable by the foreground app or its scheduled foreground service. */
 object WebVpnAutoLogin {
     private var run: Run? = null
+    private val interactiveOwners = linkedSetOf<Any>()
     private var statusRetryAfter = 0L
     private var statusFailureKey = ""
     val running get() = run != null
+    internal val interactiveLoginOpen get() = interactiveOwners.isNotEmpty()
+
+    /** A visible login owns the shared WebView cookie jar until that screen is closed. */
+    fun acquireInteractiveLogin(): AutoCloseable {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        val owner = Any()
+        interactiveOwners.add(owner)
+        // Invalidate first: a late status response must neither replace these cookies nor
+        // start a second hidden login after cancel() has returned.
+        SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
+        cancel()
+        return AutoCloseable {
+            check(Looper.myLooper() == Looper.getMainLooper())
+            interactiveOwners.remove(owner)
+        }
+    }
     fun hasEnabledAccount(context: Context) = Kind.entries.any {
         val store = WebVpnCredentialStore(context, it)
         store.enabled && !store.paused
@@ -37,6 +54,7 @@ object WebVpnAutoLogin {
     }
 
     fun canRecover(context: Context, result: SessionChecker.Result, statusOnly: Boolean = false): Boolean {
+        if (interactiveLoginOpen) return false
         val kind = if (result.state == "vpn_login_required") Kind.SSO
             else if (result.state == "expired" && result.vpnAuthState == "valid") Kind.LIBRARY else return false
         val store = WebVpnCredentialStore(context, kind)
@@ -52,6 +70,7 @@ object WebVpnAutoLogin {
         val store = WebVpnCredentialStore(context, kind)
         val name = if (kind == Kind.SSO) "统一认证" else "WebVPN 图书馆"
         return when {
+            interactiveLoginOpen -> "校方登录页面正在处理认证，请先完成登录或返回应用；不会同时启动另一轮后台登录"
             !store.enabled -> "$name 自动登录尚未保存开启"
             store.paused -> "$name 自动登录因上次提交未通过或结果不明而暂停，需先核对账号和学校结果"
             kind == Kind.SSO && !context.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("enabled", true) -> "验证码识别已关闭，无法自动完成统一认证"
@@ -63,6 +82,10 @@ object WebVpnAutoLogin {
     /** Closing one subscription never cancels another caller's login or delivers a failure callback. */
     fun ensure(context: Context, updateSession: Boolean = true, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
         check(Looper.myLooper() == Looper.getMainLooper())
+        if (interactiveLoginOpen) {
+            callback(SessionChecker.Result("unknown", "校方登录页面正在处理认证，不启动另一轮后台登录"))
+            return AutoCloseable {}
+        }
         val existing = run
         val target = existing ?: Run(context.applicationContext).also { run = it }
         val listener = Listener(callback, updateSession)

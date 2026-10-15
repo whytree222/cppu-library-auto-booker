@@ -92,15 +92,27 @@ class WebVpnLoginDriverTest {
         }
 
         fun completeCaptcha() {
+            val expectedSubmissions = view.submissionCount() + 1
             view.answerFirst({ it.contains("Object.defineProperty(window, 'LibraryCaptchaOcr'") }, "{\"kind\":\"installed\"}")
             shadowOf(Looper.getMainLooper()).idle()
             view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
-            assertEquals(1, view.submissionCount())
+            assertEquals(expectedSubmissions, view.submissionCount())
         }
 
         fun completeCaptchaAndSubmitSso() {
             completeCaptcha()
             view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }, "{\"kind\":\"submitted\"}")
+        }
+
+        fun answerReturnedSsoOutcome(kind: String, guard: String = "armed") {
+            view.answerFirst({ it.contains("sso-helper-ready") }, "{\"kind\":\"installed\"}")
+            view.answerFirst({ it.contains("const r = h?.outcome()") },
+                """{"kind":"$kind","restartGuard":"$guard"}""")
+        }
+
+        fun answerRestartGuard(kind: String = "ready") {
+            view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.captchaRestartState()") },
+                """{"kind":"$kind"}""")
         }
 
         fun submitLibrary() {
@@ -214,6 +226,7 @@ class WebVpnLoginDriverTest {
             assertEquals(1, f.view.submissionCount())
             // A real subsequent load returning to the login page still counts as rejection.
             f.finish(SSO_PROXY_URL)
+            f.answerReturnedSsoOutcome("unknown")
             assertEquals("vpn_login_required", f.results.single().state)
             assertTrue(f.sso.paused)
             assertEquals(1, f.view.submissionCount())
@@ -352,6 +365,7 @@ class WebVpnLoginDriverTest {
             assertEquals(1, f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") })
             assertEquals(1, f.view.submissionCount())
             f.finish(SSO_PROXY_URL)
+            f.answerReturnedSsoOutcome("other-rejected")
             assertEquals("vpn_login_required", f.results.single().state)
             assertTrue(f.sso.paused)
             assertFalse(f.library.paused)
@@ -360,6 +374,155 @@ class WebVpnLoginDriverTest {
             f.driver.onPageFinished(SSO_PROXY_URL)
             assertEquals(1, f.results.size)
             assertEquals(1, f.view.submissionCount())
+        }
+    }
+
+    @Test fun explicitCaptchaRejectionAutomaticallyRestartsWithFreshGetThenCompletesBothStages() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            val oldSnapshots = f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }
+            f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome("captcha-rejected")
+            assertTrue(f.results.isEmpty()); assertFalse(f.sso.paused)
+            assertTrue(f.view.navigations.isEmpty())
+            val calls = f.view.calls.size
+            f.driver.onPageFinished(SSO_PROXY_URL)
+            assertEquals(calls, f.view.calls.size)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1499))
+            assertTrue(f.view.navigations.isEmpty())
+            assertEquals(oldSnapshots, f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") })
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+            assertTrue(f.view.navigations.isEmpty()) // Last-moment interaction guard must still approve.
+            f.answerRestartGuard()
+            assertEquals(listOf(LIBRARY_LOGIN), f.view.navigations)
+            assertEquals(1, f.view.submissionCount())
+            f.finish(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            assertEquals(2, f.view.submissionCount())
+            f.finish(LIBRARY_LOGIN); f.answerProbe("expired", "valid"); f.submitLibrary()
+            f.finish(LibraryRoute.WEBVPN.url("/selectreadingroom")); f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertTrue(f.sso.verified); assertTrue(f.library.verified)
+        }
+    }
+
+    @Test fun explicitCaptchaRejectionsStopAfterTwoFreshRestartsWithoutPausingPasswordStore() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL)
+            repeat(3) { round ->
+                if (round > 0) f.finish(SSO_PROXY_URL)
+                f.prepareSso(); f.completeCaptchaAndSubmitSso()
+                assertEquals(round + 1, f.view.submissionCount())
+                f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome("captcha-rejected")
+                if (round < 2) {
+                    assertTrue(f.results.isEmpty())
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+                    f.answerRestartGuard()
+                }
+            }
+            assertEquals(2, f.view.navigations.size)
+            assertEquals(3, f.view.submissionCount())
+            assertTrue(f.results.single().detail.contains("两次自动重新开始上限"))
+            assertFalse(f.sso.paused); assertFalse(f.library.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
+            assertEquals(3, f.view.submissionCount()); assertEquals(1, f.results.size)
+        }
+    }
+
+    @Test fun unknownOrNonCaptchaReturnNeverRestartsEvenWhenThePageReloaded() {
+        for (kind in listOf("unknown", "other-rejected", "manual")) Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome(kind)
+            assertEquals("vpn_login_required", f.results.single().state)
+            assertTrue(f.sso.paused); assertFalse(f.library.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
+            assertTrue(f.view.navigations.isEmpty()); assertEquals(1, f.view.submissionCount())
+        }
+    }
+
+    @Test fun oldDocumentAfterResumeCanOnlyVerifyUnknownOutcomeNeverUseCaptchaRejectionRetry() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            f.driver.onPause(); f.driver.onResume()
+            f.driver.onPageFinished(SSO_PROXY_URL)
+            assertFalse(f.view.calls.any { it.script.contains("const r = h?.outcome()") })
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("vpn_login_required", "expired")
+            assertTrue(f.sso.paused); assertTrue(f.view.navigations.isEmpty())
+            assertEquals(1, f.view.submissionCount())
+        }
+    }
+
+    @Test fun changedPausedDisabledOrOcrOptedOutCancelsThePendingFreshRestart() {
+        repeat(4) { change -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome("captcha-rejected")
+            when (change) {
+                0 -> f.sso.save("changed-synthetic-account", "changed-synthetic-password")
+                1 -> f.sso.pause()
+                2 -> f.sso.setEnabled(false)
+                else -> f.driver.setOcrEnabled(false)
+            }
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+            assertEquals(1, f.results.size); assertTrue(f.view.navigations.isEmpty())
+            assertEquals(1, f.view.submissionCount())
+            assertEquals(change == 1, f.sso.paused); assertFalse(f.library.paused)
+        } }
+    }
+
+    @Test fun manualInteractionBeforeArmOrBeforeDelayedGetKeepsThePageAndDoesNotPausePasswordStore() {
+        repeat(2) { whenEdited -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            f.finish(SSO_PROXY_URL)
+            f.answerReturnedSsoOutcome("captcha-rejected", if (whenEdited == 0) "manual" else "armed")
+            if (whenEdited == 1) {
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+                f.answerRestartGuard("manual")
+            }
+            assertEquals(1, f.results.size); assertTrue(f.view.navigations.isEmpty())
+            assertFalse(f.sso.paused); assertFalse(f.library.paused)
+            assertEquals(1, f.view.submissionCount())
+        } }
+    }
+
+    @Test fun pauseDuringRestartDelayNeverResumesOcrOnRejectedDocumentAndContinuesOnlyAfterFreshGet() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome("captcha-rejected")
+            val oldSnapshots = f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }
+            f.driver.onPause()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1600))
+            assertTrue(f.view.navigations.isEmpty())
+            f.driver.onResume(); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(oldSnapshots, f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") })
+            f.answerRestartGuard(); assertEquals(listOf(LIBRARY_LOGIN), f.view.navigations)
+            assertFalse(f.sso.paused); assertTrue(f.results.isEmpty())
+        }
+    }
+
+    @Test fun staleOriginalWatchdogCannotFailTheNextCaptchaRoundPrematurely() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome("captcha-rejected")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500)); f.answerRestartGuard()
+            f.finish(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(10500))
+            assertTrue(f.probes.isEmpty()); assertTrue(f.results.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+            assertEquals(1, f.probes.size)
+            f.answerProbe("vpn_login_required", "expired")
+            assertTrue(f.sso.paused); assertEquals(2, f.view.submissionCount())
+        }
+    }
+
+    @Test fun automaticCaptchaRestartNeverExtendsTheOriginalNinetySecondDeadline() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(89))
+            f.finish(SSO_PROXY_URL); f.answerReturnedSsoOutcome("captcha-rejected")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertTrue(f.results.single().detail.contains("超过 90 秒"))
+            assertTrue(f.view.navigations.isEmpty()); assertFalse(f.sso.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+            assertTrue(f.view.navigations.isEmpty()); assertEquals(1, f.view.submissionCount())
         }
     }
 

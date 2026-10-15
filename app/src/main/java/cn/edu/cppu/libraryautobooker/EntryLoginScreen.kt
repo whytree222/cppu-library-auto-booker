@@ -43,6 +43,7 @@ import cn.edu.cppu.libraryautobooker.data.CredentialStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
@@ -51,7 +52,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun EntryLoginScreen(
     autoEnterValid: Boolean = true,
-    sessionCheck: (Context, (String) -> Unit) -> Unit = { context, callback -> SessionCoordinator.checkState(context, callback) },
+    sessionCheck: ((Context, (String) -> Unit) -> Unit)? = null,
     onAuthenticated: () -> Unit
 ) {
     val context = LocalContext.current
@@ -65,24 +66,74 @@ fun EntryLoginScreen(
     var validSession by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf("正在检查登录状态…") }
     var active by remember { mutableStateOf(true) }
+    val lifecycle = (context as? LifecycleOwner)?.lifecycle
+    var foreground by remember { mutableStateOf(lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) ?: true) }
     var gateOnly by remember { mutableStateOf(autoEnterValid) }
     var checkAttempt by remember { mutableStateOf(0) }
-    val vpnStatusCheck = remember { arrayOfNulls<AutoCloseable>(1) }
-    DisposableEffect(Unit) { onDispose { active = false; password = ""; vpnStatusCheck[0]?.close() } }
+    val pausedSinceCheck = remember { booleanArrayOf(false) }
+    val preferredSessionCheck = remember { UiSessionRequest() }
+    val vpnStatusCheck = remember { UiSessionRequest() }
+    fun cancelSessionChecks() {
+        preferredSessionCheck.cancel()
+        vpnStatusCheck.cancel()
+    }
+    fun refreshVpnStatus() {
+        if (!active || !foreground || vpnStatusCheck.pending) return
+        val ticket = vpnStatusCheck.begin()
+        val handle = SessionCoordinator.checkWebVpnStatus(app) { vpnStatusCheck.complete(ticket) {} }
+        vpnStatusCheck.attach(ticket, handle)
+    }
+    fun checkSession(onResult: (String, Long) -> Unit) {
+        if (!active || !foreground) return
+        val ticket = preferredSessionCheck.begin()
+        val callback: (String) -> Unit = { state ->
+            preferredSessionCheck.complete(ticket) { if (active && foreground) onResult(state, ticket) }
+        }
+        if (sessionCheck != null) sessionCheck(app, callback)
+        else if (AutoLogin.running) AutoLogin.login(app) { valid, _ ->
+            callback(if (valid) "valid" else RuntimeStore(app).prefs.getString("session_state", "unknown").orEmpty())
+        }
+        else preferredSessionCheck.attach(ticket, SessionCoordinator.checkState(app, callback))
+    }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    foreground = false
+                    pausedSinceCheck[0] = true
+                    cancelSessionChecks()
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    foreground = true
+                    // A quick pause/resume can be coalesced before Compose observes `false`.
+                    // An explicit new attempt guarantees a fresh check without duplicating entry.
+                    if (pausedSinceCheck[0]) { pausedSinceCheck[0] = false; checkAttempt++ }
+                }
+                Lifecycle.Event.ON_DESTROY -> { foreground = false; cancelSessionChecks() }
+                else -> Unit
+            }
+        }
+        lifecycle?.addObserver(observer)
+        onDispose {
+            active = false
+            password = ""
+            cancelSessionChecks()
+            lifecycle?.removeObserver(observer)
+        }
+    }
     LaunchedEffect(Unit) {
         (context as? LifecycleOwner)?.lifecycle?.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             try {
                 while (true) {
-                    if (WebVpnAutoLogin.hasEnabledAccount(app) && vpnStatusCheck[0] == null)
-                        vpnStatusCheck[0] = SessionCoordinator.checkWebVpnStatus(app) { vpnStatusCheck[0] = null }
+                    if (WebVpnAutoLogin.hasEnabledAccount(app)) refreshVpnStatus()
                     delay(60_000L)
                 }
-            } finally { vpnStatusCheck[0]?.close(); vpnStatusCheck[0] = null }
+            } finally { vpnStatusCheck.cancel() }
         }
     }
 
     fun checked(state: String) {
-        if (!active) return
+        if (!active || !foreground) return
         busy = false
         validSession = state == "valid"
         if (validSession && autoEnterValid) {
@@ -98,18 +149,16 @@ fun EntryLoginScreen(
             else -> "无法验证登录，可重新检查或使用下方 WebVPN 认证入口"
         }
     }
-    LaunchedEffect(checkAttempt) {
+    LaunchedEffect(checkAttempt, foreground) {
+        if (!foreground) return@LaunchedEffect
         busy = true
         detail = "正在检查登录状态…"
-        if (AutoLogin.running) AutoLogin.login(app) { valid, _ ->
-            checked(if (valid) "valid" else RuntimeStore(app).prefs.getString("session_state", "unknown").orEmpty())
-        }
-        else sessionCheck(app) { state ->
+        checkSession { state, ticket ->
             if (active && state == "expired" && store.enabled && !store.paused &&
                 RuntimeStore(app).prefs.getString("session_route", "DIRECT") != "WEBVPN") {
                 detail = "登录已过期，正在自动重新登录…"
                 AutoLogin.login(app) { valid, message ->
-                    if (active) {
+                    if (active && foreground && preferredSessionCheck.isCurrent(ticket)) {
                         busy = false
                         validSession = valid
                         detail = if (valid) "自动重新登录成功，可以继续进入应用" else message
@@ -127,8 +176,7 @@ fun EntryLoginScreen(
             detail = "学校网页登录成功，可以继续；自动重新登录需在此填写账号密码"
             if (autoEnterValid) onAuthenticated()
         } else {
-            busy = true
-            sessionCheck(app, ::checked)
+            checkAttempt++
         }
     }
 
@@ -201,17 +249,22 @@ fun EntryLoginScreen(
                 busy = true
                 validSession = false
                 detail = "正在登录并向学校验证…"
+                val ticket = preferredSessionCheck.begin()
                 AutoLogin.loginWithCredentials(app, submittedUser, submittedPassword) { ok, message ->
-                    val persistence = if (ok && rememberChoice) runCatching { store.save(submittedUser, submittedPassword) }
-                        else Result.success(Unit)
-                    if (active) {
-                        busy = false
-                        validSession = ok
-                        detail = message
-                        if (ok) {
-                            password = ""
-                            if (persistence.isSuccess) onAuthenticated()
-                            else detail = "已登录，但加密保存失败；可取消勾选后继续，本次不会自动重新登录"
+                    // This explicit login may verify after the app is backgrounded. Honor its
+                    // saved choice independently of UI lifetime, unless the user opted out since.
+                    val persistence = if (ok && rememberChoice && store.preferredAutoLogin)
+                        runCatching { store.save(submittedUser, submittedPassword) } else Result.success(Unit)
+                    preferredSessionCheck.complete(ticket) {
+                        if (active && foreground) {
+                            busy = false
+                            validSession = ok
+                            detail = message
+                            if (ok) {
+                                password = ""
+                                if (persistence.isSuccess) onAuthenticated()
+                                else detail = "已登录，但加密保存失败；可取消勾选后继续，本次不会自动重新登录"
+                            }
                         }
                     }
                 }
@@ -227,9 +280,9 @@ fun EntryLoginScreen(
                     }
                     busy = true
                     // Do not trust an old result if the user leaves this screen open for a long time.
-                    sessionCheck(app) { state ->
+                    checkSession { state, _ ->
                         checked(state)
-                        if (active && state == "valid") { password = ""; onAuthenticated() }
+                        if (active && foreground && state == "valid" && !autoEnterValid) { password = ""; onAuthenticated() }
                     }
                 }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("继续进入应用") }
             }
@@ -251,8 +304,8 @@ fun EntryLoginScreen(
             }, enabled = !busy) { Text("删除已保存的账号密码") }
             LoginStatusCard(rememberLoginStatuses(), onCheck = {
                 SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}
-                vpnStatusCheck[0]?.close()
-                vpnStatusCheck[0] = SessionCoordinator.checkWebVpnStatus(app) { vpnStatusCheck[0] = null }
+                vpnStatusCheck.cancel()
+                refreshVpnStatus()
             })
             TextButton(onClick = { context.startActivity(Intent(context, WebVpnAccountsActivity::class.java)) }, enabled = !busy) {
                 Text("WebVPN 两套账号与自动登录")
@@ -262,5 +315,43 @@ fun EntryLoginScreen(
             }, enabled = !busy) { Text("本地验证码 OCR 试验") }
             Text("直连图书馆使用 HTTP，请仅在可信校园网络中登录；WebVPN 使用 HTTPS。", style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+/** Owns a foreground request and rejects callbacks from an earlier lifecycle/check generation. */
+internal class UiSessionRequest {
+    private var generation = 0L
+    private var handle: AutoCloseable? = null
+    var pending = false
+        private set
+
+    fun begin(): Long {
+        cancel()
+        pending = true
+        return generation
+    }
+
+    fun isCurrent(ticket: Long) = ticket == generation
+
+    fun attach(ticket: Long, value: AutoCloseable) {
+        if (!isCurrent(ticket) || !pending) value.close()
+        else { handle?.close(); handle = value }
+    }
+
+    fun complete(ticket: Long, action: () -> Unit) {
+        if (!isCurrent(ticket) || !pending) return
+        pending = false
+        val old = handle
+        handle = null
+        old?.close()
+        action()
+    }
+
+    fun cancel() {
+        generation++
+        pending = false
+        val old = handle
+        handle = null
+        old?.close()
     }
 }

@@ -34,12 +34,13 @@ class LoginActivity : Activity() {
     private var status: TextView? = null
     private var resumed = false
     private var accountConfigBefore: String? = null
+    private var interactiveLogin: AutoCloseable? = null
     private val route get() = if (intent.getBooleanExtra("webvpn", false)) LibraryRoute.WEBVPN else LibraryRoute.DIRECT
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (route == LibraryRoute.WEBVPN) WebVpnAutoLogin.cancel()
+        if (route == LibraryRoute.WEBVPN) interactiveLogin = WebVpnAutoLogin.acquireInteractiveLogin()
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         CookieManager.getInstance().setAcceptCookie(true)
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -79,7 +80,7 @@ class LoginActivity : Activity() {
             status = TextView(this).apply { text = "正在检查两层登录…"; setPadding(12, 0, 12, 8) }
             container.addView(status)
             details.addView(TextView(this).apply {
-                text = "请分别保存学校统一认证学工号/密码与 WebVPN 内图书馆账号/密码。仅本机加密保存，明确开启后才自动登录。验证码完成后自动提交；五天登录选项由学校决定有效期，手动修改优先。失败后不会连续重发。"
+                text = "请分别保存学校统一认证学工号/密码与 WebVPN 内图书馆账号/密码。仅本机加密保存，明确开启后才自动登录。验证码完成后自动提交；五天登录选项由学校决定有效期，手动修改优先。校方明确提示验证码失效时最多自动重新开始两次，结果不明不重发。此页面存续时不会并行启动后台登录；仅按 Home 离开未完成的认证页仍会阻止后台恢复，请点“返回应用”结束页面。"
                 setPadding(12, 0, 12, 8)
             })
             details.addView(CheckBox(this).apply {
@@ -112,7 +113,10 @@ class LoginActivity : Activity() {
                     return if (route == LibraryRoute.WEBVPN) !WebVpnLoginDriver.allowsNavigation(request.url.toString())
                         else route.pathOf(request.url.toString()) == null
                 }
-                override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { driver?.onPageStarted(url) }
+                override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                    if (route == LibraryRoute.DIRECT) SessionChecker.invalidateAuthentication(route)
+                    driver?.onPageStarted(url)
+                }
                 override fun onPageFinished(view: WebView, url: String) {
                     if (url != view.url) return
                     driver?.onPageFinished(url)
@@ -193,6 +197,7 @@ class LoginActivity : Activity() {
         driver?.close(); driver = null
         CookieManager.getInstance().flush()
         if (::webView.isInitialized) webView.destroy()
+        interactiveLogin?.close(); interactiveLogin = null
         super.onDestroy()
     }
 }

@@ -3,6 +3,7 @@ package cn.edu.cppu.libraryautobooker
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.webkit.CookieManager
 import android.webkit.WebView
 import cn.edu.cppu.libraryautobooker.data.WebVpnCredentialStore
@@ -33,7 +34,10 @@ class WebVpnLoginDriver internal constructor(
     private val library = libraryStore
     private val ssoScript = app.assets.open("webvpn-sso-login.js").bufferedReader().use { it.readText() }
     private val libraryScript = app.assets.open("webvpn-library-login.js").bufferedReader().use { it.readText() }
+    private val deadlineElapsed = SystemClock.elapsedRealtime() + 90_000L
     private var epoch = 0L
+    // Unlike epoch, this changes only for main-frame navigation, never for pause/resume.
+    private var documentSerial = 0L
     private var closed = false
     private var stopped = false
     private var active = false
@@ -47,13 +51,17 @@ class WebVpnLoginDriver internal constructor(
     private var prepared = false
     private var ssoSubmitted = false
     private var ssoCallSerial = 0L
+    private var ssoSubmittedDocument = -1L
+    private var ssoAttempts = 0
+    private var captchaRestarts = 0
+    private var restartPending = false
+    private var restartAtElapsed = 0L
     private var ssoConfirmed = false
     private var librarySubmitted = false
     private var ssoVersion = ""
     private var libraryVersion = ""
     private var portalRedirected = false
     private var preparing = false
-    private var finishedWhilePaused = false
     private var captchaFailure: String? = null
     private var captchaReady = false
     internal val running get() = !closed && !stopped
@@ -71,18 +79,26 @@ class WebVpnLoginDriver internal constructor(
 
     init {
         captcha.setEnabled(ocrEnabled)
-        main.postDelayed({
-            fail("WebVPN 两步登录超过 90 秒仍未验证成功，已停止；请核对网页或网络", "unknown", pause =
-                if (librarySubmitted) Kind.LIBRARY else if (ssoSubmitted) Kind.SSO else null)
-        }, 90_000L)
+        main.postDelayed({ timeout() }, 90_000L)
+    }
+
+    private fun timeout() = fail("WebVPN 两步登录超过 90 秒仍未验证成功，已停止；请核对网页或网络", "unknown", pause =
+        if (librarySubmitted) Kind.LIBRARY else if (ssoSubmitted) Kind.SSO else null)
+
+    private fun withinDeadline(): Boolean {
+        if (closed || stopped) return false
+        if (SystemClock.elapsedRealtime() >= deadlineElapsed) { timeout(); return false }
+        return true
     }
 
     fun onResume() {
         if (closed) return
         active = true
+        if (!withinDeadline()) return
+        if (restartPending) { scheduleCaptchaRestart(); return }
         if (!ssoSubmitted && !stopped) captcha.onResume()
         if (!stopped && !loading && pageReady && finishedUrl == view.url) {
-            if (ssoSubmitted && CaptchaPagePolicy.isTrusted(view.url) && !finishedWhilePaused)
+            if (ssoSubmitted && CaptchaPagePolicy.isTrusted(view.url) && documentSerial == ssoSubmittedDocument)
                 verifyLater(epoch, Kind.SSO)
             else dispatchReadyPage(view.url.orEmpty())
         }
@@ -91,28 +107,37 @@ class WebVpnLoginDriver internal constructor(
     fun openLoginPage() { navigate(LibraryRoute.WEBVPN.url("/login")) }
 
     private fun navigate(url: String) {
-        if (closed || stopped) return
+        if (!withinDeadline()) return
         // Invalidate the old document synchronously, before loadUrl schedules its callbacks.
         onPageStarted(url)
         view.loadUrl(url)
     }
     fun onPause() { active = false; epoch++; probing = false; preparing = false; captcha.onPause() }
-    fun setOcrEnabled(enabled: Boolean) { ocrEnabled = enabled; captcha.setEnabled(enabled) }
+    fun setOcrEnabled(enabled: Boolean) {
+        ocrEnabled = enabled; captcha.setEnabled(enabled)
+        if (!enabled && restartPending) fail("验证码识别已关闭，已取消统一认证自动重新开始", "vpn_login_required", "expired", pause = null)
+    }
     fun setRememberMe(enabled: Boolean) {
         rememberMe = enabled
         if (prepared && !ssoSubmitted && !stopped && CaptchaPagePolicy.isTrusted(view.url))
             evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.setRememberMe($enabled) || {kind:'stopped'})", epoch) {}
     }
     fun retryCaptcha() {
+        if (restartPending) { onStatus("学校已明确拒绝本次验证码，正在等待新页面重新开始；不在旧页面重复提交"); return }
         if (ssoSubmitted) { onStatus("统一认证已经提交，不再刷新或重试验证码；请核对学校结果"); return }
         captchaFailure = null; captcha.onResume(); captcha.retry()
     }
 
     fun onPageStarted(url: String) {
         if (closed) return
+        SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
+        if (restartPending) {
+            fail("等待重新开始期间网页已由其它操作切换，已停止自动登录", "vpn_login_required", "expired", pause = null)
+        }
+        documentSerial++
         epoch++; loading = true; probing = false; preparing = false; prepared = false
         pageReady = false; finishedUrl = null
-        captchaFailure = null; captchaReady = false; finishedWhilePaused = false
+        captchaFailure = null; captchaReady = false
         captcha.onPageStarted(url)
     }
 
@@ -122,19 +147,19 @@ class WebVpnLoginDriver internal constructor(
         if (!pageReady || finishedUrl != url) captcha.onPageFinished(url)
         pageReady = true
         finishedUrl = url
-        if (!active) { finishedWhilePaused = true; return }
-        finishedWhilePaused = false
+        if (!active) return
         dispatchReadyPage(url)
     }
 
     private fun dispatchReadyPage(url: String) {
         if (!pageReady || loading || finishedUrl != url || url != view.url || !active || dispatchedEpoch == epoch) return
-        if (stopped) return
+        if (!withinDeadline() || restartPending) return
         // Duplicate finish callbacks must not cancel an in-flight preparation or POST.
         dispatchedEpoch = epoch
         when {
             CaptchaPagePolicy.isTrusted(url) -> {
-                if (ssoSubmitted) fail("统一认证仍停留在登录页，可能账号密码、验证码或校方校验未通过；已暂停自动重试", "vpn_login_required", "expired", Kind.SSO)
+                if (ssoSubmitted && documentSerial > ssoSubmittedDocument) inspectReturnedSsoPage()
+                else if (ssoSubmitted) verifyLater(epoch, Kind.SSO)
                 else prepareSso()
             }
             LibraryRoute.WEBVPN.pathOf(url) != null -> checkLibrary()
@@ -147,10 +172,77 @@ class WebVpnLoginDriver internal constructor(
         }
     }
 
-    private fun live(id: Long) = !closed && !stopped && active && id == epoch
+    private fun live(id: Long) = !closed && !stopped && active && id == epoch && withinDeadline()
+
+    /** Only a newly loaded document after our POST can prove this attempt was rejected. */
+    private fun inspectReturnedSsoPage() {
+        if (!ssoSubmitted || librarySubmitted || documentSerial <= ssoSubmittedDocument || !withinDeadline()) return
+        val id = epoch
+        captcha.onPause()
+        onStatus("统一认证返回登录页，正在只读核对学校的明确拒绝原因…")
+        evaluate(ssoScript, id) {
+            // Read the outcome and arm event-only manual-interaction protection in
+            // the same JavaScript task, so no user event can slip between them.
+            evaluate("JSON.stringify((() => { const h = window.SchoolSsoAutoLogin; const r = h?.outcome() || {kind:'unknown'}; return r.kind === 'captcha-rejected' ? {...r, restartGuard:h.armCaptchaRestart().kind} : r; })())", id) { result ->
+                if (!ssoSubmitted || librarySubmitted || documentSerial <= ssoSubmittedDocument) return@evaluate
+                when (result.optString("kind")) {
+                    "captcha-rejected" -> {
+                        // This POST has a known rejection. Never retry the same form/challenge.
+                        ssoSubmitted = false
+                        ssoCallSerial++
+                        prepared = false; captchaReady = false; captchaFailure = null
+                        if (result.optString("restartGuard") !in setOf("armed", "ready")) {
+                            fail("学校已拒绝验证码，但检测到手动操作或页面变化，已停止自动重新开始", "vpn_login_required", "expired", pause = null)
+                        } else if (!ocrEnabled || !sso.enabled || sso.paused || sso.revision != ssoVersion) {
+                            fail("验证码已被学校拒绝，但识别或账号设置已改变，已停止自动重新开始", "vpn_login_required", "expired", pause = null)
+                        } else if (captchaRestarts >= 2 || ssoAttempts >= 3) {
+                            fail("学校连续拒绝验证码，已达到本轮两次自动重新开始上限；未将密码标记为错误，请手动核对", "vpn_login_required", "expired", pause = null)
+                        } else {
+                            captchaRestarts++
+                            restartPending = true
+                            restartAtElapsed = SystemClock.elapsedRealtime() + 1_500L
+                            onStatus("学校明确提示验证码无效，将自动获取新登录页面重新开始（$captchaRestarts/2）；不会重复提交旧表单")
+                            scheduleCaptchaRestart()
+                        }
+                    }
+                    "other-rejected" -> fail("学校拒绝统一认证，可能涉及账号密码、锁定、访问限制或额外验证；已停止自动重试，请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
+                    else -> fail("统一认证返回登录页，但没有可确认的验证码拒绝结果；已停止，不重复提交，请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
+                }
+            }
+        }
+    }
+
+    private fun scheduleCaptchaRestart() {
+        if (!restartPending || !active || !withinDeadline()) return
+        val id = epoch
+        main.postDelayed({
+            if (!live(id) || !restartPending) return@postDelayed
+            if (!ocrEnabled || !sso.enabled || sso.paused || sso.revision != ssoVersion || librarySubmitted) {
+                fail("识别或账号设置已改变，已取消统一认证自动重新开始", "vpn_login_required", "expired", pause = null)
+                return@postDelayed
+            }
+            evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.captchaRestartState() || {kind:'unknown'})", id) { guard ->
+                if (!restartPending) return@evaluate
+                if (guard.optString("kind") != "ready") {
+                    fail("检测到手动操作或登录页面变化，已取消自动重新开始；保留当前页面", "vpn_login_required", "expired", pause = null)
+                    return@evaluate
+                }
+                if (!ocrEnabled || !sso.enabled || sso.paused || sso.revision != ssoVersion || librarySubmitted) {
+                    fail("识别或账号设置已改变，已取消统一认证自动重新开始", "vpn_login_required", "expired", pause = null)
+                    return@evaluate
+                }
+                restartPending = false
+                portalRedirected = false
+                ssoConfirmed = false
+                navigate(LibraryRoute.WEBVPN.url("/login"))
+                // navigate() invalidates the rejected document before OCR resumes.
+                if (active && !closed && !stopped) captcha.onResume()
+            }
+        }, maxOf(0L, restartAtElapsed - SystemClock.elapsedRealtime()))
+    }
 
     private fun prepareSso() {
-        if (preparing || !CaptchaPagePolicy.isTrusted(view.url)) return
+        if (preparing || restartPending || !CaptchaPagePolicy.isTrusted(view.url) || !withinDeadline()) return
         if (!ocrEnabled) { fail("未开启验证码识别，请手动认证或在网页开启识别", "vpn_login_required", "expired"); return }
         val credentials = sso.read()
         if (credentials == null) {
@@ -184,20 +276,26 @@ class WebVpnLoginDriver internal constructor(
 
     private fun submitSso() {
         if (closed || stopped || !active || !ocrEnabled || !prepared || ssoSubmitted || !CaptchaPagePolicy.isTrusted(view.url)) return
+        if (!withinDeadline() || restartPending) return
         if (!sso.enabled || sso.paused || sso.revision != ssoVersion) { fail("统一认证账号设置已改变，已停止", "vpn_login_required"); return }
+        if (ssoAttempts >= 3) { fail("统一认证已达到本轮三次提交上限，已停止", "vpn_login_required", "expired", pause = null); return }
         val id = epoch
         // Lock before invoking the school's button: an exception or delayed response must not resubmit.
         ssoSubmitted = true
+        ssoSubmittedDocument = documentSerial
+        ssoAttempts++
         val call = ++ssoCallSerial
         // Once the credential POST may start, OCR must not refresh another challenge.
         captcha.onPause()
         onStatus("正在执行学校统一认证校验并启动登录表单…")
         // Arm observation BEFORE evaluateJavascript: navigation can discard its callback.
         verifyLater(id, Kind.SSO, call)
+        SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
         evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.submit() || {kind:'stopped'})", id) { result ->
             if (result.optString("kind") != "submitted") {
                 if (result.optString("kind") == "waiting") {
                     ssoSubmitted = false
+                    ssoAttempts-- // Proven pre-submit waits do not consume a submission round.
                     ssoCallSerial++ // Waiting is proven pre-submit; discard this call's watchdog.
                     if (result.optString("detailCode") == "school-scripts-loading") {
                         onStatus("账号及验证码已就绪，等待学校密码加密脚本加载后自动提交…")
@@ -225,7 +323,7 @@ class WebVpnLoginDriver internal constructor(
     }
 
     private fun checkLibrary() {
-        if (probing || stopped || !active) return
+        if (probing || stopped || !active || !withinDeadline()) return
         probing = true
         val id = epoch
         CookieManager.getInstance().flush()
@@ -256,7 +354,7 @@ class WebVpnLoginDriver internal constructor(
     }
 
     private fun submitLibrary() {
-        if (preparing || librarySubmitted || LibraryRoute.WEBVPN.pathOf(view.url.orEmpty()) != "/login") return
+        if (preparing || librarySubmitted || LibraryRoute.WEBVPN.pathOf(view.url.orEmpty()) != "/login" || !withinDeadline()) return
         val credentials = library.read()
         if (credentials == null) {
             fail(if (library.paused) "统一认证已通过；图书馆自动登录已暂停，请核对第二套账号"
@@ -283,6 +381,7 @@ class WebVpnLoginDriver internal constructor(
             val json = JSONObject().put("username", credentials.username).put("password", credentials.password).toString()
             librarySubmitted = true
             onStatus("统一认证已通过，正在使用独立图书馆账号登录…")
+            SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
             evaluate(libraryScript.replace("__LOGIN_CREDENTIALS__", json), id) { result ->
                 preparing = false
                 if (result.optString("kind") == "submitted") verifyLater(id, Kind.LIBRARY)
@@ -348,6 +447,7 @@ class WebVpnLoginDriver internal constructor(
         if (closed || stopped) return
         if (CaptchaPagePolicy.isTrusted(view.url)) runCatching { view.evaluateJavascript("window.SchoolSsoAutoLogin?.cancel()", null) }
         stopped = true
+        restartPending = false
         captcha.onPause()
         if (pause == Kind.SSO && sso.revision == ssoVersion) sso.pause()
         if (pause == Kind.LIBRARY && library.revision == libraryVersion) library.pause()

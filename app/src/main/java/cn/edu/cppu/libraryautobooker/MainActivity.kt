@@ -58,17 +58,25 @@ class MainActivity : ComponentActivity() {
     private var loginEntryVisible by mutableStateOf(true)
     private var managingLogin by mutableStateOf(false)
     private val uiHandler = Handler(Looper.getMainLooper())
-    private var vpnStatusCheck: AutoCloseable? = null
+    private var foreground = false
+    private val preferredSessionCheck = UiSessionRequest()
+    private val vpnStatusCheck = UiSessionRequest()
     private fun refreshVpnStatus() {
-        if (vpnStatusCheck != null) return
-        vpnStatusCheck = SessionCoordinator.checkWebVpnStatus(this) { vpnStatusCheck = null }
+        if (!foreground || vpnStatusCheck.pending) return
+        val ticket = vpnStatusCheck.begin()
+        val handle = SessionCoordinator.checkWebVpnStatus(this) { vpnStatusCheck.complete(ticket) {} }
+        vpnStatusCheck.attach(ticket, handle)
+    }
+    private fun cancelSessionChecks() {
+        preferredSessionCheck.cancel()
+        vpnStatusCheck.cancel()
     }
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         uiHandler.post { refreshVersion++ }
     }
     private val sessionProbe = object : Runnable {
         override fun run() {
-            if (loginEntryVisible) return
+            if (!foreground || loginEntryVisible) return
             refreshVersion++
             if (BookingService.running) {
                 SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
@@ -76,12 +84,18 @@ class MainActivity : ComponentActivity() {
                 uiHandler.postDelayed(this, 60_000L)
                 return
             }
-            SessionCoordinator.check(this@MainActivity) { valid, _ ->
-                val state = RuntimeStore(this@MainActivity).prefs.getString("session_state", "unknown")
-                if (!valid && state == "expired" && !isFinishing && !isDestroyed && !loginEntryVisible) {
-                    managingLogin = false
-                    loginEntryVisible = true
+            if (!preferredSessionCheck.pending) {
+                val ticket = preferredSessionCheck.begin()
+                val handle = SessionCoordinator.check(this@MainActivity) { valid, _ ->
+                    preferredSessionCheck.complete(ticket) {
+                        val state = RuntimeStore(this@MainActivity).prefs.getString("session_state", "unknown")
+                        if (foreground && !valid && state == "expired" && !isFinishing && !isDestroyed && !loginEntryVisible) {
+                            managingLogin = false
+                            loginEntryVisible = true
+                        }
+                    }
                 }
+                preferredSessionCheck.attach(ticket, handle)
             }
             refreshVpnStatus()
             uiHandler.postDelayed(this, 60_000L)
@@ -90,6 +104,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        foreground = true
         refreshVersion++
         val store = ConfigStore(this)
         val current = store.load()
@@ -112,12 +127,15 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        foreground = false
         uiHandler.removeCallbacks(sessionProbe)
-        vpnStatusCheck?.close(); vpnStatusCheck = null
+        cancelSessionChecks()
         super.onPause()
     }
 
     override fun onDestroy() {
+        foreground = false
+        cancelSessionChecks()
         RuntimeStore(this).prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener)
         getSharedPreferences("booking_config", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         uiHandler.removeCallbacksAndMessages(null)
@@ -137,7 +155,8 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(0xFF176B4D))) {
                 LaunchedEffect(loginEntryVisible) {
                     uiHandler.removeCallbacks(sessionProbe)
-                    if (!loginEntryVisible) uiHandler.post(sessionProbe)
+                    if (loginEntryVisible) cancelSessionChecks()
+                    else if (foreground) uiHandler.post(sessionProbe)
                 }
                 var showPermissionSetup by rememberSaveable { mutableStateOf(!setupPrefs.getBoolean("shown", false)) }
                 if (showPermissionSetup && !loginEntryVisible) PermissionSetup {

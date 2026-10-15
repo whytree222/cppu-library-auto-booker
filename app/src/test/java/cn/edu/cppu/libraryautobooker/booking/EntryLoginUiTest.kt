@@ -1,6 +1,14 @@
 package cn.edu.cppu.libraryautobooker.booking
 
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
@@ -12,6 +20,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import cn.edu.cppu.libraryautobooker.EntryLoginScreen
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -89,5 +100,85 @@ class EntryLoginUiTest {
         compose.runOnIdle { requireNotNull(respond)("valid") }
         assertTrue(entered)
     }
+
+    @Test fun disposedEntryIgnoresLateSuccessfulCheck() {
+        var visible by mutableStateOf(true)
+        var respond: ((String) -> Unit)? = null
+        var entered = false
+        compose.setContent {
+            if (visible) MaterialTheme {
+                EntryLoginScreen(sessionCheck = { _, callback -> respond = callback }) { entered = true }
+            }
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { visible = false }
+        compose.waitForIdle()
+        compose.runOnIdle { requireNotNull(respond)("valid") }
+        assertFalse(entered)
+    }
+
+    @Test fun pausedEntryRejectsOldCallbackAndResumeStartsExactlyOneFreshCheck() {
+        lateinit var lifecycleContext: EntryLifecycleContext
+        val responses = mutableListOf<(String) -> Unit>()
+        var entered = false
+        compose.setContent {
+            val base = LocalContext.current
+            val scoped = remember { EntryLifecycleContext(base).also { lifecycleContext = it } }
+            CompositionLocalProvider(LocalContext provides scoped) {
+                MaterialTheme {
+                    EntryLoginScreen(sessionCheck = { _, callback -> responses.add(callback) }) { entered = true }
+                }
+            }
+        }
+        compose.waitForIdle()
+        assertEquals(1, responses.size) // Initial ON_RESUME must not create a duplicate check.
+        compose.runOnIdle {
+            lifecycleContext.event(Lifecycle.Event.ON_PAUSE)
+            responses[0]("valid")
+        }
+        assertFalse(entered)
+        compose.runOnIdle { lifecycleContext.event(Lifecycle.Event.ON_RESUME) }
+        compose.waitForIdle()
+        assertEquals(2, responses.size)
+        compose.runOnIdle { responses[0]("valid") }
+        assertFalse(entered)
+        compose.runOnIdle { responses[1]("valid") }
+        assertTrue(entered)
+    }
+
+    @Test fun coalescedPauseAndResumeStillInvalidatesOldCallbackAndRechecks() {
+        lateinit var lifecycleContext: EntryLifecycleContext
+        val responses = mutableListOf<(String) -> Unit>()
+        var entered = false
+        compose.setContent {
+            val base = LocalContext.current
+            val scoped = remember { EntryLifecycleContext(base).also { lifecycleContext = it } }
+            CompositionLocalProvider(LocalContext provides scoped) {
+                MaterialTheme {
+                    EntryLoginScreen(sessionCheck = { _, callback -> responses.add(callback) }) { entered = true }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            lifecycleContext.event(Lifecycle.Event.ON_PAUSE)
+            lifecycleContext.event(Lifecycle.Event.ON_RESUME)
+            responses[0]("valid")
+        }
+        compose.waitForIdle()
+        assertFalse(entered)
+        assertEquals(2, responses.size)
+    }
 }
 
+/** Synthetic lifecycle around the real test context; no school network or credentials. */
+private class EntryLifecycleContext(base: Context) : ContextWrapper(base), LifecycleOwner {
+    private val registry = LifecycleRegistry(this)
+    override val lifecycle: Lifecycle get() = registry
+    init {
+        event(Lifecycle.Event.ON_CREATE)
+        event(Lifecycle.Event.ON_START)
+        event(Lifecycle.Event.ON_RESUME)
+    }
+    fun event(event: Lifecycle.Event) { registry.handleLifecycleEvent(event) }
+}

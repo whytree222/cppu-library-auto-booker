@@ -23,8 +23,13 @@ object SessionChecker {
     data class Result(val state: String, val detail: String, val networkFailure: Boolean = false, val vpnAuthState: String? = null)
     private val executor = Executors.newSingleThreadExecutor()
     private val generation = AtomicInteger()
-    private val routeGenerations = LibraryRoute.entries.associateWith { AtomicInteger() }
+    private val probeEpochs = SessionProbeEpochs()
     private val main = Handler(Looper.getMainLooper())
+
+    /** Invalidate in-flight read-only checks before authentication changes its document/session. */
+    fun invalidateAuthentication(route: LibraryRoute) {
+        probeEpochs.invalidateAuthentication(route)
+    }
 
     // Same read-only login probe used by the school's readingroommanage.js.
     // Never persist or log the cookie or server response.
@@ -38,13 +43,13 @@ object SessionChecker {
 
     fun probe(context: Context, route: LibraryRoute, updateSession: Boolean = true, callback: (Result) -> Unit) {
         val id = if (updateSession) generation.incrementAndGet() else -1
-        val routeId = routeGenerations.getValue(route).incrementAndGet()
         val app = context.applicationContext
         LoginStatusStore(app).checking(route)
         if (updateSession) RuntimeStore(app).prefs.edit().putString("session_state", "checking")
             .putString("session_detail", "正在通过${route.label}验证图书馆登录…").apply()
         val url = route.url("/isLogin")
         val cookie = CookieManager.getInstance().getCookie(url)
+        val ticket = probeEpochs.begin(route, cookie)
         executor.execute {
             var connection: HttpURLConnection? = null
             var responseCookies = emptyList<String>()
@@ -79,15 +84,18 @@ object SessionChecker {
                 Result("unknown", "${route.label}登录检查失败：${error.javaClass.simpleName}", isNetworkFailure(error))
             } finally { connection?.disconnect() }
             main.post {
-                responseCookies.forEach { CookieManager.getInstance().setCookie(url, it) }
-                if (responseCookies.isNotEmpty()) CookieManager.getInstance().flush()
-                if (routeId == routeGenerations.getValue(route).get()) LoginStatusStore(app).record(route, result)
-                if (updateSession && id == generation.get()) {
-                    RuntimeStore(app).session(result.state, result.detail)
-                    RuntimeStore(app).prefs.edit().putString("session_route", route.name).apply()
-                    if (result.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", route.name).apply()
-                }
-                callback(result)
+                probeEpochs.deliver(ticket, CookieManager.getInstance().getCookie(url), result, accept = {
+                    // A late response must never restore cookies from before a newer login.
+                    // Generation checks apply to cookies as well as persisted status.
+                    responseCookies.forEach { CookieManager.getInstance().setCookie(url, it) }
+                    if (responseCookies.isNotEmpty()) CookieManager.getInstance().flush()
+                    LoginStatusStore(app).record(route, it)
+                    if (updateSession && id == generation.get()) {
+                        RuntimeStore(app).session(it.state, it.detail)
+                        RuntimeStore(app).prefs.edit().putString("session_route", route.name).apply()
+                        if (it.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", route.name).apply()
+                    }
+                }, callback = callback)
             }
         }
     }
@@ -132,5 +140,48 @@ object SessionChecker {
             else if (json.getInt("ReturnValue") > 0) "valid" to "已登录（学校系统验证通过）"
             else "expired" to "未登录或登录已失效，请重新登录"
         } catch (_: Exception) { "unknown" to "服务器返回格式不符，无法验证登录" }
+    }
+}
+
+/**
+ * A probe reads one cookie snapshot, not whichever authentication session exists on completion.
+ * Keep the snapshot private and never include it in diagnostics, data classes, or test output.
+ */
+internal class SessionProbeEpochs {
+    private val authentication = LibraryRoute.entries.associateWith { AtomicInteger() }
+    private val probes = LibraryRoute.entries.associateWith { AtomicInteger() }
+
+    internal class Ticket internal constructor(
+        internal val route: LibraryRoute,
+        internal val authenticationEpoch: Int,
+        internal val probeEpoch: Int,
+        private val cookieSnapshot: String?
+    ) {
+        internal fun matchesCookie(currentCookie: String?) = cookieSnapshot.orEmpty() == currentCookie.orEmpty()
+        override fun toString() = "SessionProbeTicket(route=$route, cookie=<redacted>)"
+    }
+
+    fun begin(route: LibraryRoute, cookieSnapshot: String?): Ticket = Ticket(route,
+        authentication.getValue(route).get(), probes.getValue(route).incrementAndGet(), cookieSnapshot)
+
+    fun invalidateAuthentication(route: LibraryRoute) {
+        authentication.getValue(route).incrementAndGet()
+    }
+
+    /** Only a current, unchanged session may publish response cookies or status. */
+    fun deliver(ticket: Ticket, currentCookie: String?, result: SessionChecker.Result,
+        accept: (SessionChecker.Result) -> Unit, callback: (SessionChecker.Result) -> Unit) {
+        val unchangedSession = ticket.authenticationEpoch == authentication.getValue(ticket.route).get() &&
+            ticket.matchesCookie(currentCookie)
+        if (unchangedSession) {
+            // Parallel status checks may observe the same unchanged session. Their callers can
+            // use those results, but only the newest probe may mutate shared cookies or status.
+            if (ticket.probeEpoch == probes.getValue(ticket.route).get()) accept(result)
+            callback(result)
+        } else {
+            // Finish the caller conservatively instead of hanging it or treating an old success
+            // as proof of the current login. Do not persist this stale result over the new state.
+            callback(SessionChecker.Result("unknown", "登录检查已过时，认证会话已变化；请重新检查"))
+        }
     }
 }

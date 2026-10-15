@@ -40,6 +40,133 @@ function fixture(options={}) {
 }
 function use(options,fn){const f=fixture(options);try{fn(f);}finally{f.close();}}
 
+function feedback(f, text, id = 'msg1', parent = f.w.document.body) {
+  const node=f.w.document.createElement('span'); node.id=id; node.textContent=text;
+  parent.appendChild(node); return node;
+}
+
+test('read-only SSO outcome recognizes only explicit visible CAPTCHA rejection variants',()=>{
+  for(const text of ['验证码信息无效。','验证码无效','验证码错误！',' 验证码 不正确 ',
+      '验证码已失效','验证码失效','验证码已过期','验证码过期',
+      '验证码信息已失效','验证码信息已过期','验证码已失效或过期','验证码已过期或失效'])use({proxy:true},f=>{
+    feedback(f,text);
+    const answer=f.api.outcome();
+    assert.deepEqual(JSON.parse(JSON.stringify(answer)),{kind:'captcha-rejected',detailCode:'school-captcha-rejected'});
+    assert.equal(f.state.posted,0); assert.equal(f.state.encrypted,false);
+  });
+});
+
+test('SSO outcome prioritizes account, lockout, throttling, SMS and mixed feedback over CAPTCHA rejection',()=>{
+  for(const text of ['账号或密码错误','账户已锁定','请求次数过多，请稍后重试','操作过于频繁',
+      '短信验证码错误','验证码错误，密码也不正确','请完成手机验证','登录失败'])use({},f=>{
+    feedback(f,'验证码信息无效。'); feedback(f,text,'swiSpan1');
+    assert.equal(f.api.outcome().kind,'other-rejected'); assert.equal(f.state.posted,0);
+  });
+  use({},f=>{
+    feedback(f,'验证码信息无效。'); feedback(f,'未知校方要求','swiSpan1');
+    assert.equal(f.api.outcome().kind,'other-rejected');
+  });
+});
+
+test('absent, hidden, ambiguous and generic feedback cannot authorize automatic CAPTCHA retry',()=>{
+  for(const variant of ['absent','hidden','hidden-parent','opacity','duplicate','generic','oversized'])use({},f=>{
+    if(variant!=='absent'){
+      const node=feedback(f,variant==='generic'?'认证中，请稍候':variant==='oversized'?'验'.repeat(513):'验证码信息无效。');
+      if(variant==='hidden')node.style.display='none';
+      if(variant==='hidden-parent'){
+        const parent=f.w.document.createElement('div'); parent.style.visibility='hidden';
+        f.w.document.body.appendChild(parent); parent.appendChild(node);
+      }
+      if(variant==='opacity')node.style.opacity='0';
+      if(variant==='duplicate')feedback(f,'验证码信息无效。');
+    }
+    assert.equal(f.api.outcome().kind,'unknown'); assert.equal(f.state.posted,0);
+  });
+});
+
+test('SSO feedback observation never reads credentials, writes DOM, invokes validation or exposes school text',()=>use({},f=>{
+  feedback(f,'验证码信息无效。');
+  const before=f.w.document.documentElement.outerHTML;
+  for(const field of [f.user,f.pass])Object.defineProperty(field,'value',{
+    get(){throw Error('credential-value-must-not-be-read');},set(){throw Error('credential-value-must-not-be-written');}
+  });
+  f.w.checkPassLogin=()=>{throw Error('validation-must-not-be-invoked');};
+  const answer=f.api.outcome();
+  assert.equal(answer.kind,'captcha-rejected');
+  assert.equal(f.w.document.documentElement.outerHTML,before);
+  assert.doesNotMatch(JSON.stringify(answer),/验证码|sso-secret|sso-only|credential/);
+  assert.equal(f.state.posted,0);
+}));
+
+test('SSO outcome requires the verified page, unique form structure and exact target without normalization',()=>{
+  for(const options of [{url:'https://attacker.example/tpass/login'},
+      {action:'https://attacker.example/login'}, {url:'http://sso.cppu.edu.cn/tpass/login'},
+      {proxy:true,action:'https://webvpn.cppu.edu.cn/tpass/login'}])use(options,f=>{
+    feedback(f,'验证码信息无效。');
+    const before=f.w.document.documentElement.outerHTML;
+    assert.equal(f.api.outcome().kind,'unknown');
+    assert.equal(f.w.document.documentElement.outerHTML,before); assert.equal(f.state.posted,0);
+  });
+  use({},f=>{
+    feedback(f,'验证码信息无效。');
+    f.w.document.querySelector('#fm1').appendChild(f.user.cloneNode());
+    assert.equal(f.api.outcome().kind,'unknown');
+  });
+});
+
+test('returned proxy error page permits exact root-relative action observation and guard without a DOM rewrite',()=>use({proxy:true,action:'/tpass/login?execution=fixture-return'},f=>{
+  feedback(f,'验证码信息无效。');
+  const before=f.w.document.documentElement.outerHTML;
+  assert.equal(f.api.outcome().kind,'captcha-rejected');
+  assert.equal(f.api.armCaptchaRestart().kind,'armed');
+  assert.equal(f.api.captchaRestartState().kind,'ready');
+  assert.equal(f.w.document.documentElement.outerHTML,before);
+  assert.equal(f.w.document.querySelector('#fm1').getAttribute('action'),'/tpass/login?execution=fixture-return');
+}));
+
+test('CAPTCHA restart guard is event-only and any rejected-form input, change, click or submit cancels it',()=>{
+  for(const event of ['input','change','click','submit'])use({},f=>{
+    feedback(f,'验证码信息无效。');
+    for(const field of [f.user,f.pass])Object.defineProperty(field,'value',{
+      get(){throw Error('credential-value-must-not-be-read');},set(){throw Error('credential-value-must-not-be-written');}
+    });
+    assert.equal(f.api.armCaptchaRestart().kind,'armed');
+    assert.equal(f.api.captchaRestartState().kind,'ready');
+    f.user.dispatchEvent(new f.w.Event(event,{bubbles:true,cancelable:true}));
+    const result=f.api.captchaRestartState();
+    assert.equal(result.kind,'manual');
+    assert.equal(f.api.armCaptchaRestart().kind,'manual');
+    assert.doesNotMatch(JSON.stringify(result),/credential|验证码|sso-only|sso-secret/);
+    assert.equal(f.state.posted,0);
+  });
+});
+
+test('manual form interaction after helper installation but before outcome and arming already prevents restart',()=>use({proxy:true,action:'/tpass/login'},f=>{
+  feedback(f,'验证码信息无效。');
+  f.user.dispatchEvent(new f.w.Event('input',{bubbles:true}));
+  assert.equal(f.api.outcome().kind,'captcha-rejected');
+  assert.equal(f.api.armCaptchaRestart().kind,'manual');
+  assert.equal(f.api.captchaRestartState().kind,'unknown');
+  assert.equal(f.state.posted,0);
+}));
+
+test('CAPTCHA restart guard cannot be armed for unknown or mixed rejection and invalidates changed document binding',()=>{
+  for(const text of ['', '登录失败', '验证码信息无效，账号已锁定'])use({},f=>{
+    feedback(f,text); assert.equal(f.api.armCaptchaRestart().kind,'unknown');
+    assert.equal(f.api.captchaRestartState().kind,'unknown');
+  });
+  for(const mutate of [
+    f=>{f.w.document.querySelector('#fm1').action='https://attacker.example/tpass/login';},
+    f=>{f.w.history.replaceState({},'','?service=changed');},
+    f=>{f.user.replaceWith(f.user.cloneNode());},
+    f=>{f.w.document.querySelector('#msg1').textContent='登录失败';},
+    f=>{f.api.cancel();}
+  ])use({},f=>{
+    feedback(f,'验证码信息无效。'); assert.equal(f.api.armCaptchaRestart().kind,'armed');
+    mutate(f); assert.equal(f.api.captchaRestartState().kind,'unknown'); assert.equal(f.state.posted,0);
+  });
+});
+
 test('exact school handler runs its validation then standard submitter once even when synthetic click is intercepted',()=>use({proxy:true,standard:true},f=>{
   f.api.prepare(f.credentials);
   const result=f.api.submit();

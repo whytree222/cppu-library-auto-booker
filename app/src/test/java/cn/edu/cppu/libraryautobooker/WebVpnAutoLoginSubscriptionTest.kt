@@ -87,4 +87,41 @@ class WebVpnAutoLoginSubscriptionTest {
         assertEquals(1, delivered)
         assertFalse(request.active)
     }
+
+    @Test fun visibleLoginCancelsHiddenOwnerAndRejectsLateRecoveryUntilClosed() {
+        var oldCallbacks = 0
+        val old = WebVpnAutoLogin.ensure(app) { oldCallbacks++ }
+        val visible = WebVpnAutoLogin.acquireInteractiveLogin()
+        try {
+            assertFalse(WebVpnAutoLogin.running)
+            assertTrue(WebVpnAutoLogin.interactiveLoginOpen)
+            assertEquals(1, oldCallbacks)
+            var late: SessionChecker.Result? = null
+            val blocked = WebVpnAutoLogin.ensure(app) { late = it }
+            assertEquals("unknown", late!!.state)
+            assertTrue(late!!.detail.contains("不启动另一轮"))
+            assertFalse(WebVpnAutoLogin.running)
+            blocked.close(); old.close()
+            assertTrue(WebVpnAutoLogin.interactiveLoginOpen)
+        } finally { visible.close(); old.close() }
+        assertFalse(WebVpnAutoLogin.interactiveLoginOpen)
+        val next = WebVpnAutoLogin.ensure(app) {}
+        assertTrue(WebVpnAutoLogin.running)
+        visible.close() // An old release must not cancel a newer recovery.
+        assertTrue(WebVpnAutoLogin.running)
+        next.close()
+    }
+
+    @Test fun eachVisibleOwnerMustCloseAndStaleReleaseCannotUnlockAnother() {
+        val first = WebVpnAutoLogin.acquireInteractiveLogin()
+        val second = WebVpnAutoLogin.acquireInteractiveLogin()
+        try {
+            first.close(); first.close()
+            assertTrue(WebVpnAutoLogin.interactiveLoginOpen)
+            val expired = SessionChecker.Result("vpn_login_required", "expired", vpnAuthState = "expired")
+            assertFalse(WebVpnAutoLogin.canRecover(app, expired))
+            assertTrue(WebVpnAutoLogin.recoveryUnavailableReason(app, expired)!!.contains("登录页面"))
+        } finally { first.close(); second.close() }
+        assertFalse(WebVpnAutoLogin.interactiveLoginOpen)
+    }
 }

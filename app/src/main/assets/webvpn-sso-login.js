@@ -4,9 +4,11 @@
   const proxy = '/https/77726476706e69737468656265737421e3e44ed224207845300d8db9d6562d';
   let own = null, edited = false, writing = false, submitted = false, cancelled = false;
   let submissionResult = null;
+  let captchaRestartGuard = null;
+  let restartInteraction = null;
   let remembered = null, rememberEdited = false, rememberWriting = false;
   const result = (kind, detailCode) => ({kind, detailCode});
-  function context() {
+  function context(repairAction = true) {
     const page = new URL(location.href);
     if (page.protocol !== 'https:' || page.port || page.username || page.password) return null;
     const prefix = page.hostname === 'sso.cppu.edu.cn' ? '' : page.hostname === 'webvpn.cppu.edu.cn' ? proxy : null;
@@ -26,15 +28,23 @@
       prefix && /^\/tpass\//.test(text.trim()) ? 'https://sso.cppu.edu.cn/tpass/login' : location.href);
     let attribute = resolveAttribute(raw);
     if (!matches(attribute.href)) return null;
-    if (!matches(form.action)) {
-      const action = new URL(form.action, location.href);
+    let action = new URL(form.action, location.href);
+    if (!matches(action.href)) {
       if (!prefix || !/^\/(?!\/)/.test(raw.trim()) || action.origin !== page.origin ||
-          action.pathname !== '/tpass/login' || action.username || action.password || action.port || action.hash) return null;
-      // Normalize the school's known relative target before writing either credential.
-      form.setAttribute('action', prefix + attribute.pathname + attribute.search);
-      raw = form.getAttribute('action') || '';
-      attribute = resolveAttribute(raw);
-      if (!matches(form.action) || !matches(attribute.href)) return null;
+          action.pathname !== '/tpass/login' || action.search !== attribute.search ||
+          action.username || action.password || action.port || action.hash) return null;
+      if (repairAction) {
+        // Normalize the school's known relative target before writing either credential.
+        form.setAttribute('action', prefix + attribute.pathname + attribute.search);
+        raw = form.getAttribute('action') || '';
+        attribute = resolveAttribute(raw);
+        action = new URL(form.action, location.href);
+        if (!matches(action.href) || !matches(attribute.href)) return null;
+      } else {
+        // A returned error document can again expose the original root-relative
+        // action. Verify its exact known equivalence without writing to the DOM.
+        action = attribute;
+      }
     }
     const user = form.querySelectorAll('#username'), password = form.querySelectorAll('#password');
     const button = form.querySelectorAll('#passbutton'), captcha = form.querySelectorAll('#authcode');
@@ -53,7 +63,7 @@
       return 'https://sso.cppu.edu.cn'+path+url.search;
     };
     return {form, user: user[0], password: password[0], button: button[0], captcha: captcha[0],
-      href: page.href, action: canonical(form.action), attribute: canonical(attribute.href)};
+      href: page.href, action: canonical(action.href), attribute: canonical(attribute.href)};
   }
   function visible(element) {
     if (!element.isConnected || !Array.from(element.getClientRects()).some(r=>r.width>0&&r.height>0)) return false;
@@ -63,6 +73,71 @@
           (style.opacity!==''&&Number(style.opacity)===0)) return false;
     }
     return true;
+  }
+  function outcome() {
+    // Observe only the school's known feedback nodes on the verified password
+    // form page. In particular, never read credential field values or return
+    // arbitrary school text to native diagnostics.
+    try {
+      if (!context(false)) return result('unknown', 'unsupported-sso');
+      const messages = [];
+      for (const id of ['msg1', 'swiSpan1']) {
+        const nodes = document.querySelectorAll('#' + id);
+        if (nodes.length > 1) return result('unknown', 'ambiguous-feedback');
+        if (nodes.length === 1 && visible(nodes[0])) {
+          const text = nodes[0].textContent || '';
+          if (text.length > 512) return result('unknown', 'unsupported-feedback');
+          const normalized = text.replace(/[\s\u200b-\u200d\uFEFF]/g, '').replace(/[。.!！?？]+$/, '');
+          if (normalized) messages.push(normalized);
+        }
+      }
+      const unique = Array.from(new Set(messages));
+      if (!unique.length) return result('unknown', 'no-explicit-result');
+      const captchaMessages = new Set([
+        '验证码信息无效', '验证码无效', '验证码错误', '验证码不正确',
+        '验证码已失效', '验证码失效', '验证码已过期', '验证码过期',
+        '验证码信息已失效', '验证码信息已过期',
+        '验证码已失效或过期', '验证码已过期或失效'
+      ]);
+      // Password, lockout, throttling and additional verification always outrank
+      // a CAPTCHA error. Mixed or unrecognized feedback is never retryable.
+      const otherRejection = /账号|帐号|账户|用户名|密码|学工号|学号|锁定|冻结|停用|禁用|封禁|受限|频繁|次数|限流|频率|短信|手机|动态口令|动态码|二次验证|二次认证|人脸|扫码|安全问题|认证失败|登录失败|拒绝|不允许|禁止/;
+      if (unique.some(text => otherRejection.test(text))) return result('other-rejected', 'school-auth-rejected');
+      const captcha = unique.filter(text => captchaMessages.has(text));
+      if (captcha.length === unique.length) return result('captcha-rejected', 'school-captcha-rejected');
+      if (captcha.length) return result('other-rejected', 'mixed-school-feedback');
+      return result('unknown', 'no-explicit-result');
+    } catch (_) { return result('unknown', 'unsupported-sso'); }
+  }
+  function captchaRestartState() {
+    const guard = captchaRestartGuard;
+    if (!guard || cancelled || submitted) return result('unknown', 'restart-not-armed');
+    if (guard.touched) return result('manual', 'restart-user-interaction');
+    try {
+      const info = context(false);
+      if (!info || guard.document !== document || info.form !== guard.form || info.href !== guard.href ||
+          info.action !== guard.action || info.attribute !== guard.attribute || info.user !== guard.user ||
+          info.password !== guard.password || info.captcha !== guard.captcha || info.button !== guard.button)
+        return result('unknown', 'restart-document-changed');
+      if (outcome().kind !== 'captcha-rejected') return result('unknown', 'restart-feedback-changed');
+      return result('ready', 'captcha-restart-ready');
+    } catch (_) { return result('unknown', 'restart-document-changed'); }
+  }
+  function armCaptchaRestart() {
+    if (captchaRestartGuard) return captchaRestartState();
+    if (cancelled || submitted) return result('unknown', 'restart-not-available');
+    try {
+      const info = context(false);
+      if (!info || outcome().kind !== 'captcha-rejected') return result('unknown', 'restart-not-rejected');
+      const guard = restartInteraction;
+      if (!guard || guard.form !== info.form || guard.document !== document || guard.href !== info.href ||
+          guard.action !== info.action || guard.attribute !== info.attribute || guard.user !== info.user ||
+          guard.password !== info.password || guard.captcha !== info.captcha || guard.button !== info.button)
+        return result('unknown', 'restart-document-changed');
+      if (guard.touched) return result('manual', 'restart-user-interaction');
+      captchaRestartGuard = guard;
+      return result('armed', 'captcha-restart-armed');
+    } catch (_) { return result('unknown', 'restart-not-available'); }
   }
   function setRememberMe(enabled) {
     let info; try {info=context();}catch(_){return result('stopped','unsupported-sso');}
@@ -170,6 +245,17 @@
     finally {own.secret=''; own.username='';}
   }
   function cancel() {cancelled=true; if(own){own.secret='';own.username='';} return result('manual','cancelled');}
-  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,cancel,setRememberMe}), writable:false});
+  // Track events from installation, including the small interval before native
+  // asks for the outcome. This reads no field values and never prevents an event.
+  try {
+    const initial = context(false);
+    if (initial) {
+      restartInteraction = {...initial, document, touched: false};
+      const observation = restartInteraction;
+      for (const event of ['input', 'change', 'submit', 'click'])
+        initial.form.addEventListener(event, () => { observation.touched = true; }, true);
+    }
+  } catch (_) { /* Unknown pages remain ineligible for an automatic restart. */ }
+  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
   return result('installed','sso-helper-ready');
 })();
