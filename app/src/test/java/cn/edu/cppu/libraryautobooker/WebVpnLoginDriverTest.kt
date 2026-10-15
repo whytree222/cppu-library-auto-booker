@@ -282,7 +282,7 @@ class WebVpnLoginDriverTest {
             f.prepareSso()
             f.completeCaptchaAndSubmitSso()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
-            f.view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
+            assertEquals(1, f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") })
             assertEquals(1, f.view.submissionCount())
             f.finish(SSO_PROXY_URL)
             assertEquals("vpn_login_required", f.results.single().state)
@@ -505,7 +505,7 @@ class WebVpnLoginDriverTest {
             assertEquals(1, f.view.submissionCount())
             f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }, "{\"kind\":\"submitted\"}")
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
-            f.view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
+            assertEquals(1, f.view.calls.count { it.script.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") })
             assertEquals(1, f.view.submissionCount())
             assertTrue(f.results.isEmpty())
         }

@@ -1,7 +1,8 @@
 (() => {
   'use strict';
   // Read only the already-loaded CAPTCHA. Never inspect account/password values,
-  // fetch another image, refresh a CAPTCHA, or submit the authentication form.
+  // submit the authentication form. A bounded native retry may explicitly click
+  // the school's original image handler; snapshot/fill never refresh by themselves.
   if (window.LibraryCaptchaOcr && window.LibraryCaptchaOcr.version === 1) return {kind: 'installed'};
   const boundDocument = document;
   const proxyPrefix = '/https/77726476706e69737468656265737421e3e44ed224207845300d8db9d6562d';
@@ -241,8 +242,20 @@
     userEdited = false;
     return result('reset');
   }
+  function refresh() {
+    const info = page();
+    if (info.error) return info.error;
+    watch(info.input);
+    if (userEdited || info.input.value !== '') return result('manual', 'input-occupied');
+    if (!visible(info.image) || typeof info.image.onclick !== 'function')
+      return result('stopped', 'refresh-unavailable');
+    // Invalidate all earlier OCR tickets before the normal school refresh handler.
+    pending = null; ownFill = null;
+    try { info.image.click(); return result('refreshing'); }
+    catch (_) { return result('stopped', 'refresh-failed'); }
+  }
   Object.defineProperty(window, 'LibraryCaptchaOcr', {
-    value: Object.freeze({version: 1, snapshot, fill, reset}), writable: false, configurable: false
+    value: Object.freeze({version: 1, snapshot, fill, reset, refresh}), writable: false, configurable: false
   });
   // Start tracking edits at installation, not only after the first native poll.
   const initial = page();

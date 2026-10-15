@@ -149,9 +149,10 @@ object SessionCoordinator {
         return checkPreferred(context) { callback(it.state) }
     }
 
-    fun checkRoute(context: Context, route: LibraryRoute, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
+    fun checkRoute(context: Context, route: LibraryRoute, updateSession: Boolean = true,
+                   callback: (SessionChecker.Result) -> Unit): AutoCloseable {
         val request = CheckRequest()
-        SessionChecker.probe(context, route) { result ->
+        SessionChecker.probe(context, route, updateSession = updateSession) { result ->
             // The read-only probe may already be in flight. Cancellation still prevents it
             // from starting a credential-bearing login or waking a stopped reservation task.
             if (!request.active) return@probe
@@ -161,13 +162,40 @@ object SessionCoordinator {
                         callback(SessionChecker.Result(if (valid) "valid" else RuntimeStore(context).prefs.getString("session_state", "unknown").orEmpty(), detail))
                     }
                 }
-            } else if (route == LibraryRoute.WEBVPN && WebVpnAutoLogin.canRecover(context, result)) {
-                request.attach(WebVpnAutoLogin.ensure(context) { recovered ->
-                    request.deliver { callback(recovered) }
-                })
-            } else request.deliver { callback(result) }
+            } else if (route == LibraryRoute.WEBVPN) handleWebVpnCheck(context, result, updateSession, request, callback)
+            else request.deliver { callback(result) }
         }
         return request
+    }
+
+    internal fun handleWebVpnCheck(context: Context, result: SessionChecker.Result, updateSession: Boolean,
+        request: CheckRequest, callback: (SessionChecker.Result) -> Unit,
+        ensure: ((SessionChecker.Result) -> Unit) -> AutoCloseable = { listener ->
+            WebVpnAutoLogin.ensure(context, updateSession = updateSession, callback = listener)
+        }) {
+        if (!request.active) return
+        if (WebVpnAutoLogin.canRecover(context, result, statusOnly = !updateSession)) {
+            request.attach(ensure { recovered -> request.deliver { callback(recovered) } })
+        } else request.deliver {
+            val reason = WebVpnAutoLogin.recoveryUnavailableReason(context, result)
+            val explained = if (reason == null) result else result.copy(detail = "${result.detail}；$reason")
+            if (reason != null) cn.edu.cppu.libraryautobooker.data.LoginStatusStore(context).record(LibraryRoute.WEBVPN, explained)
+            callback(explained)
+        }
+    }
+
+    /** Status cards must use recovery too, without replacing the preferred booking route. */
+    fun checkWebVpnStatus(context: Context, callback: (SessionChecker.Result) -> Unit = {}): AutoCloseable {
+        // Reservation-owned checks decide recovery once a task starts. A status-card
+        // refresh must never change authentication cookies underneath an in-flight POST.
+        if (RuntimeStore(context).prefs.getString("task_state", "") in setOf("RUNNING", "TRIGGERED")) {
+            val request = CheckRequest()
+            SessionChecker.probe(context, LibraryRoute.WEBVPN, updateSession = false) { result ->
+                request.deliver { callback(result) }
+            }
+            return request
+        }
+        return checkRoute(context, LibraryRoute.WEBVPN, updateSession = false, callback = callback)
     }
 
     /** Main-thread ownership of an asynchronous probe and its optional shared recovery. */

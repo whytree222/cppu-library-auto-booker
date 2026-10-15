@@ -42,6 +42,10 @@ import androidx.compose.ui.unit.dp
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 
 /** The entry page contains only login controls, not the reservation dashboard. */
 @Composable
@@ -63,7 +67,19 @@ fun EntryLoginScreen(
     var active by remember { mutableStateOf(true) }
     var gateOnly by remember { mutableStateOf(autoEnterValid) }
     var checkAttempt by remember { mutableStateOf(0) }
-    DisposableEffect(Unit) { onDispose { active = false; password = "" } }
+    val vpnStatusCheck = remember { arrayOfNulls<AutoCloseable>(1) }
+    DisposableEffect(Unit) { onDispose { active = false; password = ""; vpnStatusCheck[0]?.close() } }
+    LaunchedEffect(Unit) {
+        (context as? LifecycleOwner)?.lifecycle?.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            try {
+                while (true) {
+                    if (WebVpnAutoLogin.hasEnabledAccount(app) && vpnStatusCheck[0] == null)
+                        vpnStatusCheck[0] = SessionCoordinator.checkWebVpnStatus(app) { vpnStatusCheck[0] = null }
+                    delay(60_000L)
+                }
+            } finally { vpnStatusCheck[0]?.close(); vpnStatusCheck[0] = null }
+        }
+    }
 
     fun checked(state: String) {
         if (!active) return
@@ -235,7 +251,8 @@ fun EntryLoginScreen(
             }, enabled = !busy) { Text("删除已保存的账号密码") }
             LoginStatusCard(rememberLoginStatuses(), onCheck = {
                 SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}
-                SessionChecker.probe(app, LibraryRoute.WEBVPN, updateSession = false) {}
+                vpnStatusCheck[0]?.close()
+                vpnStatusCheck[0] = SessionCoordinator.checkWebVpnStatus(app) { vpnStatusCheck[0] = null }
             })
             TextButton(onClick = { context.startActivity(Intent(context, WebVpnAccountsActivity::class.java)) }, enabled = !busy) {
                 Text("WebVPN 两套账号与自动登录")

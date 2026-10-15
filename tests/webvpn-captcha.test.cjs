@@ -284,6 +284,32 @@ test('the value is never followed by an automatic login or image refresh', () =>
   assert.equal(f.image.src, before); assert.equal(f.state.requests, 0); assert.equal(f.state.submits, 0);
 }));
 
+test('explicit bounded refresh uses only the original school image handler and invalidates old OCR',()=>using({},f=>{
+  let clicks=0;
+  f.image.onclick=()=>{clicks++;f.state.pixels='synthetic-image-B';};
+  const old=f.api.snapshot();
+  assert.equal(f.api.refresh().kind,'refreshing');
+  assert.equal(clicks,1);
+  assert.notEqual(f.api.fill(old.token,'1234').kind,'filled');
+  assert.equal(f.input.value,'');
+  const current=f.api.snapshot();
+  assert.notEqual(current.imageKey,old.imageKey);
+  assert.equal(f.api.fill(current.token,'1234').kind,'filled');
+  assert.equal(f.state.submits,0);
+  assert.equal(f.state.requests,0);
+}));
+
+test('refresh is refused for manual edits even if erased, filled values, missing handlers or wrong targets',()=>{
+  for(const change of [f=>f.edit('1'),f=>{f.edit('1');f.edit('');},
+    f=>f.api.fill(f.api.snapshot().token,'1234'),
+    f=>{f.w.document.querySelector('form').action='https://other.example/login';},
+    f=>{f.image.src='https://other.example/captcha.jpg';}]) using({},f=>{
+      let clicks=0;f.image.onclick=()=>{clicks++;};change(f);
+      assert.notEqual(f.api.refresh().kind,'refreshing');assert.equal(clicks,0);
+    });
+  using({},f=>assert.equal(f.api.refresh().detailCode,'refresh-unavailable'));
+});
+
 test('representation-only proxy rewriting does not invalidate the same CAPTCHA pixels and query',()=>using({url:'https://webvpn.cppu.edu.cn'+proxy+'/tpass/login'},f=>{
   const ready=f.api.snapshot();
   const form=f.w.document.querySelector('form');

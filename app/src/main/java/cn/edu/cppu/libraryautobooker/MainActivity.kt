@@ -58,6 +58,11 @@ class MainActivity : ComponentActivity() {
     private var loginEntryVisible by mutableStateOf(true)
     private var managingLogin by mutableStateOf(false)
     private val uiHandler = Handler(Looper.getMainLooper())
+    private var vpnStatusCheck: AutoCloseable? = null
+    private fun refreshVpnStatus() {
+        if (vpnStatusCheck != null) return
+        vpnStatusCheck = SessionCoordinator.checkWebVpnStatus(this) { vpnStatusCheck = null }
+    }
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         uiHandler.post { refreshVersion++ }
     }
@@ -72,7 +77,7 @@ class MainActivity : ComponentActivity() {
                     loginEntryVisible = true
                 }
             }
-            SessionChecker.probe(this@MainActivity, LibraryRoute.WEBVPN, updateSession = false) {}
+            refreshVpnStatus()
             uiHandler.postDelayed(this, 60_000L)
         }
     }
@@ -102,6 +107,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         uiHandler.removeCallbacks(sessionProbe)
+        vpnStatusCheck?.close(); vpnStatusCheck = null
         super.onPause()
     }
 
@@ -192,7 +198,7 @@ class MainActivity : ComponentActivity() {
                     Text("过刊阅览室 · 直连优先 / 学校 WebVPN 备用", style = MaterialTheme.typography.bodyMedium)
                     LoginStatusCard(rememberLoginStatuses(), hasActions = true, onCheck = {
                         SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
-                        SessionChecker.probe(this@MainActivity, LibraryRoute.WEBVPN, updateSession = false) {}
+                        refreshVpnStatus()
                     }) {
                             val credentials = remember(refreshVersion) { CredentialStore(this@MainActivity) }
                             Text(if (!credentials.configured) "自动重新登录：未设置账号密码"

@@ -20,6 +20,14 @@ class LoginStatusStore(context: Context) {
         editor.apply()
     }
 
+    fun recovering(detail: String) {
+        val editor = prefs.edit()
+        listOf("vpn_auth", "vpn_library").forEach {
+            editor.putString("login_${it}_state", "checking").putString("login_${it}_detail", detail)
+        }
+        editor.apply()
+    }
+
     fun record(route: LibraryRoute, result: SessionChecker.Result) {
         val now = System.currentTimeMillis()
         val editor = prefs.edit()
@@ -31,13 +39,12 @@ class LoginStatusStore(context: Context) {
             val auth = result.vpnAuthState ?: "unknown"
             put("vpn_auth", auth, when (auth) {
                 "valid" -> "已通过 WebVPN 认证并到达图书馆服务；不保证固定五天有效"
-                "expired" -> "学校要求重新进行统一认证，可能未登录或会话已过期"
+                "expired" -> result.detail.ifBlank { "学校要求重新进行统一认证，可能未登录或会话已过期" }
                 else -> "未获得足够响应，无法确认统一认证是否有效"
             })
             put("vpn_library", if (result.state in listOf("valid", "expired")) result.state else "unknown",
-                if (auth == "expired") "需先完成 WebVPN 统一认证，暂时无法检查图书馆登录" else result.detail)
+                if (auth == "expired") "需先恢复 WebVPN 统一认证；${result.detail}" else result.detail)
         }
         editor.apply()
     }
 }
-

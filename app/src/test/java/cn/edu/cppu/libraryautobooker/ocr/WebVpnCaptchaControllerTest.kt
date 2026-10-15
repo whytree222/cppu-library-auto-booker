@@ -77,13 +77,108 @@ class WebVpnCaptchaControllerTest {
         }
     }
 
-    @Test fun blockedImageReadStopsRatherThanRepeatedlyCapturing() {
+    @Test fun temporaryImageReadFailureRetriesTwiceWithoutRefreshingThenStops() {
         Fixture().use { f ->
             f.beginSnapshot()
             f.view.answer(1, "{\"kind\":\"unavailable\"}")
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
-            assertEquals(2, f.view.calls.size)
-            assertTrue(f.statuses.last().contains("自动识别已停止"))
+            repeat(2) {
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+                f.view.answer(f.view.calls.lastIndex, "{\"kind\":\"unavailable\"}")
+            }
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+            assertEquals(4, f.view.calls.size)
+            assertTrue(f.statuses.last().contains("重试已达上限"))
+            assertFalse(f.view.calls.any { it.script.contains(".refresh()") })
+        }
+    }
+
+    private fun ready(image: String) = """{"kind":"ready","imageKey":"$image","token":"synthetic-token","data":"YQ=="}"""
+    private fun awaitMain(condition: () -> Boolean) {
+        val end = System.nanoTime() + 3_000_000_000L
+        while (!condition() && System.nanoTime() < end) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(5)
+        }
+        assertTrue("Expected synthetic worker result on main looper", condition())
+    }
+
+    @Test fun unreliableInferenceRefreshesOnceAndFillsTheNextReliableImageAutomatically() {
+        Fixture().use { f ->
+            var attempts = 0
+            f.controller.recognizeForTest = {
+                attempts++
+                if (attempts == 1) DdddOcrEngine.Result("123", 0.9, "123", 0)
+                else DdddOcrEngine.Result("1234", 0.9, "1234", 0)
+            }
+            f.beginSnapshot()
+            f.view.answer(1, ready("image-a"))
+            awaitMain { f.statuses.any { it.contains("自动刷新验证码") } }
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+            assertTrue(f.view.calls.last().script.contains(".refresh()"))
+            f.view.answer(f.view.calls.lastIndex, """{"kind":"refreshing"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
+            f.view.answer(f.view.calls.lastIndex, ready("image-b"))
+            awaitMain { f.view.calls.last().script.contains(".fill(") }
+            f.view.answer(f.view.calls.lastIndex, """{"kind":"filled"}""")
+            assertTrue(f.statuses.last().contains("已自动填写"))
+            assertEquals(2, attempts)
+            assertEquals(1, f.view.calls.count { it.script.contains(".refresh()") })
+            assertFalse(f.view.calls.any { it.script.contains(".submit(") })
+        }
+    }
+
+    @Test fun threeUnreliableImagesUseOnlyTwoRefreshesAndNeverFillOrSubmit() {
+        Fixture().use { f ->
+            f.controller.recognizeForTest = { DdddOcrEngine.Result("1234", 0.1, "1234", 0) }
+            f.beginSnapshot()
+            for (image in 0..2) {
+                f.view.answer(f.view.calls.lastIndex, ready("image-$image"))
+                if (image < 2) {
+                    awaitMain { f.statuses.last().contains("自动刷新验证码") }
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+                    f.view.answer(f.view.calls.lastIndex, """{"kind":"refreshing"}""")
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
+                } else awaitMain { f.statuses.last().contains("已达上限") }
+            }
+            val calls = f.view.calls.size
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+            assertEquals(calls, f.view.calls.size)
+            assertEquals(2, f.view.calls.count { it.script.contains(".refresh()") })
+            assertFalse(f.view.calls.any { it.script.contains(".fill(") || it.script.contains(".submit(") })
+        }
+    }
+
+    @Test fun unchangedImageAfterRefreshIsNotRecognizedAgainAndTimesOut() {
+        Fixture().use { f ->
+            var attempts = 0
+            f.controller.recognizeForTest = { attempts++; DdddOcrEngine.Result("123", 0.9, "123", 0) }
+            f.beginSnapshot(); f.view.answer(1, ready("image-a"))
+            awaitMain { f.statuses.last().contains("自动刷新验证码") }
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+            f.view.answer(f.view.calls.lastIndex, """{"kind":"refreshing"}""")
+            repeat(10) {
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
+                f.view.answer(f.view.calls.lastIndex, ready("image-a"))
+            }
+            assertEquals(1, attempts)
+            assertTrue(f.statuses.last().contains("图片未更新"))
+        }
+    }
+
+    @Test fun pauseOptOutAndNavigationCancelTheDelayedAutomaticRefresh() {
+        repeat(3) { cause ->
+            Fixture().use { f ->
+                f.controller.recognizeForTest = { DdddOcrEngine.Result("123", 0.9, "123", 0) }
+                f.beginSnapshot(); f.view.answer(1, ready("image-a"))
+                awaitMain { f.statuses.last().contains("自动刷新验证码") }
+                when (cause) {
+                    0 -> f.controller.onPause()
+                    1 -> f.controller.setEnabled(false)
+                    else -> f.controller.onPageStarted("https://other.example/")
+                }
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+                assertFalse(f.view.calls.any { it.script.contains(".refresh()") })
+            }
         }
     }
 

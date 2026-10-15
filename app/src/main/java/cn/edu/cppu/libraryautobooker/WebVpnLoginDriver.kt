@@ -79,7 +79,7 @@ class WebVpnLoginDriver internal constructor(
     fun onResume() {
         if (closed) return
         active = true
-        captcha.onResume()
+        if (!ssoSubmitted && !stopped) captcha.onResume()
         if (!stopped && !loading && pageReady && finishedUrl == view.url) {
             if (ssoSubmitted && CaptchaPagePolicy.isTrusted(view.url) && !finishedWhilePaused)
                 verifyLater(epoch, Kind.SSO)
@@ -102,7 +102,10 @@ class WebVpnLoginDriver internal constructor(
         if (prepared && !ssoSubmitted && !stopped && CaptchaPagePolicy.isTrusted(view.url))
             evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.setRememberMe($enabled) || {kind:'stopped'})", epoch) {}
     }
-    fun retryCaptcha() { captchaFailure = null; captcha.retry() }
+    fun retryCaptcha() {
+        if (ssoSubmitted) { onStatus("统一认证已经提交，不再刷新或重试验证码；请核对学校结果"); return }
+        captchaFailure = null; captcha.onResume(); captcha.retry()
+    }
 
     fun onPageStarted(url: String) {
         if (closed) return
@@ -184,6 +187,8 @@ class WebVpnLoginDriver internal constructor(
         val id = epoch
         // Lock before invoking the school's button: an exception or delayed response must not resubmit.
         ssoSubmitted = true
+        // Once the credential POST may start, OCR must not refresh another challenge.
+        captcha.onPause()
         onStatus("正在通过学校原登录按钮提交统一认证…")
         evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.submit() || {kind:'stopped'})", id) { result ->
             if (result.optString("kind") != "submitted") {
@@ -191,6 +196,7 @@ class WebVpnLoginDriver internal constructor(
                     // No submission took place; a newly current CAPTCHA may complete this preparation.
                     ssoSubmitted = false
                     captchaReady = false
+                    captcha.onResume()
                     onStatus("验证码已更新，等待当前图片重新识别")
                 } else fail("统一认证未能安全提交，已停止；请在网页核对", "vpn_login_required", "expired", Kind.SSO)
             } else verifyLater(id, Kind.SSO)
@@ -302,6 +308,7 @@ class WebVpnLoginDriver internal constructor(
         if (closed || stopped) return
         if (CaptchaPagePolicy.isTrusted(view.url)) runCatching { view.evaluateJavascript("window.SchoolSsoAutoLogin?.cancel()", null) }
         stopped = true
+        captcha.onPause()
         if (pause == Kind.SSO && sso.revision == ssoVersion) sso.pause()
         if (pause == Kind.LIBRARY && library.revision == libraryVersion) library.pause()
         onStatus(message)

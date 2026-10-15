@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * CAPTCHA reading/filling during an active foreground page or opted-in login run.
  * No password access, JS bridge, network client,
- * login submission, server challenge refresh, persistent images or diagnostic logging.
+ * login submission, persistent images or diagnostic logging. Unreliable inference may
+ * request at most two fresh images through the school's already-bound click handler.
  */
 class WebVpnCaptchaController(
     context: Context,
@@ -27,6 +28,7 @@ class WebVpnCaptchaController(
     private val script = app.assets.open("webvpn-captcha.js").bufferedReader().use { it.readText() }
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    internal var recognizeForTest: ((ByteArray) -> DdddOcrEngine.Result)? = null
     private val closed = AtomicBoolean(false)
     private var engine: DdddOcrEngine? = null // Worker thread owns and closes this resource.
     private var generation = 0L
@@ -37,6 +39,11 @@ class WebVpnCaptchaController(
     private var pageUrl = ""
     private var budget = CaptchaAttemptBudget(SystemClock.elapsedRealtime())
     private var pending = false
+    private var readRetries = 0
+    private var refreshes = 0
+    private var lastImageKey: String? = null
+    private var awaitingImageKey: String? = null
+    private var refreshAt = 0L
     private val poll = Runnable { capture() }
 
     fun setEnabled(value: Boolean) {
@@ -55,6 +62,7 @@ class WebVpnCaptchaController(
         halted = false
         pageUrl = url
         budget = CaptchaAttemptBudget(SystemClock.elapsedRealtime())
+        resetRetries()
         status(if (enabled && CaptchaPagePolicy.isTrusted(url)) "统一认证页面正在加载验证码…"
             else if (enabled) "等待学校统一认证验证码页面"
             else "自动识别已关闭，可手动输入验证码")
@@ -66,6 +74,7 @@ class WebVpnCaptchaController(
             invalidate()
             halted = false
             budget = CaptchaAttemptBudget(SystemClock.elapsedRealtime())
+            resetRetries()
         }
         pageUrl = url
         pageReady = CaptchaPagePolicy.isTrusted(url)
@@ -85,7 +94,7 @@ class WebVpnCaptchaController(
         invalidate()
     }
 
-    /** User-triggered retry. It never refreshes the school image or overwrites manual input. */
+    /** Explicitly starts a fresh bounded round; never overwrites manual input. */
     fun retry() {
         if (closed.get()) return
         if (!enabled) { status("请先勾选自动识别；也可直接手动输入"); return }
@@ -96,6 +105,7 @@ class WebVpnCaptchaController(
         invalidate()
         halted = false
         budget = CaptchaAttemptBudget(SystemClock.elapsedRealtime())
+        resetRetries()
         install(reset = true)
     }
 
@@ -136,14 +146,58 @@ class WebVpnCaptchaController(
         evaluate("JSON.stringify(window.LibraryCaptchaOcr?.snapshot() || {kind:'stopped'})", token) { result ->
             pending = false
             when (result.optString("kind")) {
-                "ready" -> recognize(result, token)
+                "ready" -> {
+                    val key = result.optString("imageKey")
+                    if (awaitingImageKey == key) {
+                        if (SystemClock.elapsedRealtime() - refreshAt >= 8_000L)
+                            stop("学校验证码刷新后图片未更新，已停止自动尝试；请检查网页")
+                        else { status("等待学校返回新的验证码图片…"); schedule() }
+                    } else {
+                        awaitingImageKey = null
+                        readRetries = 0
+                        lastImageKey = key
+                        recognize(result, token)
+                    }
+                }
                 "filled" -> { status("验证码已自动填写"); onFilled(); schedule() }
                 "waiting" -> { status("等待当前页面的验证码图片加载；不会额外刷新图片"); schedule() }
-                "unavailable" -> stop("当前网页验证码图片无法安全读取，自动识别已停止；请手动输入")
+                "unavailable" -> retryRead("当前网页验证码图片暂时无法读取")
                 "manual" -> stop("检测到手动输入，自动填写已停止；不会覆盖你的内容")
                 else -> stop("验证码定位失败：${explain(result.optString("detailCode"))}；请手动输入")
             }
         }
+    }
+
+    private fun resetRetries() {
+        readRetries = 0; refreshes = 0; lastImageKey = null; awaitingImageKey = null; refreshAt = 0L
+    }
+
+    private fun retryRead(reason: String) {
+        if (++readRetries > 2) { stop("$reason，自动读取重试已达上限；请手动输入"); return }
+        status("$reason；正在自动重试读取（$readRetries/2）")
+        schedule(1_500L)
+    }
+
+    private fun refreshAfterFailure(reason: String, token: Long) {
+        if (!active(token)) return
+        if (refreshes >= 2 || budget.expired(SystemClock.elapsedRealtime())) {
+            stop("$reason；本轮自动识别已达上限，请手动完成")
+            return
+        }
+        refreshes++
+        pending = true
+        status("$reason；将自动刷新验证码后重试（$refreshes/2）")
+        handler.postDelayed({
+            if (!active(token)) return@postDelayed
+            evaluate("JSON.stringify(window.LibraryCaptchaOcr?.refresh() || {kind:'stopped'})", token) { result ->
+                pending = false
+                if (result.optString("kind") == "refreshing") {
+                    awaitingImageKey = lastImageKey
+                    refreshAt = SystemClock.elapsedRealtime()
+                    schedule()
+                } else stop("验证码无法安全刷新或已有手动输入，已停止自动尝试")
+            }
+        }, 1_500L)
     }
 
     private fun recognize(snapshot: JSONObject, token: Long) {
@@ -156,7 +210,7 @@ class WebVpnCaptchaController(
         }
         when (budget.begin(imageKey, SystemClock.elapsedRealtime())) {
             CaptchaAttemptBudget.Decision.ALREADY_TRIED -> {
-                stop("当前图片本轮已尝试；需要时点击重新识别或手动输入"); return
+                refreshAfterFailure("当前图片本轮已尝试", token); return
             }
             CaptchaAttemptBudget.Decision.LIMIT -> {
                 stop("本轮已识别三张图片，自动尝试已停止；可手动输入"); return
@@ -175,13 +229,15 @@ class WebVpnCaptchaController(
         worker.execute {
             if (closed.get()) { bytes.fill(0); return@execute }
             try {
-                val local = engine ?: DdddOcrEngine(app).also { engine = it }
-                val result = local.recognize(bytes, digitsOnly = true)
+                val result = recognizeForTest?.invoke(bytes) ?: run {
+                    val local = engine ?: DdddOcrEngine(app).also { engine = it }
+                    local.recognize(bytes, digitsOnly = true)
+                }
                 handler.post {
                     if (active(token)) {
                         pending = false
                         if (!CaptchaPagePolicy.accepts(result.text, result.unrestrictedText, result.confidence))
-                            stop("识别内容不完整或模型置信信号不足，已停止自动填写；请手动输入")
+                            refreshAfterFailure("识别内容不完整或模型置信信号不足", token)
                         else fill(ticket, result.text, token)
                     }
                 }
@@ -195,7 +251,7 @@ class WebVpnCaptchaController(
     private fun failedInference(token: Long) {
         if (closed.get()) return
         handler.post {
-            if (active(token)) { pending = false; stop("本机识别失败，已停止自动填写；请手动输入") }
+            if (active(token)) { pending = false; refreshAfterFailure("本机识别失败", token) }
         }
     }
 

@@ -23,22 +23,49 @@ import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 /** Single shared recovery run, callable by the foreground app or its scheduled foreground service. */
 object WebVpnAutoLogin {
     private var run: Run? = null
+    private var statusRetryAfter = 0L
+    private var statusFailureKey = ""
     val running get() = run != null
+    fun hasEnabledAccount(context: Context) = Kind.entries.any {
+        val store = WebVpnCredentialStore(context, it)
+        store.enabled && !store.paused
+    }
 
-    fun canRecover(context: Context, result: SessionChecker.Result): Boolean {
+    private fun accountKey(context: Context) = Kind.entries.joinToString("|") {
+        val store = WebVpnCredentialStore(context, it)
+        "${store.revision}:${store.enabled}:${store.paused}"
+    }
+
+    fun canRecover(context: Context, result: SessionChecker.Result, statusOnly: Boolean = false): Boolean {
         val kind = if (result.state == "vpn_login_required") Kind.SSO
             else if (result.state == "expired" && result.vpnAuthState == "valid") Kind.LIBRARY else return false
         val store = WebVpnCredentialStore(context, kind)
+        if (statusOnly && statusFailureKey == accountKey(context) &&
+            android.os.SystemClock.elapsedRealtime() < statusRetryAfter) return false
         return store.enabled && !store.paused && (kind != Kind.SSO ||
             context.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("enabled", true))
     }
 
+    fun recoveryUnavailableReason(context: Context, result: SessionChecker.Result): String? {
+        val kind = if (result.state == "vpn_login_required") Kind.SSO
+            else if (result.state == "expired" && result.vpnAuthState == "valid") Kind.LIBRARY else return null
+        val store = WebVpnCredentialStore(context, kind)
+        val name = if (kind == Kind.SSO) "统一认证" else "WebVPN 图书馆"
+        return when {
+            !store.enabled -> "$name 自动登录尚未保存开启"
+            store.paused -> "$name 自动登录因上次提交未通过或结果不明而暂停，需先核对账号和学校结果"
+            kind == Kind.SSO && !context.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("enabled", true) -> "验证码识别已关闭，无法自动完成统一认证"
+            statusFailureKey == accountKey(context) && android.os.SystemClock.elapsedRealtime() < statusRetryAfter -> "上轮自动恢复未完成，状态检查将在五分钟冷却后再次自动尝试"
+            else -> null
+        }
+    }
+
     /** Closing one subscription never cancels another caller's login or delivers a failure callback. */
-    fun ensure(context: Context, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
+    fun ensure(context: Context, updateSession: Boolean = true, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
         check(Looper.myLooper() == Looper.getMainLooper())
         val existing = run
         val target = existing ?: Run(context.applicationContext).also { run = it }
-        val listener = Listener(callback)
+        val listener = Listener(callback, updateSession)
         target.listeners.add(listener)
         val subscription = AutoCloseable {
             check(Looper.myLooper() == Looper.getMainLooper())
@@ -55,7 +82,8 @@ object WebVpnAutoLogin {
         run?.finish(SessionChecker.Result("unknown", "自动 WebVPN 登录已取消，可手动继续"))
     }
 
-    private class Listener(val callback: (SessionChecker.Result) -> Unit, var cancelled: Boolean = false)
+    private class Listener(val callback: (SessionChecker.Result) -> Unit, val updateSession: Boolean,
+                         var cancelled: Boolean = false)
 
     private class Run(private val app: Context) {
         val listeners = linkedSetOf<Listener>()
@@ -63,10 +91,12 @@ object WebVpnAutoLogin {
         private var driver: WebVpnLoginDriver? = null
         private var done = false
         private val handler = Handler(Looper.getMainLooper())
+        private val updatesSession get() = listeners.any { !it.cancelled && it.updateSession }
 
         @SuppressLint("SetJavaScriptEnabled")
         fun start() {
-            RuntimeStore(app).session("logging_in", "正在恢复 WebVPN：先统一认证，再登录图书馆…")
+            if (updatesSession) RuntimeStore(app).session("logging_in", "正在恢复 WebVPN：先统一认证，再登录图书馆…")
+            LoginStatusStore(app).recovering("正在自动恢复 WebVPN：先统一认证，再登录图书馆…")
             CookieManager.getInstance().setAcceptCookie(true)
             val web = WebView(app)
             view = web
@@ -93,7 +123,10 @@ object WebVpnAutoLogin {
                 }
             }
             driver = WebVpnLoginDriver(app, web, onStatus = {
-                if (!done) RuntimeStore(app).session("logging_in", it)
+                if (!done) {
+                    if (updatesSession) RuntimeStore(app).session("logging_in", it)
+                    LoginStatusStore(app).recovering(it)
+                }
             }, onResult = ::finish)
             // Like the reservation renderer, give the off-screen WebView an actual layout.
             // This is an explicitly opted-in login run; no Activity or lockscreen is opened.
@@ -110,9 +143,16 @@ object WebVpnAutoLogin {
             if (done) return
             done = true
             dispose()
-            RuntimeStore(app).session(result.state, result.detail)
-            RuntimeStore(app).prefs.edit().putString("session_route", "WEBVPN").apply()
-            if (result.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", "WEBVPN").apply()
+            if (result.state == "valid") { statusFailureKey = ""; statusRetryAfter = 0L }
+            else {
+                statusFailureKey = accountKey(app)
+                statusRetryAfter = android.os.SystemClock.elapsedRealtime() + 300_000L
+            }
+            if (updatesSession) {
+                RuntimeStore(app).session(result.state, result.detail)
+                RuntimeStore(app).prefs.edit().putString("session_route", "WEBVPN").apply()
+                if (result.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", "WEBVPN").apply()
+            }
             LoginStatusStore(app).record(LibraryRoute.WEBVPN, result)
             if (run === this) run = null
             val pending = listeners.toList(); listeners.clear()
@@ -128,7 +168,7 @@ object WebVpnAutoLogin {
             if (run === this) {
                 run = null
                 val runtime = RuntimeStore(app)
-                if (runtime.prefs.getString("session_state", "") == "logging_in")
+                if (listener.updateSession && runtime.prefs.getString("session_state", "") == "logging_in")
                     runtime.session("unknown", "WebVPN 自动登录已停止；登录结果尚未确认")
             }
         }
