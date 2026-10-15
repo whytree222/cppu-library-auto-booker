@@ -43,12 +43,6 @@ class WebVpnLoginDriverTest {
         var acceptTouch = true
         var throwAfterDown = false
         override fun getUrl(): String = address
-        // This fake has no Chromium provider; model the real layout bounds rather
-        // than accepting the stub provider's no-op setFrame result.
-        override fun setFrame(l: Int, t: Int, r: Int, b: Int): Boolean {
-            left = l; top = t; right = r; bottom = b
-            return true
-        }
         override fun evaluateJavascript(script: String, resultCallback: ValueCallback<String>?) {
             calls.add(Call(script, resultCallback))
         }
@@ -83,6 +77,8 @@ class WebVpnLoginDriverTest {
             view.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY))
             view.layout(0, 0, 1080, 1920)
+            // Supply bounds for the fake provider via public View setters only.
+            view.left = 0; view.top = 0; view.right = 1080; view.bottom = 1920
             driver = WebVpnLoginDriver(app, view, { statuses.add(it) }, { results.add(it) },
                 ssoStore = sso, libraryStore = library, probe = { probes.addLast(it) })
         }
@@ -465,7 +461,7 @@ class WebVpnLoginDriverTest {
             f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
                 """{"kind":"activation-ready"}""")
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
-            f.view.layout(0, 0, 0, 0)
+            f.view.right = 0; f.view.bottom = 0
             f.answerActivationPoint()
             assertTrue(f.view.touches.isEmpty()); assertFalse(f.sso.paused)
             assertEquals(1, f.results.size)

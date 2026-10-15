@@ -26,12 +26,6 @@ class WebViewLoginTapTest {
         var throwOnDown = false
         val events = mutableListOf<List<Number>>()
         override fun getUrl() = address
-        // Robolectric's stub WebView provider returns false from setFrame and has
-        // no Chromium layout. Supply actual View bounds for this input fake only.
-        override fun setFrame(l: Int, t: Int, r: Int, b: Int): Boolean {
-            left = l; top = t; right = r; bottom = b
-            return true
-        }
         override fun dispatchTouchEvent(event: MotionEvent): Boolean {
             events.add(listOf(event.actionMasked, event.x, event.y, event.source, event.getToolType(0), event.downTime))
             if (throwOnDown && event.actionMasked == MotionEvent.ACTION_DOWN) throw IllegalStateException("synthetic")
@@ -44,6 +38,9 @@ class WebViewLoginTapTest {
         view.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, 1080, 1920)
+        // The stub WebView provider does not lay out Chromium. Model bounds with
+        // public View setters; do not change the production nonzero-layout guard.
+        view.left = 0; view.top = 0; view.right = 1080; view.bottom = 1920
         val tap = WebViewLoginTap(view)
         try { block(view, tap) } finally { tap.close(); view.destroy() }
     }
@@ -82,7 +79,7 @@ class WebViewLoginTapTest {
             when (change) {
                 0 -> valid = false
                 1 -> view.address += "?changed=synthetic"
-                2 -> view.layout(0, 0, 900, 1600)
+                2 -> { view.right = 900; view.bottom = 1600 }
                 3 -> view.scrollTo(0, 1)
                 else -> tap.cancel()
             }
