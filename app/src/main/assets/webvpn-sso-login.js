@@ -268,12 +268,14 @@
       const current=activation;
       const guardDown=event=>{
         if(cancelled||activation!==current)return;
+        if(current.abandoned)current.restartTouched=true;
         const targetMatches=event.target===info.button||info.button.contains(event.target);
         const valid=!current.blocked&&!current.clickObserved&&Date.now()<=current.deadline&&targetMatches&&!activationBinding().error;
         if(!valid){current.blocked=true;event.preventDefault();event.stopImmediatePropagation();}
       };
       const guard=event=>{
         if(cancelled||activation!==current)return;
+        if(current.abandoned)current.restartTouched=true;
         // A delayed UP or a manual click racing with that UP must not escape the
         // one-shot guard. Failure/expiry stays closed until native cancel/navigation.
         if(current.clickObserved||current.blocked||Date.now()>current.deadline){
@@ -291,6 +293,7 @@
       };
       const observe=event=>{
         if(cancelled||activation!==current)return;
+        if(current.abandoned){current.restartTouched=true;event.preventDefault();event.stopImmediatePropagation();return;}
         // Enter or another manual submission before the reserved click takes
         // priority. Leave that manual event alone, but block the pending auto-UP.
         if(!current.clickObserved){current.blocked=true;return;}
@@ -332,6 +335,26 @@
     const binding=activationBinding();if(binding.error)return binding.error;
     activation.detach?.();activation=null;submitted=false;
     return prepareActivation();
+  }
+  function unsubmittedRestartState() {
+    if(cancelled||!activation?.abandoned||activation.clickObserved||activation.submitObserved||activation.restartTouched)
+      return result('blocked','restart-interaction-or-submission');
+    const binding=activationBinding();if(binding.error)return binding.error;
+    if(outcome().kind!=='unknown')return result('blocked','school-feedback-present');
+    return result('ready','unsubmitted-document-retired');
+  }
+  function abandonUnsubmittedActivation() {
+    // Retire the old document atomically before native code may issue a fresh GET.
+    // A late UP/click/submit stays blocked, never racing a second credential POST.
+    if(activation?.abandoned)return unsubmittedRestartState();
+    if(cancelled||!activation?.armed||activation.clickObserved||activation.submitObserved||activation.blocked)
+      return result('blocked','activation-may-have-submitted');
+    const binding=activationBinding();if(binding.error)return binding.error;
+    if(outcome().kind!=='unknown')return result('blocked','school-feedback-present');
+    activation.abandoned=true;activation.blocked=true;activation.restartTouched=false;
+    const current=activation;
+    for(const event of ['input','change'])current.info.form.addEventListener(event,()=>{current.restartTouched=true;},true);
+    return unsubmittedRestartState();
   }
   function submit() {
     if (cancelled) return result('manual','cancelled');
@@ -390,6 +413,6 @@
         initial.form.addEventListener(event, () => { observation.touched = true; }, true);
     }
   } catch (_) { /* Unknown pages remain ineligible for an automatic restart. */ }
-  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,prepareActivation,activationPoint,activationOutcome,rearmActivation,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
+  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,prepareActivation,activationPoint,activationOutcome,rearmActivation,abandonUnsubmittedActivation,unsubmittedRestartState,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
   return result('installed','sso-helper-ready');
 })();

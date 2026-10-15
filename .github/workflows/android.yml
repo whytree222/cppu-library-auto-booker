@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.10 >/dev/null 2>&1; then
-            gh release upload v0.13.10 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.11 >/dev/null 2>&1; then
+            gh release upload v0.13.11 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.10 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.10 · 登录按钮有界自动重试' --notes '触摸调用返回 false 不再直接停止，先核对网页按钮事件及学校登录状态。未观察到点击/提交、当前账号与验证码仍有效且学校明确仍要求认证时，间隔至少 1.5 秒再次尝试原登录按钮，整轮最多三次，仍共享原 90 秒上限。已有点击、提交或跳转时不盲目连点；成功后接续图书馆登录，验证码失效改用新页面。手动操作、账号改变、密码错误、限制、额外验证、未知网络结果停止。仅调整统一认证登录，不重复提交座位预约。新增网页与原生模拟回归，没有使用真实账号代登录，需手机复测。'
+            gh release create v0.13.11 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.11 · 未触发登录时整页恢复' --notes '不再仅重按旧页面登录按钮。未观察到点击/提交时先检查学校会话，再原子核对并封闭尚未提交的旧表单，1.5秒后从图书馆代理登录入口重新加载，自动填入账号、识别新验证码并登录。与明确验证码拒绝共享两次重新开始、三次触控和90秒上限，不新建Driver重置预算。登录检查的具体原因保留显示，不再统一归因校园网；网络故障不自动重发。已观察到点击/提交、结果未知、手动接管、学校拒绝或配置改变时不盲目重新开始。仅调整登录流程，不重复提交座位预约。不使用真实学校账号测试，首次自动跳转仍需手机验证。'
           fi

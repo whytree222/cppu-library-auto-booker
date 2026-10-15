@@ -229,6 +229,47 @@ test('a late first-click after rearming wins once and blocks a later automatic c
   assert.equal(f.api.rearmActivation().kind,'blocked');
 }));
 
+test('fresh restart retires an unsubmitted document and rejects every late original-button event',()=>{
+  for(const event of ['click','submit','pointerdown','touchstart','mousedown'])useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    assert.equal(f.api.abandonUnsubmittedActivation().kind,'ready');
+    assert.equal(f.api.unsubmittedRestartState().kind,'ready');
+    const target=event==='submit'?f.form:f.button;
+    target.dispatchEvent(new f.w.MouseEvent(event,{bubbles:true,cancelable:true}));
+    assert.equal(f.state.posted,0);assert.equal(f.state.validations,0);
+    assert.notEqual(f.api.unsubmittedRestartState().kind,'ready');
+    assert.notEqual(f.api.rearmActivation().kind,'activation-ready');
+  });
+});
+
+test('fresh restart cannot retire a document after any original click or submit',()=>{
+  for(const event of ['click','submit'])useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    (event==='click'?f.button:f.form).dispatchEvent(new f.w.MouseEvent(event,{bubbles:true,cancelable:true}));
+    assert.notEqual(f.api.abandonUnsubmittedActivation().kind,'ready');
+    assert.notEqual(f.api.unsubmittedRestartState().kind,'ready');
+  });
+});
+
+test('fresh restart stops on manual edits, changed targets, stale CAPTCHA, cancellation or explicit school rejection',()=>{
+  for(const change of [
+    f=>{f.user.value='manual';f.user.dispatchEvent(new f.w.Event('input',{bubbles:true}));},
+    f=>{f.state.captcha='manual';},f=>{f.form.action='https://other.example/login';},
+    f=>{f.api.cancel();},f=>{feedback(f,'账号或密码错误');},f=>{feedback(f,'验证码信息无效。');}
+  ])useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    change(f);assert.notEqual(f.api.abandonUnsubmittedActivation().kind,'ready');
+    assert.equal(f.state.posted,0);
+  });
+  useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    assert.equal(f.api.abandonUnsubmittedActivation().kind,'ready');
+    f.user.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+    assert.notEqual(f.api.unsubmittedRestartState().kind,'ready');
+    assert.equal(f.state.posted,0);
+  });
+});
+
 test('read-only SSO outcome recognizes only explicit visible CAPTCHA rejection variants',()=>{
   for(const text of ['验证码信息无效。','验证码无效','验证码错误！',' 验证码 不正确 ',
       '验证码已失效','验证码失效','验证码已过期','验证码过期',

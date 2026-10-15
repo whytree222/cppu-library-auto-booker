@@ -96,9 +96,17 @@ class WebVpnLoginDriverTest {
             driver.onPageFinished(url)
         }
 
-        fun answerProbe(state: String, auth: String?) {
+        fun answerProbe(state: String, auth: String?, networkFailure: Boolean = false) {
             check(probes.isNotEmpty()) { "Expected a fake school session probe" }
-            probes.removeFirst().invoke(SessionChecker.Result(state, "Synthetic school result", vpnAuthState = auth))
+            probes.removeFirst().invoke(SessionChecker.Result(state, "Synthetic school result", networkFailure = networkFailure, vpnAuthState = auth))
+        }
+
+        fun answerRetire(kind: String = "ready") {
+            view.answerFirst({ it.contains("?.abandonUnsubmittedActivation()") }, """{"kind":"$kind"}""")
+        }
+
+        fun answerUnsubmittedRestart(kind: String = "ready") {
+            view.answerFirst({ it.contains("?.unsubmittedRestartState()") }, """{"kind":"$kind"}""")
         }
 
         fun prepareSso() {
@@ -485,7 +493,7 @@ class WebVpnLoginDriverTest {
         } }
     }
 
-    @Test fun rejectedOrThrowingNativeDownChecksThePageAndStopsOnUnknownSchoolState() {
+    @Test fun rejectedOrThrowingNativeDownStopsOnNetworkFailureWithoutPausingThePassword() {
         repeat(2) { cause -> Fixture().use { f ->
             f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
             f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
@@ -496,11 +504,11 @@ class WebVpnLoginDriverTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
             f.view.answerFirst({ it.contains("?.activationOutcome()") },
                 """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-            f.answerProbe("unknown", null)
+            f.answerProbe("unknown", null, networkFailure = true)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
             assertEquals(1, f.view.touches.count { it == MotionEvent.ACTION_DOWN })
             assertFalse(f.view.touches.contains(MotionEvent.ACTION_UP))
-            assertTrue(f.sso.paused); assertFalse(f.library.paused)
+            assertFalse(f.sso.paused); assertFalse(f.library.paused)
             assertEquals(1, f.results.size); assertEquals(1, f.view.activationCount())
             assertTrue(f.probes.isEmpty())
             assertFalse(f.view.calls.any { it.script.contains("SchoolSsoAutoLogin?.submit()") })
@@ -523,7 +531,7 @@ class WebVpnLoginDriverTest {
         }
     }
 
-    @Test fun unobservedFirstTapAutomaticallyTriesAgainAfterSchoolCheckAndCanComplete() {
+    @Test fun unobservedFirstTapRestartsTheWholePageAndCanCompleteWithoutManualButtons() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.view.acceptTouch=false
             f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
@@ -531,41 +539,41 @@ class WebVpnLoginDriverTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
             f.view.answerFirst({ it.contains("?.activationOutcome()") },
                 """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-            assertTrue(f.results.isEmpty());f.answerProbe("vpn_login_required","expired")
+            assertTrue(f.results.isEmpty());f.answerProbe("vpn_login_required","expired");f.answerRetire()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1499))
-            assertFalse(f.view.calls.any { it.script.contains("?.rearmActivation()") })
+            assertTrue(f.view.navigations.isEmpty())
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
-            f.view.acceptTouch=true
-            f.view.answerFirst({ it.contains("?.rearmActivation()") },"""{"kind":"activation-ready"}""")
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
-            f.view.answerFirst({ it.contains("?.activationOutcome()") },
-                """{"kind":"activation-observed","detailCode":"original-submit-observed"}""")
+            f.answerUnsubmittedRestart()
+            assertEquals(listOf(LIBRARY_LOGIN),f.view.navigations)
+            f.view.acceptTouch=true;f.finish(SSO_PROXY_URL);f.prepareSso();f.completeCaptchaAndSubmitSso()
             assertEquals(2,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12));f.answerProbe("valid","valid")
             assertEquals("valid",f.results.single().state);assertFalse(f.sso.paused)
+            assertFalse(f.view.calls.any { it.script.contains("?.rearmActivation()") })
         }
     }
 
     @Test fun noEventAttemptsStopAfterThreeAndDoNotResetTheBudget() {
         Fixture().use { f ->
-            f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.view.acceptTouch=false
-            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            f.start(SSO_PROXY_URL);f.view.acceptTouch=false
             repeat(3) { attempt ->
+                f.prepareSso();f.completeCaptcha()
+                f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
                 shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
                 shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
                 f.view.answerFirst({ it.contains("?.activationOutcome()") },
                     """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-                f.answerProbe("vpn_login_required","expired")
+                f.answerProbe("vpn_login_required","expired");f.answerRetire()
                 if(attempt<2){
                     shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
-                    f.view.answerFirst({ it.contains("?.rearmActivation()") },"""{"kind":"activation-ready"}""")
+                    f.answerUnsubmittedRestart();f.finish(SSO_PROXY_URL)
                 }
             }
-            assertTrue(f.results.single().detail.contains("三次"));assertTrue(f.sso.paused)
+            assertTrue(f.results.single().detail.contains("三次"));assertFalse(f.sso.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
             assertEquals(3,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
-            assertEquals(2,f.view.calls.count { it.script.contains("?.rearmActivation()") })
+            assertEquals(2,f.view.navigations.size)
+            assertFalse(f.view.calls.any { it.script.contains("?.rearmActivation()") })
         }
     }
 
@@ -577,17 +585,58 @@ class WebVpnLoginDriverTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
             f.view.answerFirst({ it.contains("?.activationOutcome()") },
                 """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-            f.answerProbe("vpn_login_required","expired")
+            f.answerProbe("vpn_login_required","expired");f.answerRetire()
             if(change==0){
                 shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
-                f.view.answerFirst({ it.contains("?.rearmActivation()") },"""{"kind":"blocked"}""")
+                f.answerUnsubmittedRestart("blocked")
                 assertEquals(1,f.results.size)
             }else{
                 f.driver.onPause();shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
-                assertFalse(f.view.calls.any { it.script.contains("?.rearmActivation()") })
+                assertFalse(f.view.calls.any { it.script.contains("?.unsubmittedRestartState()") })
             }
             assertEquals(1,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
+            assertTrue(f.view.navigations.isEmpty())
         } }
+    }
+
+    @Test fun unknownProbeCanRecoverOnlyAfterAtomicNoSubmissionProofAndKeepsTheDiagnostic() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.activateOriginalButton(answerOutcome=false)
+            f.view.answerFirst({ it.contains("?.activationOutcome()") },
+                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
+            f.answerProbe("unknown",null)
+            assertTrue(f.view.navigations.isEmpty());assertTrue(f.results.isEmpty())
+            f.answerRetire();assertTrue(f.statuses.last().contains("Synthetic school result"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500));f.answerUnsubmittedRestart()
+            assertEquals(listOf(LIBRARY_LOGIN),f.view.navigations);assertFalse(f.sso.paused)
+        }
+    }
+
+    @Test fun freshPageRecoveryDoesNotExtendTheOriginalNinetySecondDeadline() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.activateOriginalButton(answerOutcome=false)
+            f.view.answerFirst({ it.contains("?.activationOutcome()") },
+                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
+            f.answerProbe("unknown",null);f.answerRetire()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500));f.answerUnsubmittedRestart()
+            f.finish(SSO_PROXY_URL);f.prepareSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(90))
+            assertEquals(1,f.results.size);assertTrue(f.results.single().detail.contains("90 秒"))
+            assertEquals(1,f.view.navigations.size);assertEquals(1,f.view.activationCount())
+            assertFalse(f.sso.paused)
+        }
+    }
+
+    @Test fun lateObservedEventWhileProbeWasPendingNeverRestartsThePage() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.activateOriginalButton(answerOutcome=false)
+            f.view.answerFirst({ it.contains("?.activationOutcome()") },
+                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
+            f.answerProbe("unknown",null);f.answerRetire("blocked")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
+            assertTrue(f.view.navigations.isEmpty());assertEquals(1,f.results.size)
+            assertTrue(f.sso.paused);assertEquals(1,f.view.activationCount())
+        }
     }
 
     @Test fun newDocumentAfterDownCancelsTheOldGestureAndIgnoresItsCompletion() {

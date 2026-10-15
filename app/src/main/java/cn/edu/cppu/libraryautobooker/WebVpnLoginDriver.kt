@@ -55,7 +55,9 @@ class WebVpnLoginDriver internal constructor(
     private var ssoSubmittedDocument = -1L
     private var ssoAttempts = 0
     private var loginTapAttempts = 0
-    private var captchaRestarts = 0
+    // Shared by explicit CAPTCHA rejection and proven unsubmitted-page recovery.
+    private var freshRestarts = 0
+    private var restartGuardMethod = "captchaRestartState"
     private var restartPending = false
     private var restartAtElapsed = 0L
     private var ssoConfirmed = false
@@ -97,7 +99,7 @@ class WebVpnLoginDriver internal constructor(
         if (closed) return
         active = true
         if (!withinDeadline()) return
-        if (restartPending) { scheduleCaptchaRestart(); return }
+        if (restartPending) { scheduleFreshRestart(); return }
         if (!ssoSubmitted && !stopped) captcha.onResume()
         if (!stopped && !loading && pageReady && finishedUrl == view.url) {
             if (ssoSubmitted && CaptchaPagePolicy.isTrusted(view.url) && documentSerial == ssoSubmittedDocument)
@@ -125,7 +127,7 @@ class WebVpnLoginDriver internal constructor(
             evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.setRememberMe($enabled) || {kind:'stopped'})", epoch) {}
     }
     fun retryCaptcha() {
-        if (restartPending) { onStatus("学校已明确拒绝本次验证码，正在等待新页面重新开始；不在旧页面重复提交"); return }
+        if (restartPending) { onStatus("正在等待新登录页面重新开始；不在旧页面重复提交"); return }
         if (ssoSubmitted) { onStatus("统一认证已经提交，不再刷新或重试验证码；请核对学校结果"); return }
         captchaFailure = null; captcha.onResume(); captcha.retry()
     }
@@ -197,14 +199,15 @@ class WebVpnLoginDriver internal constructor(
                             fail("学校已拒绝验证码，但检测到手动操作或页面变化，已停止自动重新开始", "vpn_login_required", "expired", pause = null)
                         } else if (!ocrEnabled || !sso.enabled || sso.paused || sso.revision != ssoVersion) {
                             fail("验证码已被学校拒绝，但识别或账号设置已改变，已停止自动重新开始", "vpn_login_required", "expired", pause = null)
-                        } else if (captchaRestarts >= 2 || ssoAttempts >= 3 || loginTapAttempts >= 3) {
+                        } else if (freshRestarts >= 2 || ssoAttempts >= 3 || loginTapAttempts >= 3) {
                             fail("学校连续拒绝验证码，已达到本轮两次自动重新开始上限；未将密码标记为错误，请手动核对", "vpn_login_required", "expired", pause = null)
                         } else {
-                            captchaRestarts++
+                            freshRestarts++
+                            restartGuardMethod = "captchaRestartState"
                             restartPending = true
                             restartAtElapsed = SystemClock.elapsedRealtime() + 1_500L
-                            onStatus("学校明确提示验证码无效，将自动获取新登录页面重新开始（$captchaRestarts/2）；不会重复提交旧表单")
-                            scheduleCaptchaRestart()
+                            onStatus("学校明确提示验证码无效，将自动获取新登录页面重新开始（$freshRestarts/2）；不会重复提交旧表单")
+                            scheduleFreshRestart()
                         }
                     }
                     "other-rejected" -> fail("学校拒绝统一认证，可能涉及账号密码、锁定、访问限制或额外验证；已停止自动重试，请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
@@ -214,7 +217,7 @@ class WebVpnLoginDriver internal constructor(
         }
     }
 
-    private fun scheduleCaptchaRestart() {
+    private fun scheduleFreshRestart() {
         if (!restartPending || !active || !withinDeadline()) return
         val id = epoch
         main.postDelayed({
@@ -223,7 +226,7 @@ class WebVpnLoginDriver internal constructor(
                 fail("识别或账号设置已改变，已取消统一认证自动重新开始", "vpn_login_required", "expired", pause = null)
                 return@postDelayed
             }
-            evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.captchaRestartState() || {kind:'unknown'})", id) { guard ->
+            evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.$restartGuardMethod() || {kind:'unknown'})", id) { guard ->
                 if (!restartPending) return@evaluate
                 if (guard.optString("kind") != "ready") {
                     fail("检测到手动操作或登录页面变化，已取消自动重新开始；保留当前页面", "vpn_login_required", "expired", pause = null)
@@ -384,7 +387,7 @@ class WebVpnLoginDriver internal constructor(
             if (!activationCurrent(id, call, url)) return@evaluate
             when (outcome.optString("detailCode")) {
                 "activation-unobserved" -> if (outcome.optString("kind") == "activation-observed")
-                    checkBeforeTapRetry(id, call, url, failureCode)
+                    checkBeforePageRecovery(id, call, url, failureCode)
                 "original-submit-observed" -> onStatus("已通过学校原登录按钮触发表单，正在等待学校确认登录（不代表成功）")
                 "original-click-observed" -> onStatus("已观察到学校原登录按钮点击，正在只读核对登录结果；不重复点击")
                 "activation-blocked" -> onStatus("页面校验或手动操作阻止了触控，正在核对结果；不在旧页面连点")
@@ -393,7 +396,7 @@ class WebVpnLoginDriver internal constructor(
         }
     }
 
-    private fun checkBeforeTapRetry(id: Long, call: Long, url: String, failureCode: String) {
+    private fun checkBeforePageRecovery(id: Long, call: Long, url: String, failureCode: String) {
         if (!activationCurrent(id, call, url) || probing) return
         probing = true
         CookieManager.getInstance().flush()
@@ -413,29 +416,39 @@ class WebVpnLoginDriver internal constructor(
                         onResult(result.copy(detail = "学校验证两层登录有效，已停止后续点击"))
                     } else navigate(LibraryRoute.WEBVPN.url("/login"))
                 }
-                result.state == "vpn_login_required" && result.vpnAuthState == "expired" -> {
-                    if (loginTapAttempts >= 3) {
-                        fail("登录按钮已尝试三次，仍未观察到有效点击（$failureCode）；已停止，请手动核对", "vpn_login_required", "expired", Kind.SSO)
-                        return@probe
-                    }
-                    val nextCall = ++ssoCallSerial // Retire the earlier click's watchdog.
-                    onStatus("尚未观察到有效按钮事件；学校仍要求登录，1.5 秒后尝试第 ${loginTapAttempts + 1}/3 次")
-                    main.postDelayed({
-                        if (!activationCurrent(id, nextCall, url)) return@postDelayed
-                        evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.rearmActivation() || {kind:'blocked'})", id) { rearm ->
-                            if (!activationCurrent(id, nextCall, url)) return@evaluate
-                            if (rearm.optString("kind") != "activation-ready") {
-                                fail("检测到按钮事件、手动操作或验证码变化，已停止后续点击；请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
-                                return@evaluate
-                            }
-                            verifyLater(id, Kind.SSO, nextCall)
-                            SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
-                            activateSsoButton(id, nextCall)
-                        }
-                    }, 1_500L)
-                }
-                else -> fail("登录状态无法明确确认，已停止后续点击；请检查网络或学校页面", result.state, result.vpnAuthState, Kind.SSO)
+                result.networkFailure -> fail("未观察到有效登录事件；${result.detail}；已停止，未判定密码错误", result.state, result.vpnAuthState, pause = null)
+                // A failed read-only probe is NOT proof of either login failure or a
+                // credential POST. Retire the still-unsubmitted DOM atomically first.
+                result.state == "unknown" || (result.state == "vpn_login_required" && result.vpnAuthState == "expired") ->
+                    restartUnsubmittedPage(id, call, url, failureCode, result)
+                else -> fail("未观察到有效登录事件；${result.detail}；已停止自动恢复", result.state, result.vpnAuthState, pause = null)
             }
+        }
+    }
+
+    private fun restartUnsubmittedPage(id: Long, call: Long, url: String, failureCode: String, result: SessionChecker.Result) {
+        if (!activationCurrent(id, call, url)) return
+        evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.abandonUnsubmittedActivation() || {kind:'blocked'})", id) { guard ->
+            if (!activationCurrent(id, call, url)) return@evaluate
+            if (guard.optString("kind") != "ready") {
+                fail("页面已有事件、手动操作、验证码变化或学校反馈，不能确认未提交；已停止重新开始（$failureCode）", result.state, result.vpnAuthState, Kind.SSO)
+                return@evaluate
+            }
+            // Proven no submission and the old DOM is now closed to late input.
+            ssoSubmitted = false
+            ssoCallSerial++
+            loginTap.cancel()
+            prepared = false; captchaReady = false; captchaFailure = null
+            if (freshRestarts >= 2 || ssoAttempts >= 3 || loginTapAttempts >= 3) {
+                fail("已达到本轮三次登录尝试／两次重新开始上限；未观察到提交，未判定密码错误。检查结果：${result.detail}", result.state, result.vpnAuthState, pause = null)
+                return@evaluate
+            }
+            freshRestarts++
+            restartGuardMethod = "unsubmittedRestartState"
+            restartPending = true
+            restartAtElapsed = SystemClock.elapsedRealtime() + 1_500L
+            onStatus("旧页面未触发登录，已封闭旧按钮；1.5 秒后用已保存账号重新开始（$freshRestarts/2）。检查结果：${result.detail}")
+            scheduleFreshRestart()
         }
     }
 
@@ -539,7 +552,7 @@ class WebVpnLoginDriver internal constructor(
                     stopped = true
                     onResult(result.copy(detail = "学校验证两层登录有效"))
                 } else navigate(LibraryRoute.WEBVPN.url("/login"))
-            } else fail("统一认证调用后仍未验证通过（可能校验拦截、脚本未完成或结果不明）；已停止，不重复提交，请核对学校页面", "vpn_login_required", result.vpnAuthState, Kind.SSO)
+            } else fail("统一认证调用后仍未验证通过：${result.detail}；已停止，不重复提交，请核对学校页面", result.state, result.vpnAuthState, Kind.SSO)
         }
     }
 
