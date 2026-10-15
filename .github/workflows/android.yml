@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.6 >/dev/null 2>&1; then
-            gh release upload v0.13.6 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.7 >/dev/null 2>&1; then
+            gh release upload v0.13.7 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.6 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.6 · 登录过期恢复与验证码自动重试' --notes '修复主页及入口页状态检查只显示过期却不接续两步登录的问题；已启用账号可恢复，状态卡显示阶段或无法恢复的原因。备用会话维护不覆盖直连状态或首选通道，预约运行中状态卡不另起认证。验证码临时读取失败自动再读两次，识别不可靠时通过校方原图按钮最多换两张图，保留三图、原始输出一致及置信门槛；旧图不更新八秒则停止。统一认证提交后停止刷新，未知结果不重发，关闭、暂停和手动输入优先。失败状态检查五分钟冷却后可再自动检查，不擅自解除账号安全暂停，不限制预约任务原有恢复入口。新增网页与原生模拟回归；未使用真实账号登录学校，需手机复测。'
+            gh release create v0.13.7 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.7 · 统一认证表单提交适配' --notes '对学校已核对的密码登录按钮结构，保留原 checkPassLogin 校验和 RSA 加密后采用标准 requestSubmit 原按钮，保留浏览器约束及 submit 事件，不使用绕过校验的 form.submit，不在不明结果后补点或重发。调用前启动结果观察，修复脚本回调丢失时停在调用前提示的问题；只读确认学校会话通过后自动接续图书馆登录。细分脚本等待、本地校验、表单事件和未知结果；加密脚本未加载仅在确定未提交时等待继续，旧计时器不误判新调用。新添网页及原生模拟回归，没有用真实账号代登录，仍需手机复测；不擅自解除已暂停账号。'
           fi

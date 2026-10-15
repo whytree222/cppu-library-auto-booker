@@ -91,11 +91,15 @@ class WebVpnLoginDriverTest {
             view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepare(") }, "{\"kind\":\"prepared\"}")
         }
 
-        fun completeCaptchaAndSubmitSso() {
+        fun completeCaptcha() {
             view.answerFirst({ it.contains("Object.defineProperty(window, 'LibraryCaptchaOcr'") }, "{\"kind\":\"installed\"}")
             shadowOf(Looper.getMainLooper()).idle()
             view.answerFirst({ it.startsWith("JSON.stringify(window.LibraryCaptchaOcr?.snapshot()") }, "{\"kind\":\"filled\"}")
             assertEquals(1, view.submissionCount())
+        }
+
+        fun completeCaptchaAndSubmitSso() {
+            completeCaptcha()
             view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") }, "{\"kind\":\"submitted\"}")
         }
 
@@ -273,6 +277,69 @@ class WebVpnLoginDriverTest {
             assertFalse(f.view.calls.any { it.script.contains(SSO_PASSWORD) || it.script.contains(LIBRARY_PASSWORD) })
             assertNotNull(f.library.read())
             assertFalse(f.library.paused)
+        }
+    }
+
+    @Test fun lostJavaScriptCallbackStillStartsReadOnlyOutcomeVerificationWithoutResubmission() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            // Deliberately never answer the submit() evaluateJavascript callback.
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            assertEquals(1, f.probes.size)
+            assertTrue(f.results.isEmpty())
+            f.answerProbe("vpn_login_required", "expired")
+            assertEquals(1, f.results.size)
+            assertTrue(f.results.single().detail.contains("不重复提交"))
+            assertTrue(f.sso.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
+            assertEquals(1, f.view.submissionCount())
+        }
+    }
+
+    @Test fun lostCallbackButVerifiedSsoContinuesAutomaticallyToLibraryWithoutAnotherSsoPost() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("expired", "valid")
+            assertEquals(listOf(LIBRARY_LOGIN), f.view.navigations)
+            assertTrue(f.sso.verified)
+            f.finish(LIBRARY_LOGIN); f.answerProbe("expired", "valid"); f.submitLibrary()
+            f.finish(LibraryRoute.WEBVPN.url("/selectreadingroom")); f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertEquals(1, f.view.submissionCount())
+        }
+    }
+
+    @Test fun scriptReadinessWaitAutomaticallyContinuesAndOldWatchdogCannotPrematurelyFailTheNextCall() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") },
+                """{"kind":"waiting","detailCode":"school-scripts-loading"}""")
+            assertTrue(f.statuses.last().contains("密码加密脚本"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(700))
+            assertEquals(2, f.view.submissionCount())
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") },
+                """{"kind":"submitted","detailCode":"form-submit-observed"}""")
+            assertTrue(f.statuses.last().contains("已触发学校统一认证表单"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(11300))
+            assertTrue(f.probes.isEmpty())
+            assertTrue(f.results.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(700))
+            assertEquals(1, f.probes.size)
+        }
+    }
+
+    @Test fun provenLocalValidationFailureReportsNoSubmissionWithoutPausingTheAccount() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.submit()") },
+                """{"kind":"blocked","detailCode":"school-validation-rejected"}""")
+            assertTrue(f.results.single().detail.contains("本地校验未通过"))
+            assertFalse(f.sso.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
+            assertTrue(f.probes.isEmpty())
+            assertEquals(1, f.results.size)
+            assertEquals(1, f.view.submissionCount())
         }
     }
 

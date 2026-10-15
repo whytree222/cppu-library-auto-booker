@@ -10,7 +10,7 @@ function fixture(options={}) {
   const path=(proxied?prefix:'')+'/tpass/login';
   const remember=options.remember?'<input id="rememberMe" name="rememberMe" value="true" type="checkbox">':'';
   const duplicate=options.duplicateRemember?'<div style="display:none"><input id="rememberMe" name="rememberMe" value="true" type="checkbox"></div>':'';
-  const d=new JSDOM(`<form id="fm1" method="post" action="${options.action||path}"><input id="username" name="username"><input id="password" name="password" type="password"><input id="authcode" name="authcode">${remember}${duplicate}<input id="passbutton" type="submit"></form>`,{url:options.url||origin+path,runScripts:'outside-only'});
+  const d=new JSDOM(`<form id="fm1" method="post" action="${options.action||path}"><input id="username" name="username"><input id="password" name="password" type="password"><input id="authcode" name="authcode">${remember}${duplicate}<input id="passbutton" name="submit" type="submit" ${options.standard?'onclick="return checkPassLogin();"':''}></form>`,{url:options.url||origin+path,runScripts:'outside-only'});
   const w=d.window, user=w.document.querySelector('#username'), pass=w.document.querySelector('#password');
   w.HTMLElement.prototype.getClientRects=()=>[{width:120,height:40}];
   const state={posted:0,encrypted:false,captcha:'filled'};
@@ -18,10 +18,77 @@ function fixture(options={}) {
   w.LibraryCaptchaOcr={snapshot:()=>({kind:state.captcha,detailCode:'own-fill-current'})};
   w.document.querySelector('#authcode').value='0123';
   w.document.querySelector('#passbutton').onclick=e=>{e.preventDefault();state.encrypted=true;pass.value='RSA:'+pass.value;state.posted++;};
+  if(options.standard){
+    state.validations=0;state.requests=0;state.clicks=0;
+    w.document.querySelector('#passbutton').onclick=()=>{state.clicks++;return false;};
+    w.checkPassLogin=()=>{
+      state.validations++;
+      if(options.validationDenied)return false;
+      pass.value='RSA:'+pass.value;state.encrypted=true;return true;
+    };
+    w.document.querySelector('form').requestSubmit=function(button){
+      assert.equal(button,this.querySelector('#passbutton'));
+      assert.equal(state.encrypted,true);
+      state.requests++;
+      if(options.noEvent)return;
+      const event=new w.Event('submit',{bubbles:true,cancelable:true});
+      if(this.dispatchEvent(event))state.posted++;
+    };
+  }
   w.eval(script);
   return {w,user,pass,state,api:w.SchoolSsoAutoLogin,close:()=>w.close(),credentials:{username:'sso-only',password:'sso-secret'}};
 }
 function use(options,fn){const f=fixture(options);try{fn(f);}finally{f.close();}}
+
+test('exact school handler runs its validation then standard submitter once even when synthetic click is intercepted',()=>use({proxy:true,standard:true},f=>{
+  f.api.prepare(f.credentials);
+  const result=f.api.submit();
+  assert.equal(result.kind,'submitted');assert.equal(result.detailCode,'form-submit-observed');
+  assert.equal(f.state.validations,1);assert.equal(f.state.requests,1);assert.equal(f.state.posted,1);
+  assert.equal(f.state.clicks,0);
+  f.api.submit();assert.equal(f.state.requests,1);assert.equal(f.state.validations,1);
+}));
+
+test('school and browser local validation rejection never fall back to another submission',()=>{
+  for(const browser of [false,true])use({standard:true,validationDenied:!browser},f=>{
+    f.api.prepare(f.credentials);
+    if(browser){f.user.required=true;f.user.pattern='[0-9]{9}';}
+    assert.equal(f.api.submit().kind,'blocked');
+    f.api.submit();assert.equal(f.state.validations,1);assert.equal(f.state.requests,0);assert.equal(f.state.clicks,0);
+  });
+});
+
+test('missing school RSA script waits without clicking, then submits once after it loads',()=>use({standard:true},f=>{
+  const encrypted=f.w.document.createElement('input');encrypted.id='encrypted';encrypted.type='hidden';
+  f.w.document.querySelector('form').appendChild(encrypted);
+  f.api.prepare(f.credentials);
+  assert.equal(f.api.submit().detailCode,'school-scripts-loading');
+  assert.equal(f.state.validations,0);assert.equal(f.state.requests,0);
+  f.w.RSAUtils={setMaxDigits(){},getKeyPair(){},encryptedString(){}};
+  assert.equal(f.api.submit().kind,'submitted');assert.equal(f.state.requests,1);
+}));
+
+test('requestSubmit exception, missing submit event and intercepted submit event never cause a resend',()=>{
+  for(const behavior of ['throw','no-event','intercept'])use({standard:true,noEvent:behavior==='no-event'},f=>{
+    if(behavior==='throw')f.w.document.querySelector('form').requestSubmit=()=>{f.state.requests++;throw Error('secret-error');};
+    if(behavior==='intercept')f.w.document.querySelector('form').addEventListener('submit',e=>e.preventDefault());
+    f.api.prepare(f.credentials);const result=f.api.submit();f.api.submit();
+    assert.equal(f.state.requests,1);assert.equal(f.state.clicks,0);
+    assert.doesNotMatch(JSON.stringify(result),/secret-error|sso-secret|sso-only/);
+  });
+});
+
+test('submitter overrides and target changes during school validation never receive a form submission',()=>{
+  for(const attr of ['formaction','formmethod','formtarget','formnovalidate'])use({standard:true},f=>{
+    f.w.document.querySelector('#passbutton').setAttribute(attr,'other');
+    assert.equal(f.api.prepare(f.credentials).kind,'stopped');assert.equal(f.pass.value,'');
+  });
+  use({standard:true},f=>{
+    f.api.prepare(f.credentials);
+    f.w.checkPassLogin=()=>{f.w.document.querySelector('form').action='https://other.example/login';return true;};
+    assert.equal(f.api.submit().kind,'blocked');assert.equal(f.state.requests,0);
+  });
+});
 test('SSO uses only its explicit credentials and normal RSA login button once',()=>use({},f=>{
   assert.equal(f.api.prepare(f.credentials).kind,'prepared');
   assert.equal(f.user.value,'sso-only');assert.equal(f.pass.value,'sso-secret');

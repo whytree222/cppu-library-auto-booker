@@ -3,6 +3,7 @@
   if (window.SchoolSsoAutoLogin) return {kind: 'installed'};
   const proxy = '/https/77726476706e69737468656265737421e3e44ed224207845300d8db9d6562d';
   let own = null, edited = false, writing = false, submitted = false, cancelled = false;
+  let submissionResult = null;
   let remembered = null, rememberEdited = false, rememberWriting = false;
   const result = (kind, detailCode) => ({kind, detailCode});
   function context() {
@@ -43,6 +44,9 @@
         !['text','email','tel'].includes(user[0].type) || user[0].disabled || password[0].disabled ||
         user[0].readOnly || password[0].readOnly || button[0].disabled ||
         typeof window.checkPassLogin !== 'function') return null;
+    if (button[0].form !== form || button[0].type !== 'submit' ||
+        !['INPUT','BUTTON'].includes(button[0].tagName) ||
+        ['formaction','formmethod','formtarget','formnovalidate'].some(name=>button[0].hasAttribute(name))) return null;
     const canonical = rawUrl => {
       const url=new URL(rawUrl,location.href);
       const path=url.origin==='https://webvpn.cppu.edu.cn'?url.pathname.slice(proxy.length):url.pathname;
@@ -122,7 +126,7 @@
   }
   function submit() {
     if (cancelled) return result('manual','cancelled');
-    if (submitted) return result('submitted','already-submitted');
+    if (submitted) return submissionResult || result('submitted','already-submitted');
     let info; try {info=context();} catch (_) {return result('stopped','unsupported-sso');}
     if (!info || !own) return result('stopped','not-prepared');
     if (edited || info.form !== own.form || info.user !== own.user || info.password !== own.password ||
@@ -131,10 +135,38 @@
     const state=window.LibraryCaptchaOcr?.snapshot();
     if (!state || state.kind !== 'filled' || state.detailCode !== 'own-fill-current' || !/^\d{4}$/.test(info.captcha.value))
       return result('waiting','captcha-not-current');
-    // School onclick invokes checkPassLogin and its RSA encryption; never replace it with form.submit().
+    const standard = /^\s*return\s+checkPassLogin\(\s*\)\s*;?\s*$/.test(info.button.getAttribute('onclick') || '') &&
+      typeof info.form.requestSubmit === 'function';
+    // This school's exact inline handler only runs checkPassLogin (including RSA).
+    // Keep that validation, then use normal submitter/constraint/submit-event semantics.
+    // Never call form.submit(): the school also has an input named "submit".
+    if (standard && document.querySelector('#encrypted') && info.password.value.length !== 256 &&
+        (typeof window.RSAUtils?.setMaxDigits !== 'function' || typeof window.RSAUtils?.getKeyPair !== 'function' ||
+         typeof window.RSAUtils?.encryptedString !== 'function')) return result('waiting','school-scripts-loading');
     submitted=true;
-    try {info.button.click(); return result('submitted','sso-submit-started');}
-    catch (_) {return result('stopped','submit-uncertain');}
+    const record = value => {submissionResult=value;return value;};
+    try {
+      if (!standard) {
+        info.button.click();
+        return record(result('submitted','school-button-invoked'));
+      }
+      if (window.checkPassLogin() !== true) return record(result('blocked','school-validation-rejected'));
+      const current=context();
+      if (!current || current.form!==info.form || current.button!==info.button || current.user!==info.user ||
+          current.password!==info.password || current.href!==info.href || current.action!==info.action ||
+          current.attribute!==info.attribute || current.user.value!==own.username)
+        return record(result('blocked','form-changed-before-submit'));
+      if (!info.form.checkValidity()) return record(result('blocked','browser-validation-rejected'));
+      let observed=false;
+      const observe = event => {if(event.target===info.form) observed=true;};
+      info.form.addEventListener('submit',observe,true);
+      try {info.form.requestSubmit(info.button);}
+      finally {info.form.removeEventListener('submit',observe,true);}
+      // A submit event can be intercepted by the proxy. It is not server success,
+      // and even a missing event must never cause a second credential submission.
+      return record(result('submitted',observed?'form-submit-observed':'form-submit-unconfirmed'));
+    }
+    catch (_) {return record(result('stopped','submit-uncertain'));}
     finally {own.secret=''; own.username='';}
   }
   function cancel() {cancelled=true; if(own){own.secret='';own.username='';} return result('manual','cancelled');}

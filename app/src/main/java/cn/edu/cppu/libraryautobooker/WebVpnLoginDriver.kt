@@ -46,6 +46,7 @@ class WebVpnLoginDriver internal constructor(
     private var dispatchedEpoch = -1L
     private var prepared = false
     private var ssoSubmitted = false
+    private var ssoCallSerial = 0L
     private var ssoConfirmed = false
     private var librarySubmitted = false
     private var ssoVersion = ""
@@ -187,19 +188,39 @@ class WebVpnLoginDriver internal constructor(
         val id = epoch
         // Lock before invoking the school's button: an exception or delayed response must not resubmit.
         ssoSubmitted = true
+        val call = ++ssoCallSerial
         // Once the credential POST may start, OCR must not refresh another challenge.
         captcha.onPause()
-        onStatus("正在通过学校原登录按钮提交统一认证…")
+        onStatus("正在执行学校统一认证校验并启动登录表单…")
+        // Arm observation BEFORE evaluateJavascript: navigation can discard its callback.
+        verifyLater(id, Kind.SSO, call)
         evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.submit() || {kind:'stopped'})", id) { result ->
             if (result.optString("kind") != "submitted") {
                 if (result.optString("kind") == "waiting") {
-                    // No submission took place; a newly current CAPTCHA may complete this preparation.
                     ssoSubmitted = false
-                    captchaReady = false
-                    captcha.onResume()
-                    onStatus("验证码已更新，等待当前图片重新识别")
+                    ssoCallSerial++ // Waiting is proven pre-submit; discard this call's watchdog.
+                    if (result.optString("detailCode") == "school-scripts-loading") {
+                        onStatus("账号及验证码已就绪，等待学校密码加密脚本加载后自动提交…")
+                        main.postDelayed({ if (live(id) && !ssoSubmitted) submitSso() }, 700L)
+                    } else {
+                        captchaReady = false
+                        captcha.onResume()
+                        onStatus("验证码已更新，等待当前图片重新识别")
+                    }
+                } else if (result.optString("kind") == "blocked") {
+                    ssoSubmitted = false
+                    fail(when (result.optString("detailCode")) {
+                        "school-validation-rejected" -> "学校页面本地校验未通过，未调用登录表单提交；请核对页面提示"
+                        "browser-validation-rejected" -> "浏览器表单校验未通过，未调用登录表单提交；请核对必填项"
+                        "form-changed-before-submit" -> "校验后登录表单或目标发生变化，未调用登录表单提交"
+                        else -> "统一认证表单未能启动，已停止；请核对学校页面"
+                    }, "vpn_login_required", "expired", pause = null)
                 } else fail("统一认证未能安全提交，已停止；请在网页核对", "vpn_login_required", "expired", Kind.SSO)
-            } else verifyLater(id, Kind.SSO)
+            } else onStatus(when (result.optString("detailCode")) {
+                "form-submit-observed" -> "已触发学校统一认证表单，正在等待学校确认登录（不代表成功）"
+                "form-submit-unconfirmed" -> "已调用学校登录表单，但尚未观察到提交事件；正在核对结果，不重复提交"
+                else -> "已调用学校登录按钮，正在等待统一认证结果；尚未确认登录成功"
+            })
         }
     }
 
@@ -279,12 +300,31 @@ class WebVpnLoginDriver internal constructor(
         else -> "图书馆表单尚未适配，请手动完成"
     }
 
-    private fun verifyLater(id: Long, kind: Kind) {
+    private fun verifyLater(id: Long, kind: Kind, call: Long = ssoCallSerial) {
         main.postDelayed({
             if (!live(id) || loading) return@postDelayed
+            if (kind == Kind.SSO && (!ssoSubmitted || call != ssoCallSerial)) return@postDelayed
             if (LibraryRoute.WEBVPN.pathOf(view.url.orEmpty()) != null) checkLibrary()
-            else if (kind == Kind.SSO) fail("统一认证提交后没有确认通过；已停止并暂停自动重试，请核对网页提示", "vpn_login_required", "expired", Kind.SSO)
+            else if (kind == Kind.SSO) checkSsoOutcome(id)
         }, 12_000L)
+    }
+
+    private fun checkSsoOutcome(id: Long) {
+        if (probing || !live(id) || !ssoSubmitted) return
+        probing = true
+        CookieManager.getInstance().flush()
+        probe { result ->
+            if (!live(id)) return@probe
+            probing = false
+            if (result.vpnAuthState == "valid" && result.state in setOf("valid", "expired")) {
+                ssoConfirmed = true
+                if (sso.revision == ssoVersion && sso.enabled) sso.markVerified()
+                if (result.state == "valid") {
+                    stopped = true
+                    onResult(result.copy(detail = "学校验证两层登录有效"))
+                } else navigate(LibraryRoute.WEBVPN.url("/login"))
+            } else fail("统一认证调用后仍未验证通过（可能校验拦截、脚本未完成或结果不明）；已停止，不重复提交，请核对学校页面", "vpn_login_required", result.vpnAuthState, Kind.SSO)
+        }
     }
 
     private fun evaluate(script: String, id: Long, callback: (JSONObject) -> Unit) {
