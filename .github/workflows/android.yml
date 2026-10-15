@@ -60,8 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.13.9 >/dev/null 2>&1; then
-            gh release upload v0.13.9 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.13.10 >/dev/null 2>&1; then
+            gh release upload v0.13.10 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.13.9 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.9 · 原登录按钮应用内触控' --notes '实际 WebVPN 会包装原登录按钮的点击处理。本版首次提交改为核验原表单、已填写账号和当前验证码后，在本应用 WebView 内发送一次按下/抬起，保留校方及代理原点击校验、RSA 与提交；不预先执行旧表单提交再补点。坐标、遮挡、缩放、布局、页面、账号及生命周期有变化时停止或取消输入；触摸结果不明绝不改走其它方式重发。不使用系统输入、无障碍或伪造窗口焦点。保留会话隔离、12 秒只读结果检查、90 秒总上限和明确验证码失效最多两次新页面重启。新增代理按钮包装模拟与原生输入回归，没有真实账号代登录；需手机分别复测首次自动跳转和后台恢复。'
+            gh release create v0.13.10 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.13.10 · 登录按钮有界自动重试' --notes '触摸调用返回 false 不再直接停止，先核对网页按钮事件及学校登录状态。未观察到点击/提交、当前账号与验证码仍有效且学校明确仍要求认证时，间隔至少 1.5 秒再次尝试原登录按钮，整轮最多三次，仍共享原 90 秒上限。已有点击、提交或跳转时不盲目连点；成功后接续图书馆登录，验证码失效改用新页面。手动操作、账号改变、密码错误、限制、额外验证、未知网络结果停止。仅调整统一认证登录，不重复提交座位预约。新增网页与原生模拟回归，没有使用真实账号代登录，需手机复测。'
           fi

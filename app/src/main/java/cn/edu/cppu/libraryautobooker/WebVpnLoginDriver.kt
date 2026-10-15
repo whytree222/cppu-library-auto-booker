@@ -54,6 +54,7 @@ class WebVpnLoginDriver internal constructor(
     private var ssoCallSerial = 0L
     private var ssoSubmittedDocument = -1L
     private var ssoAttempts = 0
+    private var loginTapAttempts = 0
     private var captchaRestarts = 0
     private var restartPending = false
     private var restartAtElapsed = 0L
@@ -196,7 +197,7 @@ class WebVpnLoginDriver internal constructor(
                             fail("学校已拒绝验证码，但检测到手动操作或页面变化，已停止自动重新开始", "vpn_login_required", "expired", pause = null)
                         } else if (!ocrEnabled || !sso.enabled || sso.paused || sso.revision != ssoVersion) {
                             fail("验证码已被学校拒绝，但识别或账号设置已改变，已停止自动重新开始", "vpn_login_required", "expired", pause = null)
-                        } else if (captchaRestarts >= 2 || ssoAttempts >= 3) {
+                        } else if (captchaRestarts >= 2 || ssoAttempts >= 3 || loginTapAttempts >= 3) {
                             fail("学校连续拒绝验证码，已达到本轮两次自动重新开始上限；未将密码标记为错误，请手动核对", "vpn_login_required", "expired", pause = null)
                         } else {
                             captchaRestarts++
@@ -354,25 +355,88 @@ class WebVpnLoginDriver internal constructor(
                     fail("原登录按钮定位或当前表单校验未通过，未发送登录触控；请核对页面", "vpn_login_required", "expired", pause = null)
                     return@evaluate
                 }
-                onStatus("正在通过应用内网页的一次触控激活学校原登录按钮…")
+                if (loginTapAttempts >= 3) {
+                    fail("统一认证登录按钮已尝试三次，已停止；请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
+                    return@evaluate
+                }
+                loginTapAttempts++
+                onStatus("正在尝试学校原登录按钮（$loginTapAttempts/3）…")
                 loginTap.tap(WebViewLoginTap.Target(x, y, width, height),
                     isCurrent = { activationCurrent(id, call, url) }) { dispatched ->
                     if (!live(id) || !ssoSubmitted || call != ssoCallSerial) return@tap
-                    if (!dispatched) {
-                        fail("学校登录触控过程未能完整确认，已停止且不会补发；请核对学校结果", "vpn_login_required", "expired", Kind.SSO)
-                        return@tap
+                    val failureCode = loginTap.lastFailureCode
+                    val observe = {
+                        if (activationCurrent(id, call, url)) observeLoginTap(id, call, url, failureCode)
                     }
-                    evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.activationOutcome() || {kind:'unknown'})", id) { outcome ->
-                        onStatus(when (outcome.optString("detailCode")) {
-                            "original-submit-observed" -> "已通过学校原登录按钮触发表单，正在等待学校确认登录（不代表成功）"
-                            "original-click-observed" -> "已观察到学校原登录按钮点击，正在只读核对登录结果；不重复点击"
-                            "activation-blocked" -> "学校原登录按钮的校验阻止了本次操作，正在核对登录结果；不重复点击"
-                            else -> "已发送一次学校登录触控，尚未观察到明确提交；正在核对结果，不重复点击"
-                        })
+                    // A false Android dispatch result is not proof that the web page
+                    // received no click. Inspect DOM/session before deciding to retry.
+                    if (dispatched) observe() else {
+                        onStatus("登录触控未获完整确认（$failureCode）；正在检查网页事件和学校登录状态…")
+                        main.postDelayed({ observe() }, 300L)
                     }
                 }
             }
         }, 100L)
+    }
+
+    private fun observeLoginTap(id: Long, call: Long, url: String, failureCode: String) {
+        evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.activationOutcome() || {kind:'unknown'})", id) { outcome ->
+            if (!activationCurrent(id, call, url)) return@evaluate
+            when (outcome.optString("detailCode")) {
+                "activation-unobserved" -> if (outcome.optString("kind") == "activation-observed")
+                    checkBeforeTapRetry(id, call, url, failureCode)
+                "original-submit-observed" -> onStatus("已通过学校原登录按钮触发表单，正在等待学校确认登录（不代表成功）")
+                "original-click-observed" -> onStatus("已观察到学校原登录按钮点击，正在只读核对登录结果；不重复点击")
+                "activation-blocked" -> onStatus("页面校验或手动操作阻止了触控，正在核对结果；不在旧页面连点")
+                else -> onStatus("网页事件结果不明确，正在核对学校登录状态；不盲目连点")
+            }
+        }
+    }
+
+    private fun checkBeforeTapRetry(id: Long, call: Long, url: String, failureCode: String) {
+        if (!activationCurrent(id, call, url) || probing) return
+        probing = true
+        CookieManager.getInstance().flush()
+        probe { result ->
+            if (!live(id) || call != ssoCallSerial) return@probe
+            probing = false
+            if (!activationCurrent(id, call, url)) {
+                fail("账号设置或页面已改变，已取消后续登录点击", "vpn_login_required", pause = null)
+                return@probe
+            }
+            when {
+                result.vpnAuthState == "valid" && result.state in setOf("valid", "expired") -> {
+                    ssoConfirmed = true
+                    if (sso.revision == ssoVersion && sso.enabled) sso.markVerified()
+                    if (result.state == "valid") {
+                        stopped = true
+                        onResult(result.copy(detail = "学校验证两层登录有效，已停止后续点击"))
+                    } else navigate(LibraryRoute.WEBVPN.url("/login"))
+                }
+                result.state == "vpn_login_required" && result.vpnAuthState == "expired" -> {
+                    if (loginTapAttempts >= 3) {
+                        fail("登录按钮已尝试三次，仍未观察到有效点击（$failureCode）；已停止，请手动核对", "vpn_login_required", "expired", Kind.SSO)
+                        return@probe
+                    }
+                    val nextCall = ++ssoCallSerial // Retire the earlier click's watchdog.
+                    onStatus("尚未观察到有效按钮事件；学校仍要求登录，1.5 秒后尝试第 ${loginTapAttempts + 1}/3 次")
+                    main.postDelayed({
+                        if (!activationCurrent(id, nextCall, url)) return@postDelayed
+                        evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.rearmActivation() || {kind:'blocked'})", id) { rearm ->
+                            if (!activationCurrent(id, nextCall, url)) return@evaluate
+                            if (rearm.optString("kind") != "activation-ready") {
+                                fail("检测到按钮事件、手动操作或验证码变化，已停止后续点击；请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
+                                return@evaluate
+                            }
+                            verifyLater(id, Kind.SSO, nextCall)
+                            SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
+                            activateSsoButton(id, nextCall)
+                        }
+                    }, 1_500L)
+                }
+                else -> fail("登录状态无法明确确认，已停止后续点击；请检查网络或学校页面", result.state, result.vpnAuthState, Kind.SSO)
+            }
+        }
     }
 
     private fun checkLibrary() {

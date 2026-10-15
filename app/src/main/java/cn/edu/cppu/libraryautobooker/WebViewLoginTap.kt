@@ -16,6 +16,8 @@ internal class WebViewLoginTap(private val view: WebView) : AutoCloseable {
     private val main = Handler(Looper.getMainLooper())
     private var current: Gesture? = null
     private var closed = false
+    var lastFailureCode: String = "none"
+        private set
 
     private class Gesture(val url: String, val width: Int, val height: Int,
         val scrollX: Int, val scrollY: Int, val x: Float, val y: Float,
@@ -28,6 +30,7 @@ internal class WebViewLoginTap(private val view: WebView) : AutoCloseable {
     /** `true` means DOWN/UP was delivered, not that a DOM click, POST, or login succeeded. */
     fun tap(target: Target, isCurrent: () -> Boolean, onComplete: (Boolean) -> Unit) {
         check(Looper.myLooper() == Looper.getMainLooper())
+        lastFailureCode = "none"
         val url = view.url
         val numbers = listOf(target.x, target.y, target.viewportWidth, target.viewportHeight)
         if (closed || current != null || !isCurrent() || !CaptchaPagePolicy.isTrusted(url) ||
@@ -35,31 +38,39 @@ internal class WebViewLoginTap(private val view: WebView) : AutoCloseable {
             target.viewportWidth > 100_000 || target.viewportHeight > 100_000 ||
             target.x <= 0 || target.x >= target.viewportWidth || target.y <= 0 || target.y >= target.viewportHeight ||
             view.width <= 0 || view.height <= 0 || !view.isEnabled || view.visibility != View.VISIBLE) {
-            onComplete(false); return
+            lastFailureCode = "input-preflight-rejected"; onComplete(false); return
         }
         val sx = view.width / target.viewportWidth
         val sy = view.height / target.viewportHeight
-        if (abs(sx - sy) / maxOf(sx, sy) > 0.025) { onComplete(false); return }
+        if (abs(sx - sy) / maxOf(sx, sy) > 0.025) {
+            lastFailureCode = "viewport-scale-mismatch"; onComplete(false); return
+        }
         val gesture = Gesture(url!!, view.width, view.height, view.scrollX, view.scrollY,
             (target.x * sx).toFloat(), (target.y * sy).toFloat(), isCurrent, onComplete)
         gesture.up = Runnable {
             if (current !== gesture) return@Runnable
-            if (!unchanged(gesture)) { cancel(); return@Runnable }
+            if (!unchanged(gesture)) { lastFailureCode = "input-environment-changed"; cancel(); return@Runnable }
             // Release before UP: a synchronous navigation must not cancel the new document.
             current = null
-            val sent = runCatching { dispatch(gesture, MotionEvent.ACTION_UP) }.getOrDefault(false)
+            val sent = runCatching { dispatch(gesture, MotionEvent.ACTION_UP) }.getOrElse {
+                lastFailureCode = "up-dispatch-error"; false
+            }
+            if (!sent && lastFailureCode == "none") lastFailureCode = "up-not-consumed"
             gesture.completion(sent)
         }
         current = gesture
         view.requestFocus() // Normal app focus only; never fabricate window/attachment callbacks.
         if (current !== gesture) return
         if (!unchanged(gesture)) {
+            lastFailureCode = "focus-or-layout-changed"
             current = null; gesture.completion(false); return
         }
         gesture.down = true // Any exception after dispatch starts is an uncertain input outcome.
-        val consumed = runCatching { dispatch(gesture, MotionEvent.ACTION_DOWN) }.getOrDefault(false)
+        val consumed = runCatching { dispatch(gesture, MotionEvent.ACTION_DOWN) }.getOrElse {
+            lastFailureCode = "down-dispatch-error"; false
+        }
         if (current !== gesture) return
-        if (!consumed) { cancel(); return }
+        if (!consumed) { if (lastFailureCode == "none") lastFailureCode = "down-not-consumed"; cancel(); return }
         main.postDelayed(gesture.up, 100L)
     }
 
@@ -80,6 +91,7 @@ internal class WebViewLoginTap(private val view: WebView) : AutoCloseable {
     fun cancel() {
         check(Looper.myLooper() == Looper.getMainLooper())
         val gesture = current ?: return
+        if (lastFailureCode == "none") lastFailureCode = "input-cancelled"
         current = null
         main.removeCallbacks(gesture.up)
         if (gesture.down) runCatching { dispatch(gesture, MotionEvent.ACTION_CANCEL) }

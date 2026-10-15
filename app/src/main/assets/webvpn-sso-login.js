@@ -5,6 +5,7 @@
   let own = null, edited = false, writing = false, submitted = false, cancelled = false;
   let submissionResult = null;
   let activation = null;
+  let activationAttempts = 0;
   let captchaRestartGuard = null;
   let restartInteraction = null;
   let remembered = null, rememberEdited = false, rememberWriting = false;
@@ -221,6 +222,7 @@
     // Production uses a single native WebView touch, not requestSubmit or JS click.
     // In particular, do not pre-run RSA/checkPassLogin: the original button owns it.
     if (submitted || activation) return result('blocked','activation-already-prepared');
+    if (activationAttempts >= 3) return result('blocked','activation-attempt-limit');
     const binding=activationBinding(); if(binding.error) return binding.error;
     const info=binding.info;
     if (!info.form.checkValidity()) return result('blocked','browser-validation-rejected');
@@ -229,6 +231,7 @@
         info.button.scrollIntoView({behavior:'instant',block:'center',inline:'nearest'});
     } catch (_) {return result('blocked','button-scroll-failed');}
     activation={info, armed:false, clickObserved:false, submitObserved:false, blocked:false, deadline:0};
+    activationAttempts++;
     submitted=true;
     return result('activation-ready','original-button-ready');
   }
@@ -320,6 +323,16 @@
       activation.clickObserved?'original-click-observed':'activation-unobserved';
     return result('activation-observed',code);
   }
+  function rearmActivation() {
+    // Native requests this only after a read-only school check still requires
+    // authentication. Never re-arm after any click/submit or manual takeover.
+    if(cancelled||!activation||activation.clickObserved||activation.submitObserved||activation.blocked)
+      return result('blocked','activation-may-have-submitted');
+    if(activationAttempts>=3)return result('blocked','activation-attempt-limit');
+    const binding=activationBinding();if(binding.error)return binding.error;
+    activation.detach?.();activation=null;submitted=false;
+    return prepareActivation();
+  }
   function submit() {
     if (cancelled) return result('manual','cancelled');
     if (submitted) return submissionResult || result('submitted','already-submitted');
@@ -377,6 +390,6 @@
         initial.form.addEventListener(event, () => { observation.touched = true; }, true);
     }
   } catch (_) { /* Unknown pages remain ineligible for an automatic restart. */ }
-  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,prepareActivation,activationPoint,activationOutcome,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
+  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,prepareActivation,activationPoint,activationOutcome,rearmActivation,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
   return result('installed','sso-helper-ready');
 })();

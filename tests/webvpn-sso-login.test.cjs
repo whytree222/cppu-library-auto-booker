@@ -197,6 +197,38 @@ test('production driver uses only native original-button activation, never the l
   assert.doesNotMatch(driver,/SchoolSsoAutoLogin\?\.submit\(\)/);
 });
 
+test('unobserved native input may rearm at most twice with current owned fields and CAPTCHA',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);assert.equal(f.api.prepareActivation().kind,'activation-ready');
+  for(let attempt=0;attempt<3;attempt++){
+    assert.equal(f.api.activationPoint().kind,'ready');
+    assert.equal(f.api.activationOutcome().detailCode,'activation-unobserved');
+    assert.equal(f.api.rearmActivation().kind,attempt<2?'activation-ready':'blocked');
+  }
+  assert.equal(f.state.posted,0);assert.equal(f.state.validations,0);
+}));
+
+test('rearm rejects observed clicks, manual takeover, changed fields and stale CAPTCHA',()=>{
+  for(const change of [
+    f=>{f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));},
+    f=>{f.form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));},
+    f=>{f.pass.value='manual';f.pass.dispatchEvent(new f.w.Event('input',{bubbles:true}));},
+    f=>{f.state.captcha='manual';}, f=>{f.form.action='https://other.example/login';}
+  ])useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();change(f);
+    assert.notEqual(f.api.rearmActivation().kind,'activation-ready');
+    assert.ok(f.state.posted<=1);
+  });
+});
+
+test('a late first-click after rearming wins once and blocks a later automatic click',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  assert.equal(f.api.rearmActivation().kind,'activation-ready');f.api.activationPoint();
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.equal(f.state.posted,1);assert.equal(f.state.validations,1);
+  assert.equal(f.api.rearmActivation().kind,'blocked');
+}));
+
 test('read-only SSO outcome recognizes only explicit visible CAPTCHA rejection variants',()=>{
   for(const text of ['验证码信息无效。','验证码无效','验证码错误！',' 验证码 不正确 ',
       '验证码已失效','验证码失效','验证码已过期','验证码过期',
