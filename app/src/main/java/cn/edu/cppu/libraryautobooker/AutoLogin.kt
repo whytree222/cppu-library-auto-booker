@@ -188,7 +188,8 @@ object SessionCoordinator {
     fun checkWebVpnStatus(context: Context, callback: (SessionChecker.Result) -> Unit = {}): AutoCloseable {
         // Reservation-owned checks decide recovery once a task starts. A status-card
         // refresh must never change authentication cookies underneath an in-flight POST.
-        if (RuntimeStore(context).prefs.getString("task_state", "") in setOf("RUNNING", "TRIGGERED")) {
+        if (cn.edu.cppu.libraryautobooker.booking.BookingService.running ||
+            RuntimeStore(context).prefs.getString("task_state", "") in setOf("RUNNING", "TRIGGERED")) {
             val request = CheckRequest()
             SessionChecker.probe(context, LibraryRoute.WEBVPN, updateSession = false) { result ->
                 request.deliver { callback(result) }

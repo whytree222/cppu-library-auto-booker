@@ -89,6 +89,7 @@ class BookingService : Service() {
         val taskDay = if (intent?.action == ACTION_SCHEDULED && plannedAt > 0)
             Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else LocalDate.now()
         sequence = BookingSequence(config, taskDay)
+        running = true
         fallback = FallbackPolicy(config.webVpnBackup)
         if (config.waitForRelease) {
             releaseDeadline = SystemClock.elapsedRealtime() + 600_000L
@@ -270,6 +271,7 @@ class BookingService : Service() {
     override fun onDestroy() {
         if (!terminal && sequence != null) record("INTERRUPTED", sequence!!.progress("预约服务提前结束，未确认最终结果；请核对学校记录"))
         terminal = true
+        running = false
         generation++
         releaseLoginCheck()
         main.removeCallbacksAndMessages(null)
@@ -390,6 +392,8 @@ class BookingService : Service() {
         .build()
 
     companion object {
+        @Volatile var running: Boolean = false
+            private set
         const val ACTION_RUN_ONCE = "cn.edu.cppu.libraryautobooker.RUN_ONCE"
         const val ACTION_WAKE_TEST = "cn.edu.cppu.libraryautobooker.WAKE_TEST"
         const val ACTION_SCHEDULED = "cn.edu.cppu.libraryautobooker.SCHEDULED"

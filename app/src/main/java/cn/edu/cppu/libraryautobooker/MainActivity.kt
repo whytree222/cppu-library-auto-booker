@@ -70,6 +70,12 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             if (loginEntryVisible) return
             refreshVersion++
+            if (BookingService.running) {
+                SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
+                refreshVpnStatus()
+                uiHandler.postDelayed(this, 60_000L)
+                return
+            }
             SessionCoordinator.check(this@MainActivity) { valid, _ ->
                 val state = RuntimeStore(this@MainActivity).prefs.getString("session_state", "unknown")
                 if (!valid && state == "expired" && !isFinishing && !isDestroyed && !loginEntryVisible) {
