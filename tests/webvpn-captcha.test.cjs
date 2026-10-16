@@ -299,15 +299,46 @@ test('explicit bounded refresh uses only the original school image handler and i
   assert.equal(f.state.requests,0);
 }));
 
-test('refresh is refused for manual edits even if erased, filled values, missing handlers or wrong targets',()=>{
+test('refresh is refused for manual edits even if erased, missing handlers or wrong targets',()=>{
   for(const change of [f=>f.edit('1'),f=>{f.edit('1');f.edit('');},
-    f=>f.api.fill(f.api.snapshot().token,'1234'),
     f=>{f.w.document.querySelector('form').action='https://other.example/login';},
     f=>{f.image.src='https://other.example/captcha.jpg';}]) using({},f=>{
       let clicks=0;f.image.onclick=()=>{clicks++;};change(f);
       assert.notEqual(f.api.refresh().kind,'refreshing');assert.equal(clicks,0);
     });
   using({},f=>assert.equal(f.api.refresh().detailCode,'refresh-unavailable'));
+});
+
+test('an application-filled value is not a manual entry: the bounded refresh recovery still runs',()=>{
+  using({},f=>{
+    let clicks=0;
+    f.image.onclick=()=>{clicks++;f.state.pixels='synthetic-image-B';};
+    const old=f.api.snapshot(); assert.equal(old.kind,'ready');
+    assert.equal(f.api.fill(old.token,'1234').kind,'filled');
+    assert.equal(f.input.value,'1234');
+    // The native controller reaches refresh() exactly after its own successful fill,
+    // so refusing here would silently disable the documented "refresh then retry" path.
+    assert.equal(f.api.refresh().kind,'refreshing');
+    assert.equal(clicks,1); assert.equal(f.input.value,'');
+    assert.notEqual(f.api.fill(old.token,'1234').kind,'filled');
+    const current=f.api.snapshot(); assert.equal(current.kind,'ready');
+    assert.notEqual(current.imageKey,old.imageKey);
+    assert.equal(f.api.fill(current.token,'5678').kind,'filled');
+    assert.equal(f.input.value,'5678');
+    assert.equal(f.state.requests,0); assert.equal(f.state.submits,0);
+  });
+  // A genuinely manual value must still stop the automatic path.
+  using({},f=>{
+    let clicks=0;f.image.onclick=()=>{clicks++;};
+    f.edit('9999'); assert.equal(f.api.refresh().detailCode,'input-occupied');
+    assert.equal(clicks,0); assert.equal(f.input.value,'9999');
+  });
+  // A manual edit followed by manual erasure stays manual: ownership is not inferred.
+  using({},f=>{
+    let clicks=0;f.image.onclick=()=>{clicks++;};
+    f.edit('1');f.edit('');
+    assert.equal(f.api.refresh().kind,'manual'); assert.equal(clicks,0);
+  });
 });
 
 test('representation-only proxy rewriting does not invalidate the same CAPTCHA pixels and query',()=>using({url:'https://webvpn.cppu.edu.cn'+proxy+'/tpass/login'},f=>{

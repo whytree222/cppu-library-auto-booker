@@ -105,6 +105,22 @@ class WebVpnLoginDriverTest {
             view.answerFirst({ it.contains("?.abandonUnsubmittedActivation()") }, """{"kind":"$kind"}""")
         }
 
+        fun answerRearm(kind: String = "activation-ready", detailCode: String? = null) {
+            view.answerFirst({ it.contains("?.rearmActivation()") },
+                if (detailCode == null) """{"kind":"$kind"}""" else """{"kind":"$kind","detailCode":"$detailCode"}""")
+        }
+
+        fun answerSchoolHandler(kind: String = "submitted", detailCode: String? = null) {
+            view.answerFirst({ it.contains("?.schoolHandlerSubmit()") },
+                if (detailCode == null) """{"kind":"$kind"}""" else """{"kind":"$kind","detailCode":"$detailCode"}""")
+        }
+
+        fun answerOutcome(detailCode: String, reason: String? = null) {
+            view.answerFirst({ it.contains("?.activationOutcome()") },
+                if (reason == null) """{"kind":"activation-observed","detailCode":"$detailCode"}"""
+                else """{"kind":"activation-observed","detailCode":"$detailCode","reason":"$reason"}""")
+        }
+
         fun answerUnsubmittedRestart(kind: String = "ready") {
             view.answerFirst({ it.contains("?.unsubmittedRestartState()") }, """{"kind":"$kind"}""")
         }
@@ -531,15 +547,49 @@ class WebVpnLoginDriverTest {
         }
     }
 
-    @Test fun unobservedFirstTapRestartsTheWholePageAndCanCompleteWithoutManualButtons() {
+    @Test fun unobservedFirstTapRearmsTheSameDocumentAndThenUsesTheSchoolHandlerOnce() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.view.acceptTouch=false
             f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
-            f.view.answerFirst({ it.contains("?.activationOutcome()") },
-                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-            assertTrue(f.results.isEmpty());f.answerProbe("vpn_login_required","expired");f.answerRetire()
+            f.answerOutcome("activation-unobserved")
+            assertTrue(f.results.isEmpty())
+            f.answerProbe("vpn_login_required","expired")
+            // The same still-current document is retired only after the bounded local
+            // recoveries; it is not reloaded while the CAPTCHA and one-shot window survive.
+            f.answerRearm()
+            assertTrue(f.view.navigations.isEmpty())
+            assertFalse(f.view.calls.any { it.script.contains("?.abandonUnsubmittedActivation()") })
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+            assertEquals(2,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("vpn_login_required","expired")
+            // Only the re-armed gesture may consume the local recovery; the fallback is next.
+            assertEquals(1,f.view.calls.count { it.script.contains("?.rearmActivation()") })
+            f.answerSchoolHandler("submitted","school-handler-submit-observed")
+            assertTrue(f.statuses.last().contains("学校自身校验处理器"))
+            assertTrue(f.view.navigations.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12));f.answerProbe("valid","valid")
+            assertEquals("valid",f.results.single().state);assertFalse(f.sso.paused)
+            assertEquals(2,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
+            assertEquals(1,f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
+        }
+    }
+
+    @Test fun anUnobservedRunStillReachesAFreshPageRestartWhenNoLocalRecoveryIsAvailable() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.view.acceptTouch=false
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("vpn_login_required","expired");f.answerRearm("blocked")
+            // The page does not expose the school's own handler, so nothing was sent and the
+            // conservative restart path may still retire this unsubmitted document.
+            f.answerSchoolHandler("blocked","school-handler-unavailable")
+            f.answerRetire()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1499))
             assertTrue(f.view.navigations.isEmpty())
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
@@ -549,63 +599,127 @@ class WebVpnLoginDriverTest {
             assertEquals(2,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12));f.answerProbe("valid","valid")
             assertEquals("valid",f.results.single().state);assertFalse(f.sso.paused)
-            assertFalse(f.view.calls.any { it.script.contains("?.rearmActivation()") })
         }
     }
 
-    @Test fun noEventAttemptsStopAfterThreeAndDoNotResetTheBudget() {
+    @Test fun aProvenPointMissUsesTheBoundedLocalRecoveryAndTheSchoolHandlerExactlyOnce() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            // The reserved gesture hit a node on top of the button: no click, no submit.
+            f.answerOutcome("activation-blocked","point-miss")
+            assertTrue(f.results.isEmpty())
+            f.answerProbe("vpn_login_required","expired");f.answerRearm("blocked")
+            // A refused local re-arm falls straight through to exactly one school-handler call.
+            f.answerSchoolHandler("submitted","school-handler-click-unconfirmed")
+            assertEquals(1,f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("vpn_login_required","expired")
+            assertEquals("vpn_login_required",f.results.single().state)
+            assertEquals(1,f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
+        }
+    }
+
+    @Test fun aClosedGuardWithoutAProvenMissNeverRearmsAndNeverUsesTheSchoolHandler() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerOutcome("activation-blocked","binding-user-edited")
+            f.answerProbe("vpn_login_required","expired")
+            // A changed field or CAPTCHA proves nothing about submission, so the document is
+            // retired atomically first and the fallback is never fired on it.
+            assertFalse(f.view.calls.any { it.script.contains("?.rearmActivation()") })
+            assertFalse(f.view.calls.any { it.script.contains("?.schoolHandlerSubmit()") })
+            f.answerRetire("blocked")
+            assertEquals(1,f.results.size);assertTrue(f.sso.paused);assertTrue(f.view.navigations.isEmpty())
+        }
+    }
+
+    @Test fun everyNoEventTouchCountsAgainstOneSharedGestureBudgetThatIsNeverReset() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL);f.view.acceptTouch=false
-            repeat(3) { attempt ->
-                f.prepareSso();f.completeCaptcha()
-                f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
-                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
-                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
-                f.view.answerFirst({ it.contains("?.activationOutcome()") },
-                    """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-                f.answerProbe("vpn_login_required","expired");f.answerRetire()
-                if(attempt<2){
-                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
-                    f.answerUnsubmittedRestart();f.finish(SSO_PROXY_URL)
-                }
-            }
-            assertTrue(f.results.single().detail.contains("三次"));assertFalse(f.sso.paused)
+            // First round: one reserved gesture, at most one re-armed gesture, then the
+            // school-handler fallback and the conservative full-page restart.
+            f.prepareSso();f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("vpn_login_required","expired")
+            f.answerRearm()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("vpn_login_required","expired")
+            f.answerSchoolHandler("blocked","school-handler-unavailable")
+            f.answerRetire()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
+            f.answerUnsubmittedRestart();f.finish(SSO_PROXY_URL)
+            // Second round: the third gesture is the last the shared budget allows, and a
+            // re-arm that would need a fourth is refused before any input is dispatched.
+            f.prepareSso();f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("vpn_login_required","expired")
+            f.answerRearm()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
+            assertTrue(f.results.single().detail.contains("三次"));assertFalse(f.sso.paused)
             assertEquals(3,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
-            assertEquals(2,f.view.navigations.size)
-            assertFalse(f.view.calls.any { it.script.contains("?.rearmActivation()") })
+            assertEquals(1,f.view.navigations.size)
+            assertEquals(2,f.view.calls.count { it.script.contains("?.rearmActivation()") })
+            // The exhausted gesture budget stops the run before any further fallback.
+            assertEquals(1,f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
         }
     }
 
-    @Test fun lateManualEventOrPageChangeCancelsThePendingExtraClick() {
+    @Test fun aPausedOrLateRetryNeverDispatchesAnotherGestureOrRestartsThePage() {
         repeat(2){ change -> Fixture().use { f ->
             f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.view.acceptTouch=false
             f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
-            f.view.answerFirst({ it.contains("?.activationOutcome()") },
-                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-            f.answerProbe("vpn_login_required","expired");f.answerRetire()
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("vpn_login_required","expired")
             if(change==0){
-                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
-                f.answerUnsubmittedRestart("blocked")
+                f.answerRearm()
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));f.answerActivationPoint()
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+                assertEquals(2,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
+                // The re-armed document now proves a changed field: no fallback, no restart.
+                f.answerOutcome("activation-blocked","binding-user-edited")
+                f.answerProbe("vpn_login_required","expired");f.answerRetire("blocked")
                 assertEquals(1,f.results.size)
+                assertFalse(f.view.calls.any { it.script.contains("?.schoolHandlerSubmit()") })
             }else{
                 f.driver.onPause();shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
                 assertFalse(f.view.calls.any { it.script.contains("?.unsubmittedRestartState()") })
+                assertFalse(f.view.calls.any { it.script.contains("?.schoolHandlerSubmit()") })
+                assertEquals(1,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
+                assertTrue(f.results.isEmpty())
             }
-            assertEquals(1,f.view.touches.count { it==MotionEvent.ACTION_DOWN })
             assertTrue(f.view.navigations.isEmpty())
         } }
     }
 
-    @Test fun unknownProbeCanRecoverOnlyAfterAtomicNoSubmissionProofAndKeepsTheDiagnostic() {
+    @Test fun unknownProbeRetiresTheDocumentOnlyAfterEveryLocalRecoveryWasProvenUnsent() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.activateOriginalButton(answerOutcome=false)
-            f.view.answerFirst({ it.contains("?.activationOutcome()") },
-                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
+            f.answerOutcome("activation-unobserved")
             f.answerProbe("unknown",null)
             assertTrue(f.view.navigations.isEmpty());assertTrue(f.results.isEmpty())
+            // Both bounded local recoveries run first and report that nothing was sent, so
+            // the document stays eligible for the atomic retire and the full-page restart.
+            f.answerRearm("blocked");f.answerSchoolHandler("blocked","school-handler-unavailable")
+            assertTrue(f.view.calls.any { it.script.contains("?.rearmActivation()") })
+            assertTrue(f.view.calls.any { it.script.contains("?.schoolHandlerSubmit()") })
+            assertTrue(f.view.calls.any { it.script.contains("?.abandonUnsubmittedActivation()") })
             f.answerRetire();assertTrue(f.statuses.last().contains("Synthetic school result"))
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500));f.answerUnsubmittedRestart()
             assertEquals(listOf(LIBRARY_LOGIN),f.view.navigations);assertFalse(f.sso.paused)
@@ -615,9 +729,9 @@ class WebVpnLoginDriverTest {
     @Test fun freshPageRecoveryDoesNotExtendTheOriginalNinetySecondDeadline() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.activateOriginalButton(answerOutcome=false)
-            f.view.answerFirst({ it.contains("?.activationOutcome()") },
-                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-            f.answerProbe("unknown",null);f.answerRetire()
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("unknown",null);f.answerRearm("blocked")
+            f.answerSchoolHandler("blocked","school-handler-unavailable");f.answerRetire()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500));f.answerUnsubmittedRestart()
             f.finish(SSO_PROXY_URL);f.prepareSso()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(90))
@@ -627,15 +741,19 @@ class WebVpnLoginDriverTest {
         }
     }
 
-    @Test fun lateObservedEventWhileProbeWasPendingNeverRestartsThePage() {
+    @Test fun aClosedGuardWhileTheProbeWasPendingNeverRestartsThePageOrResubmits() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL);f.prepareSso();f.completeCaptcha();f.activateOriginalButton(answerOutcome=false)
-            f.view.answerFirst({ it.contains("?.activationOutcome()") },
-                """{"kind":"activation-observed","detailCode":"activation-unobserved"}""")
-            f.answerProbe("unknown",null);f.answerRetire("blocked")
+            f.answerOutcome("activation-unobserved")
+            f.answerProbe("unknown",null)
+            // The page proves a click, a submit or a manual takeover: both bounded local
+            // recoveries refuse, and the document is never retired or reloaded.
+            f.answerRearm("blocked")
+            f.answerSchoolHandler("blocked","activation-may-have-submitted")
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
             assertTrue(f.view.navigations.isEmpty());assertEquals(1,f.results.size)
             assertTrue(f.sso.paused);assertEquals(1,f.view.activationCount())
+            assertFalse(f.view.calls.any { it.script.contains("?.abandonUnsubmittedActivation()") })
         }
     }
 

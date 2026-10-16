@@ -189,12 +189,156 @@ test('manual submit before the reserved click takes over and blocks the later na
   assert.equal(f.api.activationOutcome().detailCode,'activation-blocked');
 }));
 
+// Second fixture: the reserved native gesture is skipped entirely, so the button's own
+// handler and a working standard submitter exist. Used only for the fallback engine.
+function useHandlerActivation(fn, options = {}) {
+  use({proxy:true,remember:true}, f=>{
+    const {w,state}=f, button=w.document.querySelector('#passbutton'), form=w.document.querySelector('#fm1');
+    button.setAttribute('onclick', options.rewritten
+      ? 'var vpn_return;eval(vpn_rewrite_js((function () { return checkPassLogin(); }).toString().slice(14, -2), 2));return vpn_return;'
+      : 'return checkPassLogin();');
+    state.validations=0;state.requests=0;state.posted=0;state.clicks=0;state.scrolled=0;
+    w.checkPassLogin=()=>{state.validations++;if(options.validationDenied)return false;
+      f.pass.value='RSA:'+f.pass.value;state.encrypted=true;return true;};
+    button.onclick=()=>{state.clicks++;return w.checkPassLogin();};
+    form.addEventListener('submit',e=>{e.preventDefault();state.posted++;});
+    form.requestSubmit=function(target){
+      assert.equal(target,button); assert.equal(state.encrypted,true);
+      state.requests++; this.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+    };
+    button.scrollIntoView=()=>{state.scrolled++;};
+    button.getBoundingClientRect=()=>({left:100,top:400,right:500,bottom:460,width:400,height:60});
+    Object.defineProperties(w,{innerWidth:{value:600,configurable:true},innerHeight:{value:800,configurable:true}});
+    w.visualViewport={scale:1,offsetLeft:0,offsetTop:0,width:600,height:800};
+    w.document.elementFromPoint=()=>button;
+    fn({...f,button,form});
+  });
+}
+
+test('school-handler fallback runs the school validator then a standard submitter exactly once',()=>useHandlerActivation(f=>{
+  f.api.prepare(f.credentials);
+  assert.equal(f.api.prepareActivation().kind,'activation-ready');
+  f.api.activationPoint();
+  // The reserved native gesture delivered no click and no submit at all.
+  assert.equal(f.api.activationOutcome().detailCode,'activation-unobserved');
+  const result=f.api.schoolHandlerSubmit();
+  assert.equal(result.kind,'submitted');assert.equal(result.detailCode,'school-handler-submit-observed');
+  assert.equal(f.state.validations,1);assert.equal(f.state.requests,1);
+  assert.equal(f.state.posted,1);assert.equal(f.state.clicks,0);
+  assert.equal(f.pass.value,'RSA:sso-secret');
+  // One-shot per document: a second call can never resend the credential.
+  assert.equal(f.api.schoolHandlerSubmit().kind,'blocked');
+  assert.equal(f.state.validations,1);assert.equal(f.state.requests,1);assert.equal(f.state.posted,1);
+  assert.doesNotMatch(JSON.stringify(result),/sso-secret|sso-only|RSA|checkPassLogin/);
+}));
+
+test('school-handler fallback drives the WebVPN-rewritten inline handler through the button once',()=>useHandlerActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  const result=f.api.schoolHandlerSubmit();
+  assert.equal(result.kind,'submitted');assert.equal(result.detailCode,'school-handler-submit-observed');
+  assert.equal(f.state.clicks,1);assert.equal(f.state.validations,1);
+  assert.equal(f.state.posted,1);assert.equal(f.state.requests,0);
+  assert.equal(f.api.schoolHandlerSubmit().kind,'blocked');
+  assert.equal(f.state.clicks,1);assert.equal(f.state.posted,1);
+},{rewritten:true}));
+
+test('school-handler fallback is refused after an observed click, manual takeover, abandonment, cancellation or in-flight manual submit',()=>{
+  for(const change of [
+    f=>{f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));},
+    f=>{f.form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));},
+    f=>{f.api.abandonUnsubmittedActivation();},
+    f=>{f.pass.value='manual';f.pass.dispatchEvent(new f.w.Event('input',{bubbles:true}));},
+    f=>{f.state.captcha='manual';},
+    f=>{f.form.action='https://other.example/login';},
+    f=>{f.api.cancel();}
+  ])useHandlerActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();change(f);
+    assert.notEqual(f.api.schoolHandlerSubmit().kind,'submitted');
+    assert.equal(f.state.requests,0);assert.ok(f.state.posted<=1);
+  });
+});
+
+test('school-handler fallback needs the school own handler, valid constraints and a school-accepted account',()=>{
+  // A foreign or unavailable inline handler is never driven.
+  useHandlerActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    f.button.setAttribute('onclick','doSomethingElse();');
+    assert.equal(f.api.schoolHandlerSubmit().detailCode,'school-handler-unavailable');
+    assert.equal(f.state.requests,0);assert.equal(f.state.posted,0);
+  });
+  useHandlerActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    f.user.required=true;f.user.pattern='[0-9]{9}';
+    assert.equal(f.api.schoolHandlerSubmit().detailCode,'browser-validation-rejected');
+    assert.equal(f.state.validations,0);assert.equal(f.state.requests,0);
+  });
+  // The school refuses locally: no submitter may run.
+  useHandlerActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    const result=f.api.schoolHandlerSubmit();
+    assert.equal(result.kind,'blocked');assert.equal(result.detailCode,'school-validation-rejected');
+    assert.equal(f.state.requests,0);assert.equal(f.state.posted,0);
+  },{validationDenied:true});
+});
+
+test('a reserved gesture that provably missed the button may be re-armed, while every other closure stays closed',()=>{
+  useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    const other=f.w.document.createElement('button');f.w.document.body.appendChild(other);
+    other.dispatchEvent(new f.w.Event('pointerdown',{bubbles:true,cancelable:true}));
+    const outcome=f.api.activationOutcome();
+    assert.equal(outcome.detailCode,'activation-blocked');assert.equal(outcome.reason,'point-miss');
+    assert.equal(f.state.posted,0);
+    assert.equal(f.api.rearmActivation().kind,'activation-ready');
+    assert.equal(f.state.posted,0);
+  });
+  // An expired window is still a closure, not a miss.
+  useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    const now=f.w.Date.now();f.w.Date.now=()=>now+2100;
+    f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    assert.equal(f.api.activationOutcome().reason,'window-closed');
+    assert.notEqual(f.api.rearmActivation().kind,'activation-ready');
+    assert.equal(f.state.posted,0);
+  });
+  // A manual takeover inside the window also stays closed.
+  useActivation(f=>{
+    f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+    const other=f.w.document.createElement('button');f.w.document.body.appendChild(other);
+    other.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    assert.equal(f.api.activationOutcome().reason,'click-off-target');
+    assert.equal(f.state.posted,0);
+  });
+});
+
+test('the unobserved verdict reports no closure reason and still rearms within its own budget',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  const outcome=f.api.activationOutcome();
+  assert.equal(outcome.detailCode,'activation-unobserved');assert.equal(outcome.reason,'');
+  assert.equal(f.api.rearmActivation().kind,'activation-ready');
+  assert.equal(f.api.activationPoint().kind,'ready');
+  assert.equal(f.state.posted,0);assert.equal(f.state.validations,0);
+}));
+
+test('retired documents cannot be re-armed or handed to the school handler',()=>useActivation(f=>{
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  assert.equal(f.api.abandonUnsubmittedActivation().kind,'ready');
+  assert.equal(f.api.activationOutcome().reason,'document-retired');
+  assert.notEqual(f.api.rearmActivation().kind,'activation-ready');
+  assert.notEqual(f.api.schoolHandlerSubmit().kind,'submitted');
+  assert.equal(f.state.posted,0);assert.equal(f.state.validations,0);
+}));
+
 test('production driver uses only native original-button activation, never the legacy JS submit API',()=>{
   const driver=fs.readFileSync('app/src/main/java/cn/edu/cppu/libraryautobooker/WebVpnLoginDriver.kt','utf8');
   assert.match(driver,/SchoolSsoAutoLogin\?\.prepareActivation\(\)/);
   assert.match(driver,/SchoolSsoAutoLogin\?\.activationPoint\(\)/);
   assert.match(driver,/loginTap\.tap\(/);
   assert.doesNotMatch(driver,/SchoolSsoAutoLogin\?\.submit\(\)/);
+  // The bounded school-handler fallback is the only other submission engine and has
+  // exactly one call site, reached only after a proven miss or an unobserved gesture.
+  assert.equal((driver.match(/SchoolSsoAutoLogin\?\.schoolHandlerSubmit\(\)/g)||[]).length,1);
+  assert.equal((driver.match(/SchoolSsoAutoLogin\?\.rearmActivation\(\)/g)||[]).length,1);
 });
 
 test('unobserved native input may rearm at most twice with current owned fields and CAPTCHA',()=>useActivation(f=>{

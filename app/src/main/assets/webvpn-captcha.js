@@ -246,11 +246,16 @@
     const info = page();
     if (info.error) return info.error;
     watch(info.input);
-    if (userEdited || info.input.value !== '') return result('manual', 'input-occupied');
+    // Our own filled value is not a manual entry: snapshot()/reset() use owned() for
+    // exactly this reason. Treating it as occupied would abort the bounded
+    // "fetch another image and retry" recovery after our own successful fill.
+    if (userEdited || (info.input.value !== '' && !owned(info.input)))
+      return result('manual', 'input-occupied');
     if (!visible(info.image) || typeof info.image.onclick !== 'function')
       return result('stopped', 'refresh-unavailable');
     // Invalidate all earlier OCR tickets before the normal school refresh handler.
     pending = null; ownFill = null;
+    setValue(info.input, '');
     try { info.image.click(); return result('refreshing'); }
     catch (_) { return result('stopped', 'refresh-failed'); }
   }

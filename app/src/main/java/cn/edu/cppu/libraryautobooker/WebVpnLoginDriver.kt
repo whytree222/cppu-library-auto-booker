@@ -55,6 +55,10 @@ class WebVpnLoginDriver internal constructor(
     private var ssoSubmittedDocument = -1L
     private var ssoAttempts = 0
     private var loginTapAttempts = 0
+    // Bounded local recovery, keyed by ssoCallSerial so each submission round gets at
+    // most one re-arm and at most one school-handler fallback, on the same document.
+    private var ssoRearmedCall = -1L
+    private var ssoFallbackCall = -1L
     // Shared by explicit CAPTCHA rejection and proven unsubmitted-page recovery.
     private var freshRestarts = 0
     private var restartGuardMethod = "captchaRestartState"
@@ -359,7 +363,12 @@ class WebVpnLoginDriver internal constructor(
                     return@evaluate
                 }
                 if (loginTapAttempts >= 3) {
-                    fail("统一认证登录按钮已尝试三次，已停止；请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
+                    // Reaching this point proves that no gesture ever produced a click or a
+                    // submission, so the saved credential is not implicated. Report the
+                    // shared limit without pausing the account, as the documented rule for
+                    // exhausted proven-unsubmitted recovery requires.
+                    fail("统一认证登录按钮已尝试三次，均未观察到点击或提交，已停止；未判定账号错误，请核对学校页面",
+                        "vpn_login_required", "expired", pause = null)
                     return@evaluate
                 }
                 loginTapAttempts++
@@ -386,17 +395,18 @@ class WebVpnLoginDriver internal constructor(
         evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.activationOutcome() || {kind:'unknown'})", id) { outcome ->
             if (!activationCurrent(id, call, url)) return@evaluate
             when (outcome.optString("detailCode")) {
-                "activation-unobserved" -> if (outcome.optString("kind") == "activation-observed")
-                    checkBeforePageRecovery(id, call, url, failureCode)
+                // No click and no submission were observed. The guard may have closed
+                // because our own point missed the button, which is not a submission.
+                "activation-unobserved", "activation-blocked" ->
+                    checkBeforePageRecovery(id, call, url, failureCode, outcome)
                 "original-submit-observed" -> onStatus("已通过学校原登录按钮触发表单，正在等待学校确认登录（不代表成功）")
                 "original-click-observed" -> onStatus("已观察到学校原登录按钮点击，正在只读核对登录结果；不重复点击")
-                "activation-blocked" -> onStatus("页面校验或手动操作阻止了触控，正在核对结果；不在旧页面连点")
                 else -> onStatus("网页事件结果不明确，正在核对学校登录状态；不盲目连点")
             }
         }
     }
 
-    private fun checkBeforePageRecovery(id: Long, call: Long, url: String, failureCode: String) {
+    private fun checkBeforePageRecovery(id: Long, call: Long, url: String, failureCode: String, outcome: JSONObject) {
         if (!activationCurrent(id, call, url) || probing) return
         probing = true
         CookieManager.getInstance().flush()
@@ -420,8 +430,82 @@ class WebVpnLoginDriver internal constructor(
                 // A failed read-only probe is NOT proof of either login failure or a
                 // credential POST. Retire the still-unsubmitted DOM atomically first.
                 result.state == "unknown" || (result.state == "vpn_login_required" && result.vpnAuthState == "expired") ->
-                    restartUnsubmittedPage(id, call, url, failureCode, result)
+                    retryActivationLocally(id, call, url, failureCode, outcome, result)
                 else -> fail("未观察到有效登录事件；${result.detail}；已停止自动恢复", result.state, result.vpnAuthState, pause = null)
+            }
+        }
+    }
+
+    /**
+     * The read-only probe proved this document still carries no school session. Before
+     * abandoning it, try the two bounded local recoveries in order: re-arm the same
+     * one-shot window and touch once more (re-arming re-measures the button, so a widget
+     * that appeared over the previous point no longer hides it), then fall back to the
+     * school's own inline handler plus a standard submitter. Both are used at most once
+     * per submission round, on the same document, and only for verdicts that prove no
+     * click and no submission ever reached the school.
+     */
+    private fun retryActivationLocally(id: Long, call: Long, url: String, failureCode: String, outcome: JSONObject, result: SessionChecker.Result) {
+        if (!activationCurrent(id, call, url)) return
+        val verdict = outcome.optString("detailCode")
+        val reason = outcome.optString("reason")
+        val provenMiss = verdict == "activation-unobserved" ||
+            (verdict == "activation-blocked" && reason in setOf("point-miss", "click-off-target"))
+        if (!provenMiss) {
+            // Fields, CAPTCHA, target or a manual event changed. Never re-drive this
+            // guarded document; the conservative fresh-restart path owns the decision.
+            restartUnsubmittedPage(id, call, url, failureCode, result)
+            return
+        }
+        if (!ocrEnabled || !sso.enabled || sso.paused || sso.revision != ssoVersion) {
+            fail("识别或账号设置已改变，已取消统一认证自动恢复", "vpn_login_required", "expired", pause = null)
+            return
+        }
+        if (ssoRearmedCall != call) {
+            ssoRearmedCall = call
+            evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.rearmActivation() || {kind:'blocked'})", id) { rearm ->
+                if (!activationCurrent(id, call, url)) return@evaluate
+                if (rearm.optString("kind") == "activation-ready") {
+                    onStatus("登录触控未产生任何网页事件，正在同一页面重新定位学校原登录按钮（1/1）…")
+                    activateSsoButton(id, call)
+                } else {
+                    schoolHandlerFallback(id, call, url, failureCode, result)
+                }
+            }
+            return
+        }
+        schoolHandlerFallback(id, call, url, failureCode, result)
+    }
+
+    /**
+     * The last-resort engine. It still runs the school's own validator/RSA through the
+     * button's original inline handler, so it is not a re-implementation of the school
+     * login; it is only used when the native gesture provably produced no event at all.
+     */
+    private fun schoolHandlerFallback(id: Long, call: Long, url: String, failureCode: String, result: SessionChecker.Result) {
+        if (!activationCurrent(id, call, url)) return
+        if (ssoFallbackCall == call) {
+            restartUnsubmittedPage(id, call, url, failureCode, result)
+            return
+        }
+        ssoFallbackCall = call
+        onStatus("原生触控未触发学校按钮，正在改用学校自身校验处理器提交一次（不代表成功）…")
+        evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.schoolHandlerSubmit() || {kind:'stopped'})", id) { answer ->
+            if (!activationCurrent(id, call, url)) return@evaluate
+            when (answer.optString("kind")) {
+                "submitted" -> {
+                    onStatus("已改用学校自身校验处理器提交统一认证，正在等待学校确认登录（不代表成功）")
+                    verifyLater(id, Kind.SSO, call)
+                }
+                "blocked" -> when (answer.optString("detailCode")) {
+                    // Nothing was sent by any of these, so the document is still an
+                    // unsubmitted one and the conservative restart path may continue.
+                    "school-handler-unavailable", "browser-validation-rejected", "school-validation-rejected" ->
+                        restartUnsubmittedPage(id, call, url, failureCode, result)
+                    else -> fail("未能安全改用学校自身处理器提交（${answer.optString("detailCode")}）；已停止，不重复提交，请核对学校页面",
+                        "vpn_login_required", "expired", Kind.SSO)
+                }
+                else -> fail("学校自身处理器提交结果不明；已停止，不重复提交，请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
             }
         }
     }

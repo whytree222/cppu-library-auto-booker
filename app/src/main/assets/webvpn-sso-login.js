@@ -230,13 +230,107 @@
       if (typeof info.button.scrollIntoView === 'function')
         info.button.scrollIntoView({behavior:'instant',block:'center',inline:'nearest'});
     } catch (_) {return result('blocked','button-scroll-failed');}
-    activation={info, armed:false, clickObserved:false, submitObserved:false, blocked:false, deadline:0};
+    // `reason` records WHY the one-shot guard closed. A closed guard normally means
+    // "never touch this document again", but two verdicts prove that no click and no
+    // submission ever reached the school: the reserved gesture missed the button, or
+    // its window expired before any event arrived. Only those may be re-armed or
+    // replaced by the school's own handler fallback.
+    activation={info, armed:false, clickObserved:false, submitObserved:false, blocked:false,
+      schoolSubmit:false, fallbackUsed:false, reason:'', deadline:0};
     activationAttempts++;
     submitted=true;
     return result('activation-ready','original-button-ready');
   }
+  // One-shot capture guard for a single authorized activation. Installed for the
+  // reserved native gesture and, separately, for the school-handler fallback; the
+  // guard's `schoolSubmit` window is synchronous, so no input can interleave with it.
+  function armGuards(info, current) {
+    current.armed=true; current.deadline=Date.now()+2000;
+    const guardDown=event=>{
+      if(cancelled||activation!==current)return;
+      if(current.abandoned)current.restartTouched=true;
+      const targetMatches=event.target===info.button||info.button.contains(event.target);
+      const valid=!current.blocked&&!current.clickObserved&&Date.now()<=current.deadline&&targetMatches&&!activationBinding().error;
+      if(!valid){
+        current.blocked=true;
+        if(!current.reason){
+          const check=targetMatches?activationBinding():null;
+          current.reason=!targetMatches?'point-miss':
+            check&&check.error?('binding-'+(check.error.detailCode||'changed')):
+            Date.now()>current.deadline?'window-closed':'click-off-target';
+        }
+        event.preventDefault();event.stopImmediatePropagation();
+      }
+    };
+    const guard=event=>{
+      if(cancelled||activation!==current)return;
+      if(current.abandoned)current.restartTouched=true;
+      // The authorized script submission owns exactly the events it fires itself.
+      // This window is synchronous, so no native touch can interleave with it.
+      if(current.schoolSubmit){
+        if(event.target===info.button||info.button.contains(event.target)){
+          current.clickObserved=true;return;
+        }
+        current.blocked=true;current.reason='foreign-event';event.preventDefault();event.stopImmediatePropagation();return;
+      }
+      // A delayed UP or a manual click racing with that UP must not escape the
+      // one-shot guard. Failure/expiry stays closed until native cancel/navigation.
+      if(current.clickObserved||current.blocked||Date.now()>current.deadline){
+        if(!current.clickObserved){current.blocked=true;if(!current.reason)current.reason='window-closed';}
+        event.preventDefault();event.stopImmediatePropagation();return;
+      }
+      const check=activationBinding();
+      if(check.error || (event.target!==info.button&&!info.button.contains(event.target))) {
+        current.blocked=true;
+        current.reason=check.error?('binding-'+(check.error.detailCode||'changed')):'click-off-target';
+        event.preventDefault(); event.stopImmediatePropagation(); return;
+      }
+      current.clickObserved=true;
+      // Clear only our private copies. The original button still reads the DOM
+      // password and performs the school's own validation/encryption exactly once.
+      if(own){own.secret='';own.username='';}
+    };
+    const observe=event=>{
+      if(cancelled||activation!==current)return;
+      if(current.abandoned){current.restartTouched=true;event.preventDefault();event.stopImmediatePropagation();return;}
+      // Enter or another manual submission before the reserved click takes
+      // priority. Leave that manual event alone, but block the pending auto-UP.
+      if(!current.clickObserved&&!current.schoolSubmit){
+        current.blocked=true;current.reason='manual-submit';return;
+      }
+      if(current.blocked||current.submitObserved||event.target!==info.form){
+        current.blocked=true;if(!current.reason)current.reason='submission-target-changed';
+        event.preventDefault();event.stopImmediatePropagation();return;
+      }
+      // The original/proxy handler may normalize a URL while encrypting. Only
+      // equivalent trusted targets survive; a changed target must not receive POST.
+      // The school's own validator has already replaced the password value during an
+      // authorized script submission, so only structural identity is re-checked there.
+      let target;try{target=context(false);}catch(_){target=null;}
+      if(!target||target.form!==info.form||target.button!==info.button||target.user!==info.user||
+          target.password!==info.password||target.captcha!==info.captcha||target.href!==info.href||
+          target.action!==info.action||target.attribute!==info.attribute||
+          (event.submitter&&event.submitter!==info.button)){
+        current.blocked=true;current.reason='submission-target-changed';
+        event.preventDefault();event.stopImmediatePropagation();return;
+      }
+      current.submitObserved=true;
+    };
+    const finish=event=>{if(current.clickObserved&&(event.target===info.button||info.button.contains(event.target))&&event.defaultPrevented){
+      current.blocked=true;if(!current.reason)current.reason='aborted-click';}};
+    document.addEventListener('click',guard,true);
+    document.addEventListener('submit',observe,true);
+    document.addEventListener('click',finish,false);
+    for(const event of ['pointerdown','touchstart','mousedown'])document.addEventListener(event,guardDown,{capture:true,passive:false});
+    current.detach=()=>{document.removeEventListener('click',guard,true);document.removeEventListener('submit',observe,true);document.removeEventListener('click',finish,false);for(const event of ['pointerdown','touchstart','mousedown'])document.removeEventListener(event,guardDown,true);};
+  }
+  /** True when the guard closed without any click or submission reaching the school. */
+  function untouched(candidate) {
+    return !!candidate && !candidate.clickObserved && !candidate.submitObserved && !candidate.abandoned &&
+      !candidate.restartTouched && candidate.reason !== 'manual-submit';
+  }
   function activationPoint() {
-    if (!activation || activation.clickObserved || activation.blocked || cancelled)
+    if (!activation || activation.schoolSubmit || activation.clickObserved || activation.blocked || cancelled)
       return result('blocked','activation-unavailable');
     const binding=activationBinding(); if(binding.error) return binding.error;
     const info=binding.info;
@@ -263,78 +357,97 @@
       if(hit===info.button||info.button.contains(hit)){point={x,y};break;}
     }
     if(!point)return result('blocked','button-obscured');
-    if (!activation.armed) {
-      activation.armed=true; activation.deadline=Date.now()+2000;
-      const current=activation;
-      const guardDown=event=>{
-        if(cancelled||activation!==current)return;
-        if(current.abandoned)current.restartTouched=true;
-        const targetMatches=event.target===info.button||info.button.contains(event.target);
-        const valid=!current.blocked&&!current.clickObserved&&Date.now()<=current.deadline&&targetMatches&&!activationBinding().error;
-        if(!valid){current.blocked=true;event.preventDefault();event.stopImmediatePropagation();}
-      };
-      const guard=event=>{
-        if(cancelled||activation!==current)return;
-        if(current.abandoned)current.restartTouched=true;
-        // A delayed UP or a manual click racing with that UP must not escape the
-        // one-shot guard. Failure/expiry stays closed until native cancel/navigation.
-        if(current.clickObserved||current.blocked||Date.now()>current.deadline){
-          if(!current.clickObserved)current.blocked=true;
-          event.preventDefault();event.stopImmediatePropagation();return;
-        }
-        const check=activationBinding();
-        if(check.error || (event.target!==info.button&&!info.button.contains(event.target))) {
-          current.blocked=true; event.preventDefault(); event.stopImmediatePropagation(); return;
-        }
-        current.clickObserved=true;
-        // Clear only our private copies. The original button still reads the DOM
-        // password and performs the school's own validation/encryption exactly once.
-        if(own){own.secret='';own.username='';}
-      };
-      const observe=event=>{
-        if(cancelled||activation!==current)return;
-        if(current.abandoned){current.restartTouched=true;event.preventDefault();event.stopImmediatePropagation();return;}
-        // Enter or another manual submission before the reserved click takes
-        // priority. Leave that manual event alone, but block the pending auto-UP.
-        if(!current.clickObserved){current.blocked=true;return;}
-        if(current.blocked||current.submitObserved||event.target!==info.form){
-          current.blocked=true;event.preventDefault();event.stopImmediatePropagation();return;
-        }
-        // The original/proxy handler may normalize a URL while encrypting. Only
-        // equivalent trusted targets survive; a changed target must not receive POST.
-        let target;try{target=context(false);}catch(_){target=null;}
-        if(!target||target.form!==info.form||target.button!==info.button||target.user!==info.user||
-            target.password!==info.password||target.captcha!==info.captcha||target.href!==info.href||
-            target.action!==info.action||target.attribute!==info.attribute||
-            (event.submitter&&event.submitter!==info.button)){
-          current.blocked=true;event.preventDefault();event.stopImmediatePropagation();return;
-        }
-        current.submitObserved=true;
-      };
-      const finish=event=>{if(current.clickObserved&&(event.target===info.button||info.button.contains(event.target))&&event.defaultPrevented)current.blocked=true;};
-      document.addEventListener('click',guard,true);
-      document.addEventListener('submit',observe,true);
-      document.addEventListener('click',finish,false);
-      for(const event of ['pointerdown','touchstart','mousedown'])document.addEventListener(event,guardDown,{capture:true,passive:false});
-      current.detach=()=>{document.removeEventListener('click',guard,true);document.removeEventListener('submit',observe,true);document.removeEventListener('click',finish,false);for(const event of ['pointerdown','touchstart','mousedown'])document.removeEventListener(event,guardDown,true);};
-    }
+    if (!activation.armed) armGuards(info, activation);
     return {...result('ready','original-button-point'),x:point.x,y:point.y,viewportWidth:width,viewportHeight:height};
   }
   function activationOutcome() {
-    if(!activation)return result('activation-observed','activation-unobserved');
+    if(!activation)return {...result('activation-observed','activation-unobserved'),reason:''};
     const code=activation.blocked?'activation-blocked':activation.submitObserved?'original-submit-observed':
       activation.clickObserved?'original-click-observed':'activation-unobserved';
-    return result('activation-observed',code);
+    // `reason` is a fixed local code. It never carries school text or field values.
+    return {...result('activation-observed',code),reason:activation.blocked?(activation.reason||''):''};
   }
   function rearmActivation() {
     // Native requests this only after a read-only school check still requires
     // authentication. Never re-arm after any click/submit or manual takeover.
-    if(cancelled||!activation||activation.clickObserved||activation.submitObserved||activation.blocked)
+    // A closed guard also stays closed, with one exception: when the reserved gesture
+    // provably missed the button, no click and no submission were ever delivered, so a
+    // single re-armed window on the same document is still a first submission.
+    if(cancelled||!activation||activation.clickObserved||activation.submitObserved)
+      return result('blocked','activation-may-have-submitted');
+    if(activation.blocked&&!(untouched(activation)&&
+        (activation.reason==='point-miss'||activation.reason==='click-off-target')))
       return result('blocked','activation-may-have-submitted');
     if(activationAttempts>=3)return result('blocked','activation-attempt-limit');
     const binding=activationBinding();if(binding.error)return binding.error;
     activation.detach?.();activation=null;submitted=false;
     return prepareActivation();
+  }
+  function schoolHandlerSubmit() {
+    // The last-resort engine for the case where the in-app touch produces no observable
+    // click at all. The proxy keeps the school's own inline handler in the DOM, so the
+    // school's validator/RSA still runs: either through the original `return
+    // checkPassLogin();` plus a standard submitter, or, when the proxy has rewritten the
+    // attribute into its vpn_rewrite_js(...) wrapper, through the button's own click.
+    // It is one-shot, never used after any observed click/submit or manual takeover, and
+    // never used when a manual submission may already be in flight.
+    if (cancelled) return result('manual', 'cancelled');
+    if (!activation || !own) return result('blocked', 'not-prepared');
+    if (activation.schoolSubmit) return result('blocked', 'school-submit-already-used');
+    if (activation.fallbackUsed || !untouched(activation)) return result('blocked', 'activation-may-have-submitted');
+    const binding = activationBinding(); if (binding.error) return binding.error;
+    const info = binding.info;
+    const attribute = info.button.getAttribute('onclick');
+    const direct = typeof attribute === 'string' && /^\s*return\s+checkPassLogin\(\s*\)\s*;?\s*$/.test(attribute);
+    // The proxy's rewrite keeps the school's own call inside its wrapper.
+    const rewritten = !direct && typeof attribute === 'string' &&
+      /checkPassLogin\(\)/.test(attribute) && /vpn_rewrite_js|vpn_eval/.test(attribute);
+    if (!direct && !rewritten) return result('blocked', 'school-handler-unavailable');
+    if (direct ? typeof info.form.requestSubmit !== 'function' : typeof info.button.click !== 'function')
+      return result('blocked', 'school-handler-unavailable');
+    // The school's handler has already validated the same structure, but the initial
+    // constraint check must not be skipped before either engine runs.
+    if (!info.form.checkValidity()) return result('blocked', 'browser-validation-rejected');
+    // Re-open exactly one synchronous window. The previous closure was a proven miss, so
+    // this is not a second submission; the guard stays armed to observe (and veto a
+    // changed target for) whatever the school's own handler is about to submit.
+    activation.detach?.();
+    activation.blocked = false; activation.clickObserved = false; activation.submitObserved = false;
+    activation.reason = 'school-submit-authorized'; activation.schoolSubmit = true; activation.fallbackUsed = true;
+    armGuards(info, activation);
+    try {
+      if (!direct) {
+        info.button.click();
+        return result('submitted', activation.submitObserved
+          ? 'school-handler-submit-observed' : 'school-handler-click-unconfirmed');
+      }
+      // The school's own handler owns validation and RSA encryption. A false return
+      // means the school itself refused, and no request may be sent. Nothing was
+      // submitted, so the document stays eligible for the conservative restart path.
+      if (window.checkPassLogin() !== true) return result('blocked', 'school-validation-rejected');
+      let after; try { after = context(); } catch (_) { after = null; }
+      // Only structural identity is re-checked: the school's handler has already
+      // replaced the password field with its encrypted value.
+      if (!after || after.form !== info.form || after.button !== info.button || after.user !== info.user ||
+          after.password !== info.password || after.captcha !== info.captcha || after.href !== info.href ||
+          after.action !== info.action || after.attribute !== info.attribute ||
+          after.user.value !== own.username) {
+        activation.blocked = true; activation.reason = 'form-changed-before-submit';
+        return result('blocked', 'form-changed-before-submit');
+      }
+      if (own) { own.secret = ''; own.username = ''; }
+      info.form.requestSubmit(info.button);
+      return result('submitted', activation.submitObserved
+        ? 'school-handler-submit-observed' : 'school-handler-submit-unconfirmed');
+    } catch (_) {
+      activation.blocked = true; activation.reason = 'submit-uncertain';
+      return result('stopped', 'submit-uncertain');
+    } finally {
+      // The click and submit events fired by requestSubmit are synchronous, so this
+      // closes the authorized window before any native input can be dispatched.
+      if (activation) activation.schoolSubmit = false;
+      if (own) { own.secret = ''; own.username = ''; }
+    }
   }
   function unsubmittedRestartState() {
     if(cancelled||!activation?.abandoned||activation.clickObserved||activation.submitObserved||activation.restartTouched)
@@ -351,7 +464,7 @@
       return result('blocked','activation-may-have-submitted');
     const binding=activationBinding();if(binding.error)return binding.error;
     if(outcome().kind!=='unknown')return result('blocked','school-feedback-present');
-    activation.abandoned=true;activation.blocked=true;activation.restartTouched=false;
+    activation.abandoned=true;activation.blocked=true;activation.reason='document-retired';activation.restartTouched=false;
     const current=activation;
     for(const event of ['input','change'])current.info.form.addEventListener(event,()=>{current.restartTouched=true;},true);
     return unsubmittedRestartState();
@@ -413,6 +526,6 @@
         initial.form.addEventListener(event, () => { observation.touched = true; }, true);
     }
   } catch (_) { /* Unknown pages remain ineligible for an automatic restart. */ }
-  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,prepareActivation,activationPoint,activationOutcome,rearmActivation,abandonUnsubmittedActivation,unsubmittedRestartState,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
+  Object.defineProperty(window,'SchoolSsoAutoLogin',{value:Object.freeze({prepare,submit,prepareActivation,activationPoint,activationOutcome,rearmActivation,schoolHandlerSubmit,abandonUnsubmittedActivation,unsubmittedRestartState,cancel,setRememberMe,outcome,armCaptchaRestart,captchaRestartState}), writable:false});
   return result('installed','sso-helper-ready');
 })();
