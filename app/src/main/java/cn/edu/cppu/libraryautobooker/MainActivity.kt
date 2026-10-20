@@ -46,8 +46,9 @@ import cn.edu.cppu.libraryautobooker.booking.BookingService
 import cn.edu.cppu.libraryautobooker.data.BookingConfig
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
-import cn.edu.cppu.libraryautobooker.data.SeatCatalog
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
+import cn.edu.cppu.libraryautobooker.data.RoomCatalogStore
+import cn.edu.cppu.libraryautobooker.data.RoomProfile
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -165,6 +166,7 @@ class MainActivity : ComponentActivity() {
                     refreshVersion++
                 }
                 var config by remember { mutableStateOf(store.load()) }
+                var rooms by remember { mutableStateOf(RoomCatalogStore(this@MainActivity).load()) }
                 var status by remember { mutableStateOf("尚未启用") }
                 var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
                 var savedEnabled by remember { mutableStateOf(config.enabled) }
@@ -188,10 +190,12 @@ class MainActivity : ComponentActivity() {
                     else runtime.prefs.getString("test_detail", "尚未进行后台唤醒测试").orEmpty()
                 }
                 val arrange: (BookingConfig) -> Unit = { requested ->
-                    runCatching { scheduler.schedule(requested) }.onSuccess { next ->
-                        config = store.load()
-                        status = "已安排 ${config.pendingTimes().size} 个抢座时间；下一次：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))}"
-                    }.onFailure { status = "安排失败，请检查精确闹钟权限；详情见任务记录" }
+                    val error = requested.validationError()
+                    if (error != null) status = error
+                    else runCatching { scheduler.schedule(requested) }.onSuccess { next ->
+                            config = store.load()
+                            status = "已安排 ${config.pendingTimes().size} 个抢座时间；下一次：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))}"
+                        }.onFailure { status = "安排失败，请检查精确闹钟权限；详情见任务记录" }
                 }
                 val exactPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
                     val requested = pendingSchedule
@@ -206,6 +210,27 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission()
                 ) { refreshVersion++ }
                 var seatInput by remember { mutableStateOf(config.seatNumbers.joinToString("\n")) }
+                val selectRoom: (RoomProfile) -> Unit = { room ->
+                    if (room != config.room) {
+                        val cancelledTimes = store.load().pendingTimes()
+                        scheduler.cancel()
+                        pendingSchedule = null
+                        config = resetRoomDraft(config, room)
+                        seatInput = ""
+                        store.save(config)
+                        cancelledTimes.forEach { at ->
+                            runtime.record("CANCELLED", "阅览室已更改，原定时任务已取消，请重新确认座位和时段",
+                                RuntimeStore.scheduledAction(at))
+                        }
+                        status = "已选择${room.name}；请重新填写座位、选择时间并保存任务"
+                    }
+                }
+                val roomBrowser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+                    rooms = RoomCatalogStore(this@MainActivity).load()
+                    val id = if (result.resultCode == RESULT_OK) result.data?.getStringExtra("room_id") ?: config.room.id
+                        else config.room.id
+                    rooms.firstOrNull { it.id == id }?.let(selectRoom)
+                }
 
                 // Keep draft reservation settings alive while an expired session is restored.
                 if (loginEntryVisible) {
@@ -220,7 +245,7 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text("图书馆自动预约", style = MaterialTheme.typography.headlineMedium)
-                    Text("过刊阅览室 · 直连优先 / 学校 WebVPN 备用", style = MaterialTheme.typography.bodyMedium)
+                    Text("${config.room.groupName} · ${config.room.name} · 直连优先 / 学校 WebVPN 备用", style = MaterialTheme.typography.bodyMedium)
                     LoginStatusCard(rememberLoginStatuses(), hasActions = true, onCheck = {
                         SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
                         refreshVpnStatus()
@@ -285,9 +310,13 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("准备", style = MaterialTheme.typography.titleMedium)
-                            Text("1. 在上方登录区域检查直连或 WebVPN 会话\n2. 每行输入一个座位号，越靠前优先级越高\n3. 设置放号时间，先演练一次")
+                            Text("1. 在上方登录区域检查直连或 WebVPN 会话\n2. 同步并选择楼层、阅览室\n3. 每行输入该房间的一个座位号，越靠前优先级越高\n4. 设置放号时间和使用时间，先演练一次")
                         }
                     }
+
+                    RoomSettingsCard(config.room, rooms, onSelect = selectRoom, onSync = {
+                        roomBrowser.launch(Intent(this@MainActivity, RoomBrowserActivity::class.java))
+                    })
 
                     ReleaseTimesField(config.times()) { times ->
                         config = config.copy(releaseTimes = times, releaseHour = times.first() / 60,
@@ -297,12 +326,14 @@ class MainActivity : ComponentActivity() {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("按优先顺序填写座位号", style = MaterialTheme.typography.titleMedium)
                             Text("每行一个，第一行最优先。放号时按顺序尝试，最多 10 个。")
-                            Text("过刊阅览室共 94 个位置：G001–G023 每桌 A/B/C/D，以及 YXS1、YXS2。")
+                            Text(if (config.room.id == RoomProfile.DEFAULT.id)
+                                "过刊阅览室共 94 个位置：G001–G023 每桌 A/B/C/D，以及 YXS1、YXS2。"
+                                else "请输入${config.room.name}座位图上显示的完整编号。运行时会与该房间的真实座位核对，不会套用过刊阅览室编号。")
                             OutlinedTextField(
                                 value = seatInput,
                                 onValueChange = { seatInput = it },
                                 label = { Text("座位号") },
-                                placeholder = { Text("G023D\nG015A\nYXS1") },
+                                placeholder = { Text(if (config.room.id == RoomProfile.DEFAULT.id) "G023D\nG015A\nYXS1" else "每行填写一个完整座位号") },
                                 minLines = 4,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -332,37 +363,55 @@ class MainActivity : ComponentActivity() {
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("选择使用时段", style = MaterialTheme.typography.titleMedium)
-                            Text("选择 1–4 个连续时段；下列时间为便于识别的约数，实际秒数以学校网页为准。")
-                            slotLabels.forEachIndexed { index, label ->
-                                val selected = index in config.selectedSlots
-                                val onClick = {
-                                    val next = (if (selected) config.selectedSlots - index else config.selectedSlots + index)
-                                        .distinct().sorted()
-                                    if (next.size > 4 || (next.isNotEmpty() && next.last() - next.first() + 1 != next.size)) {
-                                        status = "每笔只能选择 1–4 个连续时段；可先取消边缘时段再调整"
+                            Text("选择使用时间 · ${config.room.name}", style = MaterialTheme.typography.titleMedium)
+                            if (config.room.timeMode == "free") {
+                                Text("该阅览室按起止时间预约，请以 24 小时制填写 HH:mm；实际开放日期和时长限制以学校系统为准。")
+                                if (config.room.minMinutes > 0) Text("最短 ${config.room.minMinutes} 分钟")
+                                if (config.room.maxMinutes > 0) Text("最长 ${config.room.maxMinutes} 分钟")
+                                if (config.room.stepMinutes > 0) Text("时间步长 ${config.room.stepMinutes} 分钟")
+                                OutlinedTextField(value = config.startTime,
+                                    onValueChange = { config = config.copy(startTime = it, appendLastThree = false) },
+                                    label = { Text("开始时间（HH:mm）") }, placeholder = { Text("08:00") },
+                                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                                OutlinedTextField(value = config.endTime,
+                                    onValueChange = { config = config.copy(endTime = it, appendLastThree = false) },
+                                    label = { Text("结束时间（HH:mm）") }, placeholder = { Text("12:00") },
+                                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                            } else {
+                                Text("选择 1–4 个连续时段；仅显示当前阅览室同步的时段，具体可预约状态会在运行时再次核对。")
+                                if (config.room.slots.isEmpty()) {
+                                    Text("尚未获取该阅览室的固定时段，请先从学校同步阅览室。", color = MaterialTheme.colorScheme.error)
+                                }
+                                config.room.slots.forEachIndexed { index, slot ->
+                                    val selected = index in config.selectedSlots
+                                    val onClick = {
+                                        val next = (if (selected) config.selectedSlots - index else config.selectedSlots + index)
+                                            .distinct().sorted()
+                                        if (next.size > 4 || (next.isNotEmpty() && next.last() - next.first() + 1 != next.size)) {
+                                            status = "每笔只能选择 1–4 个连续时段；可先取消边缘时段再调整"
+                                        } else {
+                                            config = config.copy(selectedSlots = next,
+                                                appendLastThree = config.appendLastThree && config.room.appendCompatible && next == listOf(0, 1, 2, 3))
+                                        }
+                                    }
+                                    if (selected) {
+                                        Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                                            Text("✓ ${index + 1}. ${slot.label}")
+                                        }
                                     } else {
-                                        config = config.copy(selectedSlots = next,
-                                            appendLastThree = config.appendLastThree && next == listOf(0, 1, 2, 3))
+                                        OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                                            Text("${index + 1}. ${slot.label}")
+                                        }
                                     }
                                 }
-                                if (selected) {
-                                    Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-                                        Text("✓ ${index + 1}. $label")
-                                    }
-                                } else {
-                                    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-                                        Text("${index + 1}. $label")
-                                    }
+                                if (config.room.appendCompatible && config.selectedSlots == listOf(0, 1, 2, 3)) {
+                                    SettingSwitch(
+                                        title = "同一座位追加后三个时段",
+                                        detail = "仅适用于已核对七个时段的过刊阅览室。前四段成功后追加第 5–7 段；后三段失败时保留前四段。",
+                                        checked = config.appendLastThree,
+                                        onChecked = { config = config.copy(appendLastThree = it) }
+                                    )
                                 }
-                            }
-                            if (config.selectedSlots == listOf(0, 1, 2, 3)) {
-                                SettingSwitch(
-                                    title = "同一座位追加后三个时段",
-                                    detail = "前四段成功后，自动预约该座位的第 5–7 段。分两笔提交；后三段失败时保留前四段。",
-                                    checked = config.appendLastThree,
-                                    onChecked = { config = config.copy(appendLastThree = it) }
-                                )
                             }
                         }
                     }
@@ -392,23 +441,16 @@ class MainActivity : ComponentActivity() {
                     Button(
                         onClick = {
                             val seatNumbers = parseSeatNumbers(seatInput)
-                            val seatError = SeatCatalog.error(seatNumbers)
-                            if (config.enabled && seatError != null) {
-                                status = seatError
+                            val candidate = config.copy(seatNumbers = seatNumbers)
+                            val error = candidate.validationError()
+                            if (config.enabled && error != null) {
+                                status = error
                                 return@Button
                             }
-                            config = config.copy(seatNumbers = seatNumbers)
+                            config = candidate
                             if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             if (config.enabled) {
-                                if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
-                                    config = config.withPending(emptyList())
-                                    store.save(config)
-                                    status = "请输入 1 到 10 个座位号，每行一个"
-                                } else if (config.selectedSlots.isEmpty()) {
-                                    config = config.withPending(emptyList())
-                                    store.save(config)
-                                    status = "请选择 1–4 个连续使用时段"
-                                } else if (!scheduler.canScheduleExact()) {
+                                if (!scheduler.canScheduleExact()) {
                                     pendingSchedule = config
                                     exactPermission.launch(scheduler.exactAlarmSettingsIntent())
                                     status = "请允许“闹钟和提醒”；返回应用后会继续安排任务"
@@ -429,20 +471,13 @@ class MainActivity : ComponentActivity() {
                     OutlinedButton(
                         onClick = {
                             val seatNumbers = parseSeatNumbers(seatInput)
-                            val seatError = SeatCatalog.error(seatNumbers)
-                            if (seatError != null) {
-                                status = seatError
+                            val candidate = config.copy(seatNumbers = seatNumbers)
+                            val error = candidate.validationError()
+                            if (error != null) {
+                                status = error
                                 return@OutlinedButton
                             }
-                            if (seatNumbers.isEmpty() || seatNumbers.size > 10) {
-                                status = "请输入 1 到 10 个座位号，每行一个"
-                                return@OutlinedButton
-                            }
-                            if (config.selectedSlots.isEmpty()) {
-                                status = "请选择 1–4 个连续使用时段"
-                                return@OutlinedButton
-                            }
-                            config = config.copy(seatNumbers = seatNumbers)
+                            config = candidate
                             store.save(config)
                             if (Build.VERSION.SDK_INT >= 33) {
                                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -478,11 +513,6 @@ private fun parseSeatNumbers(input: String): List<String> = input.lines()
     .map { it.trim().uppercase() }
     .filter { it.isNotEmpty() }
     .distinct()
-
-private val slotLabels = listOf(
-    "08:10–10:00", "10:01–11:29", "11:31–14:29", "14:31–16:30",
-    "16:31–18:00", "18:01–19:29", "19:31–22:01"
-)
 
 @androidx.compose.runtime.Composable
 private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChecked: (Boolean) -> Unit) {

@@ -27,7 +27,10 @@ class ConfigStore(context: Context) {
         releaseTimes = readLongs("release_times").filter { it in 0..1439 }.map { it.toInt() },
         scheduledTimes = readLongs("scheduled_times").filter { it > 0 },
         waitForRelease = prefs.getBoolean("wait_for_release", false),
-        webVpnBackup = prefs.getBoolean("webvpn_backup", true)
+        webVpnBackup = prefs.getBoolean("webvpn_backup", true),
+        room = if (!prefs.contains("room_profile")) RoomProfile.DEFAULT else runCatching {
+            RoomProfile.fromJson(JSONObject(prefs.getString("room_profile", "")!!))
+        }.getOrNull() ?: RoomProfile("", "未识别的阅览室", "", "未知楼层", "unknown")
     )
 
     fun save(config: BookingConfig) {
@@ -36,6 +39,7 @@ class ConfigStore(context: Context) {
             .putBoolean("dry_run", config.dryRun)
             .putBoolean("wait_for_release", config.waitForRelease)
             .putBoolean("webvpn_backup", config.webVpnBackup)
+            .putString("room_profile", config.room.toJson().toString())
             .putBoolean("reserve_tomorrow", config.reserveTomorrow)
             .putInt("release_hour", config.releaseHour)
             .putInt("release_minute", config.releaseMinute)
@@ -92,9 +96,9 @@ class ConfigStore(context: Context) {
 
     private fun readSlots(): List<Int> = try {
         val array = JSONArray(prefs.getString("selected_slots", "[]"))
-        (0 until array.length()).map { array.getInt(it) }.filter { it in 0..6 }.distinct().sorted()
+        require(array.length() <= 48)
+        (0 until array.length()).map { array.getInt(it) }
     } catch (_: Exception) {
-        emptyList()
+        listOf(-1) // Retain an invalid marker; never silently change the user's requested slots.
     }
 }
-

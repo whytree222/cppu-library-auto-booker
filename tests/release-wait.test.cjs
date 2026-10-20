@@ -36,7 +36,7 @@ function fixture(options = {}) {
   const start = now;
   const date = new w.Date(); date.setDate(date.getDate() + 1);
   const targetDate = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-  w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify({targetDate, reserveTomorrow: true}))
+  w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify({targetDate, reserveTomorrow: true, room: options.room}))
     .replace('__WAIT_MS__', String(options.duration ?? 600000)));
   function advance(ms) {
     const end = now + ms;
@@ -126,4 +126,19 @@ test('slow responses are serialized, not overlapping', () => {
 test('remaining deadline is honored when re-entering wait after definite refusal', () => {
   const f = fixture({roomClosed: 60000, duration: 2000}); f.advance(20000);
   assert.equal(f.requests.length, 2); assert.equal(f.reports.at(-1).state, 'error'); f.dom.window.close();
+});
+
+test('both read-only release checks use the selected room rather than room 26', () => {
+  const f = fixture({room: {id: '34'}, openAfter: 1000}); f.advance(5000);
+  assert.equal(f.reports.at(-1).state, 'opened');
+  assert.ok(f.requests.filter(r => r.url.includes('checktimecanbesk')).every(r => r.data.id === 34));
+  assert.ok(f.requests.filter(r => r.url.includes('getYY')).every(r => r.data.roomId === 34));
+  f.dom.window.close();
+});
+
+test('malformed selected room does not make an eligibility request', () => {
+  const f = fixture({room: {id: '../26'}}); f.advance(5000);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.reports.at(-1).state, 'error');
+  f.dom.window.close();
 });

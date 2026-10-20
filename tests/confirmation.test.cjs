@@ -11,21 +11,22 @@ const seatCatalog = Array.from({ length: 23 }, (_, i) => ['A', 'B', 'C', 'D']
 // Reproduce the supplied layoutBespeak/commitbesk boundary: clicking 预约
 // only opens Alertify; the simulated request happens exclusively on 确认.
 function fixture(options = {}) {
+  const room = options.room;
+  const ids = options.mapNumbers || ['G015A', 'G016A'];
   const dom = new JSDOM(`<!doctype html><body>
-    <input id="roomno" value="26"><input id="isuseday" value="1">
+    <input id="roomno" value="${options.roomNo || room?.id || '26'}"><input id="isuseday" value="1">
     <input id="begintime" value="08:10:01"><input id="endtime" value="10:00:00">
     <input id="times"><input id="tableNo"><ul id="selected-seats"></ul>
     ${options.realMap ? seatMap : `<div id="seat-map">
-    <div id="G015A" class="seatCharts-seat available" aria-checked="false">G015A</div>
-    <div id="G016A" class="seatCharts-seat available" aria-checked="false">G016A</div></div>`}
+    ${ids.map(id => `<div id="${id}" class="seatCharts-seat available" aria-checked="false">${id}</div>`).join('')}</div>`}
     <button id="book" onclick="layoutBespeak()">预约</button>
     <div id="confirmation" class="alertify ajs-hidden"><div class="ajs-dialog">
       <div class="ajs-content"></div><div class="ajs-footer">
       <button class="ui positive button">确认</button><button>取消</button></div></div></div>
     <div id="result" class="alertify ajs-hidden"><div class="ajs-dialog">
       <div class="ajs-content"></div><div class="ajs-footer"><button>确认</button></div></div></div>
-    </body>`, { url: options.proxy ? 'https://webvpn.cppu.edu.cn/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b/multireadingroomtablelist'
-      : 'http://mlib.cppu.edu.cn/multireadingroomtablelist', runScripts: 'outside-only' });
+    </body>`, { url: (options.proxy ? 'https://webvpn.cppu.edu.cn/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b'
+      : 'http://mlib.cppu.edu.cn') + (options.path || (room?.timeMode === 'free' ? '/readingroomtablelist' : '/multireadingroomtablelist')), runScripts: 'outside-only' });
   const w = dom.window;
   const d = w.document;
   const messages = [];
@@ -69,19 +70,37 @@ function fixture(options = {}) {
     d.getElementById('times').value = options.lastThree
       ? '16:31:30-18:00:30,18:01:30-19:29:30,19:31:00-22:01:00'
       : options.firstFour
-        ? '08:10:01-10:00:59,10:01:10-11:29:00,11:31:00-14:29:00,14:31:00-16:30:30'
-        : '08:10:01-10:00:59,10:01:10-11:29:00';
+        ? '08:10:01-10:00:00,10:01:00-11:29:00,11:31:00-14:29:00,14:31:00-16:30:30'
+        : '08:10:01-10:00:00,10:01:00-11:29:00';
   }
+  if (room) {
+    if (room.timeMode === 'free') {
+      d.getElementById('begintime').value = `${options.startTime || '09:00'}:00`;
+      d.getElementById('endtime').value = `${options.endTime || '11:00'}:59`;
+    } else {
+      d.getElementById('begintime').value = '';
+      d.getElementById('times').value = (options.selectedSlots || [0]).map(index =>
+        `${room.slots[index].begin}-${room.slots[index].end}`).join(',');
+    }
+  }
+  if (options.actualBegin !== undefined) d.getElementById('begintime').value = options.actualBegin;
+  if (options.actualEnd !== undefined) d.getElementById('endtime').value = options.actualEnd;
+  if (options.actualTimes !== undefined) d.getElementById('times').value = options.actualTimes;
+  if (options.actualOffset !== undefined) d.getElementById('isuseday').value = options.actualOffset;
+  if (options.missingIdentity) d.getElementById(options.missingIdentity).remove();
+  if (options.duplicateIdentity) d.getElementById(options.duplicateIdentity).after(d.getElementById(options.duplicateIdentity).cloneNode(true));
   w.layoutBespeak = () => {
     clicks++;
     if (options.noConfirmation) return;
     const open = () => {
       const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
       const day = reserveTomorrow ? `${tomorrow.getFullYear()}-${tomorrow.getMonth() + 1}-${tomorrow.getDate()}` : '今日';
-      const time = (options.multi || options.lastThree || options.firstFour) ? d.getElementById('times').value : '08:10:01-10:00:00';
+      const time = d.getElementById('begintime')?.value
+        ? `${d.getElementById('begintime').value}-${d.getElementById('endtime').value}` : d.getElementById('times').value;
       const content = d.querySelector('#confirmation .ajs-content');
       content.innerHTML = `确认要预约使用时间为：<span class="badge">${options.wrongTime ? '19:31:00-22:01:00' : time}</span><br>使用日期为：<span class="badge">${options.wrongDate ? '1999-1-1' : day}</span><br>座位号码：<span class="badge">${options.wrongSeat ? 'G016A' : d.getElementById('tableNo').value}</span><br>的预约记录吗?`;
       d.getElementById('confirmation').classList.remove('ajs-hidden');
+      if (options.changeRoomAtConfirmation) d.getElementById('roomno').value = '999';
     };
     w.setTimeout(open, options.delay || 0);
   };
@@ -98,7 +117,10 @@ function fixture(options = {}) {
   d.querySelector('#result button').onclick = () => d.getElementById('result').classList.add('ajs-hidden');
   const config = { seatNumbers: options.conflict ? ['G015A', 'G016A'] : ['G015A'],
     selectedSlots: options.lastThree ? [4, 5, 6] : options.firstFour ? [0, 1, 2, 3] : options.multi ? [0, 1] : [0],
-    reserveTomorrow, dryRun: !!options.dryRun, waitForRelease: !!options.wait, targetDate: options.targetDate, seatCatalog };
+    reserveTomorrow, dryRun: !!options.dryRun, waitForRelease: !!options.wait, targetDate: options.targetDate,
+    seatCatalog: room && room.id !== '26' ? [] : seatCatalog, room,
+    startTime: options.startTime || '09:00', endTime: options.endTime || '11:00' };
+  if (options.selectedSlots) config.selectedSlots = options.selectedSlots;
   if (options.numbers) config.seatNumbers = options.numbers;
   if (options.unavailable) d.getElementById('G015A').className = 'seatCharts-seat unavailable';
   if (options.duplicate) d.getElementById('G015A').after(d.getElementById('G015A').cloneNode(true));
@@ -119,7 +141,8 @@ function fixture(options = {}) {
     now = target;
     await Promise.resolve();
   }
-  return { messages, advance, requests: () => requests, submittedNumbers, clicks: () => clicks, close: () => w.close() };
+  return { messages, advance, requests: () => requests, submittedNumbers, clicks: () => clicks,
+    changeRoom: value => { d.getElementById('roomno').value = value; }, close: () => w.close() };
 }
 
 for (const [name, options] of [
@@ -274,3 +297,62 @@ for (const [message, reason] of [
   try { await f.advance(5000); assert.equal(f.requests(), 1); assert.match(f.messages.at(-1).detail, reason); }
   finally { f.close(); }
 });
+
+const otherRoom = { id: '34', name: '文科样本区', groupId: '4', groupName: '四楼', timeMode: 'fixed', slots: [
+  { begin: '07:30:00', end: '09:45:00' }, { begin: '10:00:00', end: '12:00:00' },
+  { begin: '13:00:00', end: '17:00:00' }, { begin: '18:00:00', end: '21:30:00' }
+] };
+const freeRoom = { ...otherRoom, id: '35', name: '研修阅览区', timeMode: 'free', slots: [],
+  minMinutes: 30, maxMinutes: 180, stepMinutes: 15 };
+for (const room of [otherRoom, freeRoom]) for (const today of [true, false]) {
+  test(`${room.timeMode} room uses its own identity and exact live seat: ${today ? 'today' : 'tomorrow'}`, async () => {
+    const f = fixture({ room, today, proxy: true, mapNumbers: ['文A_001', '4-023.B'], numbers: ['4-023.B'],
+      selectedSlots: [1, 2], nativeBridge: true });
+    try {
+      await f.advance(5000);
+      assert.equal(f.requests(), 1, JSON.stringify(f.messages));
+      assert.deepEqual(f.submittedNumbers, ['4-023.B']);
+      assert.equal(f.messages.at(-1).seat, '4-023.B');
+    } finally { f.close(); }
+  });
+}
+for (const options of [{ roomNo: '26' }, { actualOffset: '3' }, { missingIdentity: 'roomno' },
+  { missingIdentity: 'begintime' }, { missingIdentity: 'times' }, { duplicateIdentity: 'roomno' },
+  { actualTimes: '08:10:01-10:00:00' }, { path: '/selectreadingroom' }])
+  test(`even dry run refuses wrong or incomplete room/date/time identity: ${JSON.stringify(options)}`, async () => {
+    const f = fixture({ room: otherRoom, dryRun: true, mapNumbers: ['A001'], numbers: ['A001'], ...options });
+    try {
+      await f.advance(5000);
+      assert.equal(f.requests(), 0);
+      assert.equal(f.clicks(), 0);
+      assert.equal(f.messages.at(-1).state, 'error');
+    } finally { f.close(); }
+  });
+test('free single-range page does not require the unused multi-range times field', async () => {
+  const f = fixture({ room: freeRoom, mapNumbers: ['A001'], numbers: ['A001'], missingIdentity: 'times' });
+  try { await f.advance(5000); assert.equal(f.requests(), 1); assert.equal(f.messages.at(-1).state, 'success'); }
+  finally { f.close(); }
+});
+test('cross-room change during delayed confirmation never sends a reservation', async () => {
+  const f = fixture({ room: otherRoom, mapNumbers: ['A001'], numbers: ['A001'], changeRoomAtConfirmation: true });
+  try { await f.advance(5000); assert.equal(f.requests(), 0); assert.match(f.messages.at(-1).detail, /与任务不符/); }
+  finally { f.close(); }
+});
+test('cross-room change after seat click is rejected before opening confirmation', async () => {
+  const f = fixture({ room: otherRoom, mapNumbers: ['A001'], numbers: ['A001'] });
+  try { f.changeRoom('99'); await f.advance(5000); assert.equal(f.requests(), 0); assert.equal(f.clicks(), 0); }
+  finally { f.close(); }
+});
+for (const options of [{ actualEnd: '11:00:00' }, { actualBegin: '09:00:99' }, { actualBegin: '09:15:00' },
+  { startTime: '09:01' }, { endTime: '14:00' }])
+  test(`free room rejects time mismatch, invalid seconds or duration: ${JSON.stringify(options)}`, async () => {
+    const f = fixture({ room: freeRoom, mapNumbers: ['A001'], numbers: ['A001'], ...options });
+    try { await f.advance(5000); assert.equal(f.requests(), 0); assert.equal(f.clicks(), 0); assert.equal(f.messages.at(-1).state, 'error'); }
+    finally { f.close(); }
+  });
+for (const number of ['A 001', '<script>', '_001', 'A'.repeat(65)])
+  test(`generic seat identifiers remain conservative: ${number}`, async () => {
+    const f = fixture({ room: otherRoom, numbers: [number] });
+    try { await f.advance(5000); assert.equal(f.requests(), 0); assert.match(f.messages.at(-1).detail, /格式错误/); }
+    finally { f.close(); }
+  });

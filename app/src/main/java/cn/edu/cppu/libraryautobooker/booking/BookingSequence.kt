@@ -6,7 +6,7 @@ import java.time.LocalDate
 /** One confirmed booking may unlock one more booking, always for the same seat/date. */
 class BookingSequence(initial: BookingConfig, today: LocalDate = LocalDate.now()) {
     val targetDate: LocalDate = today.plusDays(if (initial.reserveTomorrow) 1 else 0)
-    val hasSecondBatch = initial.appendLastThree && initial.selectedSlots == listOf(0, 1, 2, 3)
+    val hasSecondBatch = initial.room.appendCompatible && initial.appendLastThree && initial.selectedSlots == listOf(0, 1, 2, 3)
     var config: BookingConfig = initial
         private set
     var batch: Int = 1
@@ -46,7 +46,7 @@ class BookingSequence(initial: BookingConfig, today: LocalDate = LocalDate.now()
     fun progress(detail: String): String = when {
         batch == 2 -> "${firstSeat} 前四段已成功；后三段：$detail"
         hasSecondBatch -> "前四段：$detail"
-        else -> detail
+        else -> "${config.room.groupName} · ${config.room.name}：$detail"
     }
 
     fun configForDate(today: LocalDate): BookingConfig? = when (targetDate) {

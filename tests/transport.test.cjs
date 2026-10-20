@@ -28,6 +28,8 @@ test('proxy paths, forms and original absolute URLs stay in the same library pro
   assert.equal(t.url('/readingRoom/getYY?useday=2026-10-14'),origin+prefix+'/readingRoom/getYY?useday=2026-10-14');
   assert.equal(t.url('http://mlib.cppu.edu.cn/isLogin'),origin+prefix+'/isLogin');
   assert.equal(t.url(origin+prefix+'/isLogin'),origin+prefix+'/isLogin');
+  assert.equal(t.url('/readingroomtablelist?roomno=42'),origin+prefix+'/readingroomtablelist?roomno=42');
+  assert.equal(t.url('/selectreadingroom?groupid=4'),origin+prefix+'/selectreadingroom?groupid=4');
   assert.equal(f.w.document.querySelector('form').action,origin+prefix+'/multireadingroomtablelist');
   assert.equal(t.url('/wrdvpn/api'),'/wrdvpn/api');
   f.dom.window.close();
@@ -46,4 +48,3 @@ test('read-only probe does not mark submission and external errors cannot trigge
   const y=new f.w.XMLHttpRequest();y.open('GET','https://external.example/image');y.send();y.handlers.error();
   assert.equal(f.events.length,0); f.dom.window.close();
 });
-

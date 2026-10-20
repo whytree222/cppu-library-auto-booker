@@ -6,7 +6,11 @@ object SeatCatalog {
         ('A'..'D').map { letter -> "G${table.toString().padStart(3, '0')}$letter" }
     } + listOf("YXS1", "YXS2")
 
-    fun error(numbers: List<String>): String? {
+    fun error(numbers: List<String>, room: RoomProfile = RoomProfile.DEFAULT): String? {
+        if (room.id != "26") {
+            val invalid = numbers.filterNot { Regex("^[A-Z0-9\\u4e00-\\u9fff][A-Z0-9\\u4e00-\\u9fff_.-]{0,63}$").matches(it) }
+            return if (invalid.isEmpty()) null else "座位号格式错误：${invalid.joinToString("、")}；请填写完整编号，不含空格或特殊符号"
+        }
         val invalid = numbers.filterNot { Regex("^(G\\d{3}[A-Z]|YXS\\d+)$").matches(it) }
         if (invalid.isNotEmpty()) return "座位号格式错误：${invalid.joinToString("、")}；例如 G023D、YXS1，每行一个"
         val unknown = numbers.filterNot { it in this.numbers }
@@ -14,4 +18,3 @@ object SeatCatalog {
         return null
     }
 }
-

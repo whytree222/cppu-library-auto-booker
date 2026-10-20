@@ -32,6 +32,7 @@ class BookingAlarmReceiver : BroadcastReceiver() {
             Intent(context, BookingService::class.java).apply {
                 action = BookingService.ACTION_SCHEDULED
                 putExtra("expected_at", expected)
+                putExtra("booking_fingerprint", config.reservationFingerprint())
             }
             )
         } catch (error: RuntimeException) {

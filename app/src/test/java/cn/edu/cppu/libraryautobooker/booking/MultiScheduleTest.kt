@@ -54,7 +54,9 @@ class MultiScheduleTest {
         ConfigStore(app).save(BookingConfig().withPending(listOf(first, second)))
         BookingAlarmReceiver().onReceive(app, Intent().putExtra("expected_at", first))
         assertEquals(listOf(second), ConfigStore(app).load().pendingTimes())
-        assertEquals(first, Shadows.shadowOf(app).nextStartedService.getLongExtra("expected_at", 0))
+        val service = Shadows.shadowOf(app).nextStartedService
+        assertEquals(first, service.getLongExtra("expected_at", 0))
+        assertEquals(ConfigStore(app).load().reservationFingerprint(), service.getStringExtra("booking_fingerprint"))
     }
 
     @Test fun bootDiscardsOnlyExpiredTimes() {

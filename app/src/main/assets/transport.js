@@ -14,7 +14,7 @@
     if (u.origin !== origin) return raw;
     if (u.pathname.startsWith(prefix + '/')) return u.href;
     // Only library endpoints, not the VPN's own authentication/control resources.
-    if (/^\/(?:readingroom\/|readingRoom\/|isLogin(?:$|\/)|login(?:$|\/)|selectreadingroom(?:$|\/)|multireadingroomtablelist(?:$|\/)|checkIsBesk(?:$|\/))/.test(u.pathname))
+    if (/^\/(?:readingroom\/|readingRoom\/|isLogin(?:$|\/)|login(?:$|\/)|selectreadingroom(?:$|\/)|(?:multi)?readingroomtablelist(?:$|\/)|checkIsBesk(?:$|\/))/.test(u.pathname))
       return origin + prefix + u.pathname + u.search + u.hash;
     return raw;
   };
@@ -50,4 +50,3 @@
   forms();
   new MutationObserver(forms).observe(document.documentElement, {childList:true, subtree:true, attributes:true, attributeFilter:['action']});
 })();
-

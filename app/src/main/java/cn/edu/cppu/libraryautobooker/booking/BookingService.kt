@@ -78,7 +78,20 @@ class BookingService : Service() {
             return START_NOT_STICKY
         }
         val config = ConfigStore(this).load()
+        if (intent?.action == ACTION_SCHEDULED && intent.getStringExtra("booking_fingerprint") != config.reservationFingerprint()) {
+            val expected = intent.getLongExtra("expected_at", 0L)
+            RuntimeStore(this).record("CANCELLED", "闹钟触发后阅览室、座位或时间设置已变化；旧任务已停止，未进入网页预约",
+                RuntimeStore.scheduledAction(expected))
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (!config.enabled && intent?.action !in setOf(ACTION_RUN_ONCE, ACTION_SCHEDULED)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        config.validationError()?.let { error ->
+            RuntimeStore(this).record("FAILED", "任务参数未通过检查：$error；未进入网页预约")
+            showResult(error)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -194,11 +207,11 @@ class BookingService : Service() {
                         recoveredLogin = true
                         AutoLogin.login(this@BookingService) { valid, detail ->
                             if (terminal || generation != currentGeneration) return@login
-                            if (valid) view.loadUrl(route.url("/selectreadingroom")) else fail(detail)
+                            if (valid) view.loadUrl(route.url(config.room.entryPath)) else fail(detail)
                         }
                         return
                     }
-                    if (path == "/selectreadingroom" || path == "/multireadingroomtablelist")
+                    if (path == "/selectreadingroom" || path in setOf("/multireadingroomtablelist", "/readingroomtablelist"))
                         view.evaluateJavascript(AutomationScript.transport(this@BookingService, route), null)
                     if (path == "/selectreadingroom" && !automationStarted) {
                         val asset = if (config.waitForRelease) "release-wait.js" else "selection.js"
@@ -207,7 +220,7 @@ class BookingService : Service() {
                         view.evaluateJavascript(AutomationScript.build(template, config, run.targetDate.toString()), null)
                         return
                     }
-                    if (path != "/multireadingroomtablelist") {
+                    if (path !in setOf("/multireadingroomtablelist", "/readingroomtablelist")) {
                         fail("未进入预约座位图，无法确认本笔预约结果")
                         return
                     }
@@ -245,7 +258,7 @@ class BookingService : Service() {
                 View.MeasureSpec.makeMeasureSpec(metrics.heightPixels, View.MeasureSpec.EXACTLY)
             )
             layout(0, 0, metrics.widthPixels, metrics.heightPixels)
-            loadUrl(route.url("/selectreadingroom"))
+            loadUrl(route.url(config.room.entryPath))
         }
         main.postDelayed({
             if (!terminal && generation == currentGeneration && !config.waitForRelease) fail("本笔任务超时，未确认预约结果")
@@ -290,8 +303,10 @@ class BookingService : Service() {
     private fun complete(detail: String, state: String = "DONE") {
         terminal = true
         releaseLoginCheck()
-        record(state, detail)
-        showResult(detail)
+        val room = sequence?.config?.room
+        val identified = if (room != null) "${room.groupName} · ${room.name}：$detail" else detail
+        record(state, identified)
+        showResult(identified)
         stopSelf()
     }
 

@@ -2,6 +2,7 @@
   if (window.__libraryReleaseWaitRunning) return;
   window.__libraryReleaseWaitRunning = true;
   const config = __BOOKING_CONFIG__;
+  const roomId = String(config.room?.id ?? '26');
   const duration = __WAIT_MS__;
   const started = Date.now();
   const deadline = started + Math.min(600000, Math.max(0, duration));
@@ -16,6 +17,7 @@
     finished = true;
     report(state, detail);
   };
+  if (!/^\d+$/.test(roomId)) return finish('error', '阅览室编号无效；未开始开放检查');
   const day = offset => {
     const date = new Date(); date.setDate(date.getDate() + offset);
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -57,14 +59,14 @@
         report('progress', `学校明确提示尚未开放；已检查 ${count} 次，剩余 ${Math.ceil((deadline - Date.now()) / 1000)} 秒。${String(message || '').replace(/<[^>]*>/g, '').slice(0, 120)}`);
       setTimeout(tick, Math.max(0, 1000 - (Date.now() - roundAt)));
     };
-    request('/readingroom/checktimecanbesk', 'POST', { id: 26 }, result => {
+    request('/readingroom/checktimecanbesk', 'POST', { id: Number(roomId) }, result => {
       if (!result || typeof result.ReturnValue !== 'number')
         return finish('error', '开放检查返回格式异常；未提交预约');
       if (result.ReturnValue !== 0) {
         if (closed(result.Msg)) return again(result.Msg);
         return finish('error', `学校拒绝继续预约，已停止等待：${String(result.Msg || '未说明原因').replace(/<[^>]*>/g, '').slice(0, 120)}`);
       }
-      request('/readingRoom/getYY', 'GET', { useday: target, roomId: 26 }, dateResult => {
+      request('/readingRoom/getYY', 'GET', { useday: target, roomId: Number(roomId) }, dateResult => {
         if (!dateResult || typeof dateResult.flagSign !== 'string')
           return finish('error', '日期检查返回格式异常；未提交预约');
         if (dateResult.flagSign === 'true')

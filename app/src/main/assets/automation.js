@@ -3,6 +3,32 @@
   window.__libraryAutoBookerRunning = true;
   const config = __BOOKING_CONFIG__;
   const report = (state, detail) => window.AutoBooker?.report(state, detail);
+  const room = config.room || { id: '26', name: '过刊阅览室', timeMode: 'fixed', slots: [
+    { begin: '08:10:01', end: '10:00:00' }, { begin: '10:01:00', end: '11:29:00' },
+    { begin: '11:31:00', end: '14:29:00' }, { begin: '14:31:00', end: '16:30:30' },
+    { begin: '16:31:30', end: '18:00:30' }, { begin: '18:01:30', end: '19:29:30' },
+    { begin: '19:31:00', end: '22:01:00' }
+  ] };
+  const roomId = String(room.id || '');
+  const free = room.timeMode === 'free';
+  const clock = value => /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(String(value || ''));
+  const expectedSlots = Array.isArray(room.slots) ? room.slots : [];
+  const slots = [...new Set(config.selectedSlots || [])].sort((a, b) => a - b);
+  const minutes = value => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value || ''))
+    ? Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5)) : NaN;
+  const beginMinutes = minutes(config.startTime), endMinutes = minutes(config.endTime);
+  const duration = endMinutes - beginMinutes, step = Number(room.stepMinutes || 0);
+  const validFree = Number.isFinite(duration) && duration > 0 &&
+    !(room.minMinutes > 0 && duration < room.minMinutes) && !(room.maxMinutes > 0 && duration > room.maxMinutes) &&
+    !(step > 0 && (beginMinutes % step || endMinutes % step));
+  const validFixed = expectedSlots.length > 0 && expectedSlots.every(slot => clock(slot.begin) && clock(slot.end) && slot.begin < slot.end) &&
+    slots.length > 0 && slots.length <= 4 && slots.every((slot, index) =>
+      Number.isInteger(slot) && slot >= 0 && slot < expectedSlots.length && slot === slots[0] + index);
+  if (!/^\d+$/.test(roomId) || !String(room.name || '').trim() || !['fixed', 'free'].includes(room.timeMode) ||
+      !(free ? validFree : validFixed)) {
+    report('error', '阅览室或预约时间配置无效；没有点击座位');
+    return;
+  }
   const numbers = (config.seatNumbers || []).map(value => String(value).trim().toUpperCase()).filter(Boolean);
   const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
   const text = el => (el.textContent || el.value || '').replace(/\s+/g, '');
@@ -14,20 +40,21 @@
     report('error', '尚未填写候选座位号');
     return;
   }
-  const invalid = numbers.filter(number => !/^(G\d{3}[A-Z]|YXS\d+)$/.test(number));
+  const seatPattern = roomId === '26' ? /^(G\d{3}[A-Z]|YXS\d+)$/ : /^[A-Z0-9\u4e00-\u9fff][A-Z0-9\u4e00-\u9fff_.-]{0,63}$/u;
+  const invalid = numbers.filter(number => !seatPattern.test(number));
   if (invalid.length) {
-    report('error', `座位号格式错误：${invalid.join('、')}。例如 G023D、YXS1，每行一个`);
+    report('error', `座位号格式错误：${invalid.join('、')}。请按${room.name}座位图的完整编号填写，每行一个`);
     return;
   }
 
   const catalog = new Set(config.seatCatalog || []);
-  if (!catalog.size) {
+  if (roomId === '26' && !catalog.size) {
     report('error', '座位目录未加载，请更新应用后重试');
     return;
   }
-  const unknown = numbers.filter(number => !catalog.has(number));
+  const unknown = catalog.size ? numbers.filter(number => !catalog.has(number)) : [];
   if (unknown.length) {
-    report('error', `过刊阅览室没有这些座位号：${unknown.join('、')}；范围为 G001A–G023D（A/B/C/D）及 YXS1、YXS2`);
+    report('error', `${room.name}没有这些座位号：${unknown.join('、')}；请核对该房间的座位目录`);
     return;
   }
   const normalizeSeat = value => String(value || '').trim().toUpperCase();
@@ -46,6 +73,44 @@
     return seat && isAvailable(seat) ? seat : null;
   };
   const numberPresent = number => matchingSeats(number).length > 0;
+  const field = id => {
+    const matches = [...document.querySelectorAll(`[id="${id}"]`)];
+    return matches.length === 1 ? String(matches[0].value || '').trim() : null;
+  };
+  const normalizeDate = value => {
+    const match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(value || ''));
+    return match ? `${Number(match[1])}-${Number(match[2])}-${Number(match[3])}` : '';
+  };
+  const date = new Date();
+  const dayOffset = config.reserveTomorrow ? 1 : 0;
+  date.setDate(date.getDate() + dayOffset);
+  const expectedDate = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+  const expectedDay = dayOffset === 0 ? '今日' : expectedDate;
+  const expectedPageTime = () => {
+    const begin = field('begintime'), end = field('endtime');
+    return begin ? `${begin}-${end}` : field('times');
+  };
+  const parseRanges = value => {
+    const pieces = String(value || '').replace(/\s+/g, '').split(/[,，;；]/);
+    const ranges = pieces.map(piece => /^(\d{2}:\d{2}:\d{2})[-~至](\d{2}:\d{2}:\d{2})$/.exec(piece));
+    return ranges.every(range => range && clock(range[1]) && clock(range[2]) && range[1] < range[2]) ? ranges : [];
+  };
+  const identityError = () => {
+    if (!['/multireadingroomtablelist', '/readingroomtablelist'].includes(window.LibraryTransport?.path() || location.pathname))
+      return '当前页面不是学校座位图';
+    const currentDate = new Date(); currentDate.setDate(currentDate.getDate() + dayOffset);
+    const currentTarget = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}-${currentDate.getDate()}`;
+    if (currentTarget !== expectedDate || normalizeDate(config.targetDate || expectedDate) !== expectedDate || field('roomno') !== roomId ||
+        field('isuseday') !== String(dayOffset)) return '座位图中的阅览室或目标日期与任务不符';
+    if (field('begintime') === null || field('endtime') === null || (!field('begintime') && field('times') === null))
+      return '座位图中的时间身份字段缺失或重复';
+    const ranges = parseRanges(expectedPageTime());
+    const matches = free ? ranges.length === 1 && ranges[0][1] === `${config.startTime}:00` && ranges[0][2] === `${config.endTime}:59`
+      : ranges.length === slots.length
+        ? ranges.every((range, index) => range[1] === expectedSlots[slots[index]].begin && range[2] === expectedSlots[slots[index]].end)
+        : ranges.length === 1 && ranges[0][1] === expectedSlots[slots[0]].begin && ranges[0][2] === expectedSlots[slots.at(-1)].end;
+    return matches ? '' : '座位图中的使用时段与任务不符';
+  };
   const notices = () => [...document.querySelectorAll(
     '.alertify:not(.ajs-hidden) .ajs-content,.alertify-notifier .ajs-message,.alertify-message,.alertify-log,[role="alert"],.layui-layer-content,.modal.in .modal-body,.modal.show .modal-body,.modal[style*="display: block"] .modal-body')]
     .filter(visible).map(text).join(' ');
@@ -80,6 +145,8 @@
     /未到(?:可预约|预约|开放)时间|尚未开放|暂未开放|未开放预约|还未开放|未开始预约|预约尚未开始|尚未到.*预约时间/.test(value);
   const tryNext = () => {
     if (finished || active) return;
+    const mismatch = identityError();
+    if (mismatch) return finish('error', `${mismatch}；没有点击座位或提交预约`);
     const number = numbers.find(value => !attempted.has(value) && locate(value));
     if (!number) {
       if (++scanCount < 30) return setTimeout(tryNext, 400);
@@ -89,7 +156,7 @@
         if (numberPresent(value) && !findSeat(value)) return `${value}：网页编号与显示文字不一致，未点击`;
         if (findSeat(value)?.classList.contains('hasbesk')) return `${value}：页面标记为本次已预约座位，不重复提交`;
         if (numberPresent(value)) return `${value}：网页标记为不可预约（可能已预约或停用，页面未明确区分）`;
-        return `${value}：格式正确，但当前过刊阅览室座位图未找到该编号，请核对号码或页面是否加载完成`;
+        return `${value}：格式正确，但当前${room.name}座位图未找到该编号，请核对号码或页面是否加载完成`;
       });
       finish('error', `没有可预约的候选座位。${reasons.join('；')}`);
       return;
@@ -110,26 +177,10 @@
       const confirmation = [...document.querySelectorAll('.alertify:not(.ajs-hidden) .ajs-content')]
         .find(content => visible(content) && text(content).startsWith('确认要预约使用时间为：'));
       if (confirmation && submittedAt && !confirmationAt) {
-        const field = id => String(document.getElementById(id)?.value || '').trim();
         const badges = [...confirmation.querySelectorAll('.badge')].map(text);
-        const dayOffset = config.reserveTomorrow ? 1 : 0;
-        const day = new Date();
-        day.setDate(day.getDate() + dayOffset);
-        const expectedDay = dayOffset === 0 ? '今日' : `${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`;
-        const actualDate = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-        const expectedTime = (field('begintime') ? `${field('begintime')}-${field('endtime')}` : field('times')).replace(/\s+/g, '');
-        const slotStarts = ['08:10', '10:01', '11:31', '14:31', '16:31', '18:01', '19:31'];
-        const slotEnds = ['10:00', '11:29', '14:29', '16:30', '18:00', '19:29', '22:01'];
-        const slots = [...new Set(config.selectedSlots || [])].sort((a, b) => a - b);
-        const ranges = [...expectedTime.matchAll(/(\d{2}:\d{2})(?::\d{2})?[-~至](\d{2}:\d{2})(?::\d{2})?/g)];
-        const validSlots = slots.length > 0 && slots.length <= 4 && slots.every((slot, i) =>
-          Number.isInteger(slot) && slot >= 0 && slot < 7 && slot === slots[0] + i);
-        const timeMatches = validSlots && (ranges.length === slots.length
-          ? ranges.every((range, i) => range[1] === slotStarts[slots[i]] && range[2] === slotEnds[slots[i]])
-          : ranges.length === 1 && ranges[0][1] === slotStarts[slots[0]] && ranges[0][2] === slotEnds[slots[slots.length - 1]]);
-        if ((config.targetDate && config.targetDate !== actualDate) || field('roomno') !== '26' || field('isuseday') !== String(dayOffset) ||
-            field('tableNo').toUpperCase() !== number || badges.length !== 3 ||
-            badges[0] !== expectedTime || badges[1] !== expectedDay || badges[2].toUpperCase() !== number || !timeMatches) {
+        const expectedTime = String(expectedPageTime() || '').replace(/\s+/g, '');
+        if (identityError() || String(field('tableNo') || '').toUpperCase() !== number || badges.length !== 3 ||
+            badges[0] !== expectedTime || badges[1] !== expectedDay || badges[2].toUpperCase() !== number) {
           return finish('error', '预约确认框中的阅览室、日期、时段或座位与任务不符；未点击确认');
         }
         const dialog = confirmation.closest('.ajs-dialog');
@@ -211,16 +262,19 @@
     report('progress', `已选中 ${number}，正在核对网页选座状态`);
     setTimeout(() => {
       if (finished || !active || thisAttempt !== attemptId) return;
+      const mismatch = identityError();
+      if (mismatch) return finish('error', `${mismatch}；未打开预约确认框`);
       const current = findSeat(number);
       if (!current || (current.getAttribute('aria-checked') !== 'true' && !current.classList.contains('selected'))) {
         watcher.disconnect();
         return finish('error', `${number} 未能在网页上选中；没有提交预约`);
       }
-      const submit = [...document.querySelectorAll('button[onclick*="layoutBespeak"]')]
-        .find(button => text(button) === '预约');
-      if (!submit) {
+      const submit = [...document.querySelectorAll('button[onclick]')]
+        .filter(button => visible(button) && !button.disabled && text(button) === '预约' &&
+          /^\s*(?:return\s+)?layoutBespeak\(\s*\)\s*;?\s*$/.test(button.getAttribute('onclick') || ''));
+      if (submit.length !== 1) {
         watcher.disconnect();
-        return finish('error', '未找到座位图的预约按钮；没有提交');
+        return finish('error', '不能唯一识别座位图的原有预约按钮；没有提交');
       }
       const selectedList = document.querySelector('#selected-seats');
       if (selectedList && !text(selectedList).toUpperCase().includes(number)) {
@@ -241,7 +295,7 @@
       tableNo.value = number;
       submittedAt = Date.now();
       report('progress', `正在打开 ${number} 的预约确认框`);
-      submit.click();
+      submit[0].click();
     }, 800);
   };
   tryNext();
