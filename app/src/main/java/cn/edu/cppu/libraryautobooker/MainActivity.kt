@@ -326,7 +326,8 @@ class MainActivity : ComponentActivity() {
                     }
                     SeatMapCard(seatMaps?.forRoom(config.room), config.seatNumbers) { selected ->
                         val draft = config.copy(seatNumbers = selected, seatChoices = emptyList(), mapSeats = emptyList())
-                        config = seatMaps?.forRoom(draft.room)?.bind(draft) ?: draft
+                        val map = seatMaps?.forRoom(draft.room)
+                        config = if (map != null && map.selectionError(selected) == null) map.bind(draft) else draft
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
