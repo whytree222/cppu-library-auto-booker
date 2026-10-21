@@ -14,8 +14,8 @@ android {
         applicationId = "cn.edu.cppu.libraryautobooker"
         minSdk = 26
         targetSdk = 35
-        versionCode = 40
-        versionName = "0.14.0"
+        versionCode = 41
+        versionName = "0.15.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -87,3 +87,4 @@ val verifyOcrAssets by tasks.registering {
     }
 }
 tasks.named("preBuild").configure { dependsOn(verifyOcrAssets) }
+

@@ -31,7 +31,8 @@ class BookingSequence(initial: BookingConfig, today: LocalDate = LocalDate.now()
         if (batch == 1 && hasSecondBatch) {
             firstSeat = seat
             batch = 2
-            config = config.copy(seatNumbers = listOf(seat), selectedSlots = listOf(4, 5, 6), appendLastThree = false)
+            config = config.copy(seatNumbers = listOf(seat), mapSeats = config.mapSeats.filter { it.id == seat },
+                selectedSlots = listOf(4, 5, 6), appendLastThree = false)
             return Result.Next("$seat 前四段已预约成功，正在预约同座位后三段")
         }
         finished = true
@@ -55,3 +56,4 @@ class BookingSequence(initial: BookingConfig, today: LocalDate = LocalDate.now()
         else -> null
     }
 }
+

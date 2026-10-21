@@ -17,7 +17,9 @@ function fixture(options = {}) {
     <input id="roomno" value="${options.roomNo || room?.id || '26'}"><input id="isuseday" value="1">
     <input id="begintime" value="08:10:01"><input id="endtime" value="10:00:00">
     <input id="times"><input id="tableNo"><ul id="selected-seats"></ul>
-    ${options.realMap ? seatMap : `<div id="seat-map">
+    ${options.catalogMap ? `<div id="seat-map">${options.catalogMap.rows.map((row, r) =>
+      `<div class="seatCharts-row">${row.split('|').map((id,c)=>`<div class="seatChartsTable-cell">${id || options.catalogMap.unnumbered?.some(p=>p.row===r+1&&p.column===c+1)
+        ? `<div id="${id}" class="seatCharts-seat available" aria-checked="false">${id}</div>` : ''}</div>`).join('')}</div>`).join('')}</div>` : options.realMap ? seatMap : `<div id="seat-map">
     ${ids.map(id => `<div id="${id}" class="seatCharts-seat available" aria-checked="false">${id}</div>`).join('')}</div>`}
     <button id="book" onclick="layoutBespeak()">预约</button>
     <div id="confirmation" class="alertify ajs-hidden"><div class="ajs-dialog">
@@ -122,6 +124,7 @@ function fixture(options = {}) {
     startTime: options.startTime || '09:00', endTime: options.endTime || '11:00' };
   if (options.selectedSlots) config.selectedSlots = options.selectedSlots;
   if (options.numbers) config.seatNumbers = options.numbers;
+  if (options.mapSeats) config.mapSeats = options.mapSeats;
   if (options.unavailable) d.getElementById('G015A').className = 'seatCharts-seat unavailable';
   if (options.duplicate) d.getElementById('G015A').after(d.getElementById('G015A').cloneNode(true));
   if (options.mismatchedLabel) d.getElementById('G015A').textContent = 'G015B';
@@ -302,6 +305,28 @@ const otherRoom = { id: '34', name: '文科样本区', groupId: '4', groupName: 
   { begin: '07:30:00', end: '09:45:00' }, { begin: '10:00:00', end: '12:00:00' },
   { begin: '13:00:00', end: '17:00:00' }, { begin: '18:00:00', end: '21:30:00' }
 ] };
+const capturedRooms = JSON.parse(fs.readFileSync('app/src/main/assets/seat-maps.json','utf8')).rooms;
+for (const map of capturedRooms) test(`actual room ${map.roomNo} map selection submits exact ID and coordinate`, async () => {
+  const all = map.rows.flatMap((r,row)=>r.split('|').flatMap((id,column)=>id?[{id,row,column}]:[]));
+  const seat = all.find(s=>!s.id.includes('..') && all.filter(a=>a.id.toUpperCase()===s.id.toUpperCase()).length===1);
+  const room = {id:String(map.roomNo),name:map.name,groupId:map.floor==='一楼'?'1':map.floor==='二楼'?'2':map.floor==='三楼'?'3':'4',groupName:map.floor,timeMode:'fixed',slots:map.slots};
+  const f = fixture({room,catalogMap:map,numbers:[seat.id],mapSeats:[seat],nativeBridge:true});
+  try {await f.advance(5000);assert.equal(f.requests(),1,JSON.stringify(f.messages));assert.deepEqual(f.submittedNumbers,[seat.id]);}
+  finally {f.close();}
+});
+test('lowercase K043c from actual map is submitted without uppercasing', async()=>{
+  const map=capturedRooms.find(r=>r.roomNo===21);
+  const row=map.rows.findIndex(r=>r.split('|').includes('K043c'));
+  const column=map.rows[row].split('|').indexOf('K043c');
+  const room={id:'21',name:map.name,timeMode:'fixed',slots:map.slots};
+  const f=fixture({room,catalogMap:map,numbers:['K043c'],mapSeats:[{id:'K043c',row,column}]});
+  try {await f.advance(5000);assert.equal(f.requests(),1,JSON.stringify(f.messages));assert.deepEqual(f.submittedNumbers,['K043c']);}finally{f.close();}
+});
+for(const mapSeats of [[{id:'G015A',row:13,column:9}],[{id:'G015B',row:13,column:8}],[{id:'G015A',row:-1,column:8}],[{id:'G015A',row:13,column:8},{id:'G016A',row:13,column:8}]])
+test(`map position mismatch never clicks a seat: ${JSON.stringify(mapSeats)}`, async()=>{
+  const f=fixture({realMap:true,numbers:['G015A'],mapSeats});
+  try{await f.advance(15000);assert.equal(f.requests(),0);assert.equal(f.clicks(),0);assert.equal(f.messages.at(-1).state,'error');}finally{f.close();}
+});
 const freeRoom = { ...otherRoom, id: '35', name: '研修阅览区', timeMode: 'free', slots: [],
   minMinutes: 30, maxMinutes: 180, stepMinutes: 15 };
 for (const room of [otherRoom, freeRoom]) for (const today of [true, false]) {
@@ -356,3 +381,4 @@ for (const number of ['A 001', '<script>', '_001', 'A'.repeat(65)])
     try { await f.advance(5000); assert.equal(f.requests(), 0); assert.match(f.messages.at(-1).detail, /格式错误/); }
     finally { f.close(); }
   });
+

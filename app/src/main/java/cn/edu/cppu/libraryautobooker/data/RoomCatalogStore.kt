@@ -6,6 +6,8 @@ import org.json.JSONArray
 /** A bounded catalogue of public room rules read from the school, not a seat-status cache. */
 class RoomCatalogStore(context: Context) {
     private val prefs = context.getSharedPreferences("room_catalog_v1", Context.MODE_PRIVATE)
+    private val bundled = runCatching { SeatMapCatalog.load(context).maps.map { it.room } }
+        .getOrDefault(listOf(RoomProfile.DEFAULT))
 
     fun load(): List<RoomProfile> {
         val saved = runCatching {
@@ -13,7 +15,7 @@ class RoomCatalogStore(context: Context) {
             require(array.length() <= 200)
             (0 until array.length()).mapNotNull { RoomProfile.fromJson(array.getJSONObject(it)) }
         }.getOrDefault(emptyList())
-        return (saved + RoomProfile.DEFAULT).distinctBy { it.id }
+        return (saved + bundled + RoomProfile.DEFAULT).distinctBy { it.id }
             .sortedWith(compareBy({ it.groupId.toInt() }, { it.id.toInt() }))
     }
 
@@ -29,3 +31,4 @@ class RoomCatalogStore(context: Context) {
         check(prefs.edit().putString("rooms", array.toString()).commit())
     }
 }
+

@@ -29,7 +29,8 @@
     report('error', '阅览室或预约时间配置无效；没有点击座位');
     return;
   }
-  const numbers = (config.seatNumbers || []).map(value => String(value).trim().toUpperCase()).filter(Boolean);
+  const numbers = (config.seatNumbers || []).map(value => roomId === '26'
+    ? String(value).trim().toUpperCase() : String(value).trim()).filter(Boolean);
   const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
   const text = el => (el.textContent || el.value || '').replace(/\s+/g, '');
   if ((window.LibraryTransport?.path() || location.pathname) === '/login' || document.querySelector('form#fromuser input#passwd')) {
@@ -40,8 +41,8 @@
     report('error', '尚未填写候选座位号');
     return;
   }
-  const seatPattern = roomId === '26' ? /^(G\d{3}[A-Z]|YXS\d+)$/ : /^[A-Z0-9\u4e00-\u9fff][A-Z0-9\u4e00-\u9fff_.-]{0,63}$/u;
-  const invalid = numbers.filter(number => !seatPattern.test(number));
+  const seatPattern = roomId === '26' ? /^(G\d{3}[A-Z]|YXS\d+)$/ : /^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff_.-]{0,63}$/u;
+  const invalid = numbers.filter(number => !seatPattern.test(number) || number.includes('..'));
   if (invalid.length) {
     report('error', `座位号格式错误：${invalid.join('、')}。请按${room.name}座位图的完整编号填写，每行一个`);
     return;
@@ -57,14 +58,33 @@
     report('error', `${room.name}没有这些座位号：${unknown.join('、')}；请核对该房间的座位目录`);
     return;
   }
-  const normalizeSeat = value => String(value || '').trim().toUpperCase();
+  const normalizeSeat = value => roomId === '26' ? String(value || '').trim().toUpperCase() : String(value || '').trim();
   // Keep the site's original ID (including trailing newlines) for its click
   // handler. All lookups compare canonical identifiers inside the seat map.
   const matchingSeats = number => [...document.querySelectorAll('#seat-map .seatCharts-seat[id]')]
     .filter(el => normalizeSeat(el.id) === number);
+  const mapSeats = config.mapSeats || [];
+  if (!Array.isArray(mapSeats) || mapSeats.length && (mapSeats.length !== numbers.length ||
+      mapSeats.some((seat, index) => seat.id !== numbers[index] || !Number.isInteger(seat.row) ||
+        !Number.isInteger(seat.column) || seat.row < 0 || seat.column < 0 || seat.row > 199 || seat.column > 199) ||
+      new Set(mapSeats.map(seat => `${seat.row}:${seat.column}`)).size !== mapSeats.length)) {
+    report('error', '座位图定位信息与候选不一致，请重新选座；没有点击座位');
+    return;
+  }
+  const positionMatches = (el, number) => {
+    if (!mapSeats.length) return true; // Existing pre-map tasks retain their unique-ID checks.
+    const expected = mapSeats.find(seat => seat.id === number);
+    if (!expected) return false;
+    const maps = [...document.querySelectorAll('[id="seat-map"]')];
+    if (maps.length !== 1) return false;
+    const rows = [...maps[0].children].filter(row => row.classList.contains('seatCharts-row'));
+    const cell = rows[expected.row]?.children[expected.column];
+    return !!cell && cell.classList.contains('seatChartsTable-cell') && cell.contains(el) &&
+      cell.querySelectorAll('.seatCharts-seat').length === 1;
+  };
   const findSeat = number => {
     const matches = matchingSeats(number);
-    return matches.length === 1 && normalizeSeat(matches[0].textContent) === number ? matches[0] : null;
+    return matches.length === 1 && normalizeSeat(matches[0].textContent) === number && positionMatches(matches[0], number) ? matches[0] : null;
   };
   const isAvailable = el => visible(el) && el.classList.contains('available') &&
     !['unavailable', 'hasbesk', 'selected', 'reserved', 'booked'].some(state => el.classList.contains(state));
@@ -153,7 +173,9 @@
       const reasons = numbers.map(value => {
         if (rejected.has(value)) return `${value}：${rejected.get(value)}`;
         if (matchingSeats(value).length > 1) return `${value}：网页编号重复，无法唯一定位，未点击`;
-        if (numberPresent(value) && !findSeat(value)) return `${value}：网页编号与显示文字不一致，未点击`;
+        if (numberPresent(value) && !findSeat(value)) return normalizeSeat(matchingSeats(value)[0]?.textContent) !== value
+          ? `${value}：网页编号与显示文字不一致，未点击`
+          : `${value}：座位图行列位置不一致，请重新核对布局，未点击`;
         if (findSeat(value)?.classList.contains('hasbesk')) return `${value}：页面标记为本次已预约座位，不重复提交`;
         if (numberPresent(value)) return `${value}：网页标记为不可预约（可能已预约或停用，页面未明确区分）`;
         return `${value}：格式正确，但当前${room.name}座位图未找到该编号，请核对号码或页面是否加载完成`;
@@ -179,8 +201,8 @@
       if (confirmation && submittedAt && !confirmationAt) {
         const badges = [...confirmation.querySelectorAll('.badge')].map(text);
         const expectedTime = String(expectedPageTime() || '').replace(/\s+/g, '');
-        if (identityError() || String(field('tableNo') || '').toUpperCase() !== number || badges.length !== 3 ||
-            badges[0] !== expectedTime || badges[1] !== expectedDay || badges[2].toUpperCase() !== number) {
+        if (identityError() || !findSeat(number) || normalizeSeat(field('tableNo')) !== number || badges.length !== 3 ||
+            badges[0] !== expectedTime || badges[1] !== expectedDay || normalizeSeat(badges[2]) !== number) {
           return finish('error', '预约确认框中的阅览室、日期、时段或座位与任务不符；未点击确认');
         }
         const dialog = confirmation.closest('.ajs-dialog');
@@ -277,7 +299,7 @@
         return finish('error', '不能唯一识别座位图的原有预约按钮；没有提交');
       }
       const selectedList = document.querySelector('#selected-seats');
-      if (selectedList && !text(selectedList).toUpperCase().includes(number)) {
+      if (selectedList && !normalizeSeat(text(selectedList)).includes(number)) {
         watcher.disconnect();
         return finish('error', `${number} 未进入网页的已选座位列表；没有提交`);
       }
@@ -300,3 +322,4 @@
   };
   tryNext();
 })();
+

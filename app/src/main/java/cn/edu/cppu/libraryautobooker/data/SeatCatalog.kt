@@ -8,7 +8,7 @@ object SeatCatalog {
 
     fun error(numbers: List<String>, room: RoomProfile = RoomProfile.DEFAULT): String? {
         if (room.id != "26") {
-            val invalid = numbers.filterNot { Regex("^[A-Z0-9\\u4e00-\\u9fff][A-Z0-9\\u4e00-\\u9fff_.-]{0,63}$").matches(it) }
+            val invalid = numbers.filterNot { Regex("^[A-Za-z0-9\\u4e00-\\u9fff][A-Za-z0-9\\u4e00-\\u9fff_.-]{0,63}$").matches(it) && ".." !in it }
             return if (invalid.isEmpty()) null else "座位号格式错误：${invalid.joinToString("、")}；请填写完整编号，不含空格或特殊符号"
         }
         val invalid = numbers.filterNot { Regex("^(G\\d{3}[A-Z]|YXS\\d+)$").matches(it) }
@@ -18,3 +18,4 @@ object SeatCatalog {
         return null
     }
 }
+

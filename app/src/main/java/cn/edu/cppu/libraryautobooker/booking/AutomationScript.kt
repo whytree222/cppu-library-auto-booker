@@ -19,6 +19,9 @@ object AutomationScript {
             put("roomKeywords", config.roomKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatKeywords", config.seatKeywords.split(',').map(String::trim).filter(String::isNotEmpty))
             put("seatNumbers", JSONArray(config.seatNumbers))
+            if (config.mapSeats.isNotEmpty()) put("mapSeats", JSONArray().apply { config.mapSeats.forEach {
+                put(JSONObject().put("id", it.id).put("row", it.row).put("column", it.column))
+            } })
             put("room", config.room.toJson())
             put("seatCatalog", JSONArray(if (config.room.id == "26") SeatCatalog.numbers else emptyList<String>()))
             put("selectedSlots", JSONArray(config.selectedSlots))
@@ -38,3 +41,4 @@ object AutomationScript {
         return template.replace("__BOOKING_CONFIG__", json)
     }
 }
+

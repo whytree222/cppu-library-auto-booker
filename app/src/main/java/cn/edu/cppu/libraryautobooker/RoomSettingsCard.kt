@@ -24,7 +24,7 @@ import cn.edu.cppu.libraryautobooker.data.RoomProfile
 
 /** A new identity or time-rule snapshot must never inherit the old room's reservation target. */
 internal fun resetRoomDraft(config: BookingConfig, room: RoomProfile): BookingConfig =
-    config.copy(room = room, seatNumbers = emptyList(), seatChoices = emptyList(),
+    config.copy(room = room, seatNumbers = emptyList(), seatChoices = emptyList(), mapSeats = emptyList(),
         selectedSlots = emptyList(), appendLastThree = false).withPending(emptyList())
 
 /** Cached profiles are selected explicitly; browsing a floor alone never changes a task. */
@@ -35,7 +35,8 @@ fun RoomSettingsCard(
     onSelect: (RoomProfile) -> Unit,
     onSync: () -> Unit
 ) {
-    val available = remember(rooms, selected) { (rooms + selected).distinctBy { it.id } }
+    val available = remember(rooms, selected) { (rooms + selected).distinctBy { it.id }
+        .sortedWith(compareBy({ it.groupId.toIntOrNull() ?: Int.MAX_VALUE }, { it.id.toIntOrNull() ?: Int.MAX_VALUE })) }
     val groups = remember(available) { available.map { it.groupId to it.groupName }.distinctBy { it.first } }
     var floor by remember { mutableStateOf(selected.groupId) }
     var floorsExpanded by remember { mutableStateOf(false) }
@@ -47,7 +48,7 @@ fun RoomSettingsCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("选择楼层和阅览室", style = MaterialTheme.typography.titleMedium)
             Text("当前预约：${selected.groupName.ifBlank { "未分组" }} · ${selected.name}")
-            Text("列表来自最近一次学校网页同步。选择其他房间或同步后时段规则变化时，会取消旧定时任务并清空座位、时段，需重新确认保存。",
+            Text("内置已核对的一至四楼 7 间阅览室，也可同步学校最新时间规则。切换房间或规则变化会取消旧定时任务并清空座位、时段，需重新确认保存。",
                 style = MaterialTheme.typography.bodySmall)
             Box(Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = { floorsExpanded = true }, modifier = Modifier.fillMaxWidth()) {
@@ -85,3 +86,4 @@ fun RoomSettingsCard(
         }
     }
 }
+

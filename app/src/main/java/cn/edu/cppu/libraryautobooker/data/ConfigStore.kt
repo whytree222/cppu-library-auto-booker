@@ -17,6 +17,7 @@ class ConfigStore(context: Context) {
         seatKeywords = prefs.getString("seat_keywords", "").orEmpty(),
         seatChoices = readSeats(),
         seatNumbers = readSeatNumbers(),
+        mapSeats = readMapSeats(),
         selectedSlots = readSlots(),
         appendLastThree = prefs.getBoolean("append_last_three", false),
         startTime = prefs.getString("start_time", "08:00").orEmpty(),
@@ -56,6 +57,9 @@ class ConfigStore(context: Context) {
                 }
             }.toString())
             .putString("seat_numbers", JSONArray(config.seatNumbers).toString())
+            .putString("map_seats", JSONArray().apply { config.mapSeats.forEach {
+                put(JSONObject().put("id", it.id).put("row", it.row).put("column", it.column))
+            } }.toString())
             .putString("selected_slots", JSONArray(config.selectedSlots).toString())
             .putBoolean("append_last_three", config.appendLastThree)
             .putString("start_time", config.startTime)
@@ -94,6 +98,14 @@ class ConfigStore(context: Context) {
         emptyList()
     }
 
+    private fun readMapSeats(): List<MapSeat> = try {
+        val items = JSONArray(prefs.getString("map_seats", "[]"))
+        require(items.length() <= 10)
+        (0 until items.length()).map { items.getJSONObject(it).let { value ->
+            MapSeat(value.getString("id"), value.getInt("row"), value.getInt("column"))
+        } }
+    } catch (_: Exception) { listOf(MapSeat("!", -1, -1)) }
+
     private fun readSlots(): List<Int> = try {
         val array = JSONArray(prefs.getString("selected_slots", "[]"))
         require(array.length() <= 48)
@@ -102,3 +114,4 @@ class ConfigStore(context: Context) {
         listOf(-1) // Retain an invalid marker; never silently change the user's requested slots.
     }
 }
+

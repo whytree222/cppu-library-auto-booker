@@ -14,6 +14,7 @@ data class BookingConfig(
     val seatKeywords: String = "",
     val seatChoices: List<SeatChoice> = emptyList(),
     val seatNumbers: List<String> = emptyList(),
+    val mapSeats: List<MapSeat> = emptyList(),
     val selectedSlots: List<Int> = emptyList(),
     val appendLastThree: Boolean = false,
     val startTime: String = "08:00",
@@ -31,8 +32,11 @@ data class BookingConfig(
         val snapshot = JSONObject().put("room", room.toJson()).put("seats", JSONArray(seatNumbers))
             .put("slots", JSONArray(selectedSlots)).put("tomorrow", reserveTomorrow)
             .put("start", startTime).put("end", endTime).put("append", appendLastThree)
-            .put("dryRun", dryRun).put("wait", waitForRelease).put("vpn", webVpnBackup).toString()
-        return MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray(Charsets.UTF_8))
+            .put("dryRun", dryRun).put("wait", waitForRelease).put("vpn", webVpnBackup)
+        if (mapSeats.isNotEmpty()) snapshot.put("mapSeats", JSONArray().apply { mapSeats.forEach {
+            put(JSONObject().put("id", it.id).put("row", it.row).put("column", it.column))
+        } })
+        return MessageDigest.getInstance("SHA-256").digest(snapshot.toString().toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it.toInt() and 255) }
     }
 
@@ -41,6 +45,10 @@ data class BookingConfig(
         if (seatNumbers.isEmpty() || seatNumbers.size > 10 || seatNumbers.distinct().size != seatNumbers.size)
             return "请输入 1 到 10 个不重复的座位号，每行一个"
         SeatCatalog.error(seatNumbers, room)?.let { return it }
+        if (mapSeats.isNotEmpty() && (mapSeats.map { it.id } != seatNumbers ||
+                mapSeats.any { it.row !in 0..199 || it.column !in 0..199 } ||
+                mapSeats.map { it.row to it.column }.distinct().size != mapSeats.size))
+            return "座位图定位信息与候选不一致，请重新选座"
         if (room.timeMode == "fixed") {
             val indexes = selectedSlots.distinct().sorted()
             if (indexes.isEmpty() || indexes.size > 4 || indexes != selectedSlots ||
@@ -77,3 +85,4 @@ data class BookingConfig(
             scheduledAtMillis = pending.firstOrNull() ?: 0L)
     }
 }
+

@@ -49,6 +49,7 @@ import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
 import cn.edu.cppu.libraryautobooker.data.RoomCatalogStore
 import cn.edu.cppu.libraryautobooker.data.RoomProfile
+import cn.edu.cppu.libraryautobooker.data.SeatMapCatalog
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -167,6 +168,7 @@ class MainActivity : ComponentActivity() {
                 }
                 var config by remember { mutableStateOf(store.load()) }
                 var rooms by remember { mutableStateOf(RoomCatalogStore(this@MainActivity).load()) }
+                val seatMaps = remember { runCatching { SeatMapCatalog.load(this@MainActivity) }.getOrNull() }
                 var status by remember { mutableStateOf("尚未启用") }
                 var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
                 var savedEnabled by remember { mutableStateOf(config.enabled) }
@@ -190,7 +192,9 @@ class MainActivity : ComponentActivity() {
                     else runtime.prefs.getString("test_detail", "尚未进行后台唤醒测试").orEmpty()
                 }
                 val arrange: (BookingConfig) -> Unit = { requested ->
-                    val error = requested.validationError()
+                    val map = seatMaps?.forRoom(requested.room)
+                    val error = if (map == null) "此阅览室尚无已核对的座位图，请重新选择房间"
+                        else map.selectionError(requested.seatNumbers) ?: requested.validationError()
                     if (error != null) status = error
                     else runCatching { scheduler.schedule(requested) }.onSuccess { next ->
                             config = store.load()
@@ -209,20 +213,18 @@ class MainActivity : ComponentActivity() {
                 val notificationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { refreshVersion++ }
-                var seatInput by remember { mutableStateOf(config.seatNumbers.joinToString("\n")) }
                 val selectRoom: (RoomProfile) -> Unit = { room ->
                     if (room != config.room) {
                         val cancelledTimes = store.load().pendingTimes()
                         scheduler.cancel()
                         pendingSchedule = null
                         config = resetRoomDraft(config, room)
-                        seatInput = ""
                         store.save(config)
                         cancelledTimes.forEach { at ->
                             runtime.record("CANCELLED", "阅览室已更改，原定时任务已取消，请重新确认座位和时段",
                                 RuntimeStore.scheduledAction(at))
                         }
-                        status = "已选择${room.name}；请重新填写座位、选择时间并保存任务"
+                        status = "已选择${room.name}；请在座位图选座、选择时间并保存任务"
                     }
                 }
                 val roomBrowser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -310,7 +312,7 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("准备", style = MaterialTheme.typography.titleMedium)
-                            Text("1. 在上方登录区域检查直连或 WebVPN 会话\n2. 同步并选择楼层、阅览室\n3. 每行输入该房间的一个座位号，越靠前优先级越高\n4. 设置放号时间和使用时间，先演练一次")
+                            Text("1. 在上方检查登录状态\n2. 选择楼层和阅览室\n3. 点击座位图加入候选，先点的优先\n4. 选择使用日期、时段，先演练再预约或安排定时任务")
                         }
                     }
 
@@ -322,23 +324,9 @@ class MainActivity : ComponentActivity() {
                         config = config.copy(releaseTimes = times, releaseHour = times.first() / 60,
                             releaseMinute = times.first() % 60)
                     }
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("按优先顺序填写座位号", style = MaterialTheme.typography.titleMedium)
-                            Text("每行一个，第一行最优先。放号时按顺序尝试，最多 10 个。")
-                            Text(if (config.room.id == RoomProfile.DEFAULT.id)
-                                "过刊阅览室共 94 个位置：G001–G023 每桌 A/B/C/D，以及 YXS1、YXS2。"
-                                else "请输入${config.room.name}座位图上显示的完整编号。运行时会与该房间的真实座位核对，不会套用过刊阅览室编号。")
-                            OutlinedTextField(
-                                value = seatInput,
-                                onValueChange = { seatInput = it },
-                                label = { Text("座位号") },
-                                placeholder = { Text(if (config.room.id == RoomProfile.DEFAULT.id) "G023D\nG015A\nYXS1" else "每行填写一个完整座位号") },
-                                minLines = 4,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Text("当前顺序：${parseSeatNumbers(seatInput).joinToString(" → ").ifEmpty { "尚未填写" }}")
-                        }
+                    SeatMapCard(seatMaps?.forRoom(config.room), config.seatNumbers) { selected ->
+                        val draft = config.copy(seatNumbers = selected, seatChoices = emptyList(), mapSeats = emptyList())
+                        config = seatMaps?.forRoom(draft.room)?.bind(draft) ?: draft
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -440,9 +428,11 @@ class MainActivity : ComponentActivity() {
 
                     Button(
                         onClick = {
-                            val seatNumbers = parseSeatNumbers(seatInput)
-                            val candidate = config.copy(seatNumbers = seatNumbers)
-                            val error = candidate.validationError()
+                            val map = seatMaps?.forRoom(config.room)
+                            val mapError = map?.selectionError(config.seatNumbers)
+                            val candidate = if (map != null && mapError == null) map.bind(config) else config
+                            val error = if (map == null) "此阅览室尚无已核对的座位图，请重新选择房间"
+                                else mapError ?: candidate.validationError()
                             if (config.enabled && error != null) {
                                 status = error
                                 return@Button
@@ -470,9 +460,11 @@ class MainActivity : ComponentActivity() {
                     ) { Text("保存并安排任务") }
                     OutlinedButton(
                         onClick = {
-                            val seatNumbers = parseSeatNumbers(seatInput)
-                            val candidate = config.copy(seatNumbers = seatNumbers)
-                            val error = candidate.validationError()
+                            val map = seatMaps?.forRoom(config.room)
+                            val mapError = map?.selectionError(config.seatNumbers)
+                            val candidate = if (map != null && mapError == null) map.bind(config) else config
+                            val error = if (map == null) "此阅览室尚无已核对的座位图，暂不能通过座位图预约"
+                                else mapError ?: candidate.validationError()
                             if (error != null) {
                                 status = error
                                 return@OutlinedButton
@@ -495,7 +487,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text(if (config.dryRun) "立即演练" else "立即运行一次") }
+                    ) { Text(if (config.dryRun) "立即演练" else "立即预约所选座位") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
                     RunHistoryCard(history)
                     Text(
@@ -509,11 +501,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private fun parseSeatNumbers(input: String): List<String> = input.lines()
-    .map { it.trim().uppercase() }
-    .filter { it.isNotEmpty() }
-    .distinct()
-
 @androidx.compose.runtime.Composable
 private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -524,3 +511,4 @@ private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChe
         Switch(checked = checked, onCheckedChange = onChecked)
     }
 }
+

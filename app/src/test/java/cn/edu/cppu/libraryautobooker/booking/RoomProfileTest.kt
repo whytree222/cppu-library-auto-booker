@@ -71,7 +71,7 @@ class RoomProfileTest {
     @Test fun catalogueUpsertsByIdentityAndRejectsConflictingDuplicates() {
         val store = RoomCatalogStore(app)
         store.merge(listOf(second, free))
-        assertEquals(3, store.load().size)
+        assertEquals(9, store.load().size) // Seven collected rooms plus the two synthetic profiles.
         val changed = second.copy(name = "测试新名称")
         store.merge(listOf(changed))
         assertEquals(changed, store.find(second.id))
@@ -126,3 +126,4 @@ class RoomProfileTest {
         assertNotNull(ConfigStore(app).load().validationError())
     }
 }
+

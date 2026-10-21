@@ -60,8 +60,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.14.0 >/dev/null 2>&1; then
-            gh release upload v0.14.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.15.0 >/dev/null 2>&1; then
+            gh release upload v0.15.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.14.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.14.0 · 多楼层全阅览室通用预约' --notes '新增从学校同步全部楼层阅览室，按实际房间编号、名称与时间模式建档，不再只预约过刊。固定时段按房间选择；自选时间房间填写起止时间，通过学校原按钮进入座位图。其他房间按完整编号在当前地图唯一匹配，不套用G编号目录。演练和提交均核对房间、日期、时间；切换房间清空旧座位时段并取消旧闹钟，已入队闹钟绑定目标指纹避免误用新设置。保留直连/WebVPN、等待放号和结果未知不重发；追加后三段仅限已核对的过刊七段。学校未提供完整规则或页面不兼容时明确停止，不猜测。保留v0.13.12登录修复。本轮使用模拟数据测试，未代用户真实登录或预约，全馆实际页面需逐房间演练验证。'
+            gh release create v0.15.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.15.0 · 按楼层交互座位图选座' --notes '内置从学校正常页面采集的一至四楼7间阅览室真实座位布局，共962个标记。按楼层选择房间，点击座位加入或移除候选，支持候选前移、清空和双向滑动；取代手输座位号。重复、异常和3个无编号标记禁选，不虚构编号。保留原始大小写（包括K043c），所选座位行列坐标随任务保存，运行时复核学校实际布局，位置变化则停止。点击地图只修改草稿，选好日期时段后显式立即预约或保存定时计划；默认演练不提交。图不表示实时空闲，仍以学校当前页面及返回结果为准。切换房间清空旧选座和定时任务；追加后三段保留同座位坐标。保留直连/WebVPN及现有登录流程。测试使用离线采集布局和模拟提交，未创建真实预约；学校规则变化时需同步后先演练。'
           fi
+
