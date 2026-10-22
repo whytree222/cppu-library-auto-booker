@@ -17,8 +17,8 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RoomBrowserPolicyTest {
-    private fun withBrowser(vpn: Boolean = false, block: (RoomBrowserActivity) -> Unit) {
-        val intent = Intent(RuntimeEnvironment.getApplication(), RoomBrowserActivity::class.java).putExtra("webvpn", vpn)
+    private fun withBrowser(block: (RoomBrowserActivity) -> Unit) {
+        val intent = Intent(RuntimeEnvironment.getApplication(), RoomBrowserActivity::class.java)
         val controller = Robolectric.buildActivity(RoomBrowserActivity::class.java, intent).setup()
         try { block(controller.get()) } finally { controller.pause().stop().destroy() }
     }
@@ -29,9 +29,9 @@ class RoomBrowserPolicyTest {
         return policy.invoke(activity, method, url) as Boolean
     }
 
-    @Test fun allowsOnlyObservedReadOnlyRequestsInBothRoutes() {
-        listOf(false, true).forEach { vpn -> withBrowser(vpn) { activity ->
-            val route = if (vpn) LibraryRoute.WEBVPN else LibraryRoute.DIRECT
+    @Test fun allowsOnlyObservedReadOnlyRequestsOnCampusOrigin() {
+        withBrowser { activity ->
+            val route = LibraryRoute.DIRECT
             assertTrue(accepts(activity, "GET", route.url("/selectreadingroom?groupid=4")))
             assertTrue(accepts(activity, "GET", route.url("/js/jquery-3.4.1.min.js")))
             assertTrue(accepts(activity, "POST", route.url("/readingroom/checktimecanbesk")))
@@ -43,16 +43,16 @@ class RoomBrowserPolicyTest {
             }
             assertFalse(accepts(activity, "POST", "https://other.example/readingroom/getbesktimelist"))
             assertFalse(accepts(activity, "DELETE", route.url("/readingroom/checktimecanbesk")))
-        } }
+        }
     }
 
-    @Test fun staticPathCannotEscapeToStateChangingOrForeignEndpoints() = withBrowser(true) { activity ->
-        val route = LibraryRoute.WEBVPN
+    @Test fun staticPathCannotEscapeToStateChangingOrForeignEndpoints() = withBrowser { activity ->
+        val route = LibraryRoute.DIRECT
         listOf("/js/../readingroom/postbeskdata.js", "/js/../../login.js", "/readingroom/postbeskdata.js",
             "/wengine-vpn/js/../../login.js").forEach {
             assertFalse(accepts(activity, "GET", route.origin + it))
         }
-        assertTrue(accepts(activity, "GET", route.origin + "/wengine-vpn/js/main.js"))
+        assertFalse(accepts(activity, "GET", route.origin + "/wengine-vpn/js/main.js"))
         assertFalse(accepts(activity, "POST", route.origin + "/wengine-vpn/js/main.js"))
     }
 

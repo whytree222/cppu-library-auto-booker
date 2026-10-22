@@ -74,7 +74,7 @@ class RoomSettingsUiTest {
         val original = BookingConfig(enabled = true, dryRun = false, reserveTomorrow = false,
             seatNumbers = listOf("G015A"), selectedSlots = listOf(0, 1, 2, 3), appendLastThree = true,
             releaseTimes = listOf(60, 90), scheduledTimes = listOf(1000L, 2000L), scheduledAtMillis = 1000L,
-            waitForRelease = true, webVpnBackup = false)
+            waitForRelease = true)
         val changed = resetRoomDraft(original, room2)
         assertEquals(room2, changed.room)
         assertTrue(changed.seatNumbers.isEmpty())
@@ -86,7 +86,6 @@ class RoomSettingsUiTest {
         assertEquals(0L, changed.scheduledAtMillis)
         assertEquals(original.releaseTimes, changed.releaseTimes)
         assertEquals(original.waitForRelease, changed.waitForRelease)
-        assertEquals(original.webVpnBackup, changed.webVpnBackup)
         assertEquals(original.dryRun, changed.dryRun)
         assertEquals(original.reserveTomorrow, changed.reserveTomorrow)
     }

@@ -52,6 +52,7 @@ import cn.edu.cppu.libraryautobooker.data.RoomProfile
 import cn.edu.cppu.libraryautobooker.data.SeatMapCatalog
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import androidx.core.app.NotificationManagerCompat
+import cn.edu.cppu.libraryautobooker.booking.FixedBookingPlan
 import androidx.core.content.ContextCompat
 import java.time.format.DateTimeFormatter
 
@@ -62,16 +63,8 @@ class MainActivity : ComponentActivity() {
     private val uiHandler = Handler(Looper.getMainLooper())
     private var foreground = false
     private val preferredSessionCheck = UiSessionRequest()
-    private val vpnStatusCheck = UiSessionRequest()
-    private fun refreshVpnStatus() {
-        if (!foreground || vpnStatusCheck.pending) return
-        val ticket = vpnStatusCheck.begin()
-        val handle = SessionCoordinator.checkWebVpnStatus(this) { vpnStatusCheck.complete(ticket) {} }
-        vpnStatusCheck.attach(ticket, handle)
-    }
     private fun cancelSessionChecks() {
         preferredSessionCheck.cancel()
-        vpnStatusCheck.cancel()
     }
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         uiHandler.post { refreshVersion++ }
@@ -82,7 +75,6 @@ class MainActivity : ComponentActivity() {
             refreshVersion++
             if (BookingService.running) {
                 SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
-                refreshVpnStatus()
                 uiHandler.postDelayed(this, 60_000L)
                 return
             }
@@ -99,7 +91,6 @@ class MainActivity : ComponentActivity() {
                 }
                 preferredSessionCheck.attach(ticket, handle)
             }
-            refreshVpnStatus()
             uiHandler.postDelayed(this, 60_000L)
         }
     }
@@ -204,8 +195,8 @@ class MainActivity : ComponentActivity() {
                     if (error != null) status = error
                     else runCatching { scheduler.schedule(requested) }.onSuccess { next ->
                             config = store.load()
-                            status = "已安排 ${config.pendingTimes().size} 个抢座时间；下一次：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))}"
-                        }.onFailure { status = "安排失败，请检查精确闹钟权限；详情见任务记录" }
+                            status = "已安排一次预约（最多等待开放 10 分钟）：${next.format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))}"
+                        }.onFailure { status = "安排失败，请检查精确闹钟权限；详情见记录页" }
                 }
                 val exactPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
                     val requested = pendingSchedule
@@ -254,10 +245,9 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text("预约设置", style = MaterialTheme.typography.headlineSmall)
-                    Text("${config.room.groupName} · ${config.room.name} · 直连优先 / 学校 WebVPN 备用", style = MaterialTheme.typography.bodyMedium)
+                    Text("${config.room.groupName} · ${config.room.name} · 校园网直连", style = MaterialTheme.typography.bodyMedium)
                     LoginStatusCard(rememberLoginStatuses(), hasActions = true, onCheck = {
                         SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
-                        refreshVpnStatus()
                     }) {
                             val credentials = remember(refreshVersion) { CredentialStore(this@MainActivity) }
                             Text(if (!credentials.configured) "自动重新登录：未设置账号密码"
@@ -265,20 +255,11 @@ class MainActivity : ComponentActivity() {
                                 else if (credentials.enabled) "自动重新登录：已开启" else "自动重新登录：已关闭")
                             OutlinedButton(onClick = { managingLogin = true; loginEntryVisible = true }) { Text("登录 / 管理账号") }
                             OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java)) }) { Text("直连 · 图书馆网页登录") }
-                            OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, LoginActivity::class.java).putExtra("webvpn", true)) }) { Text("WebVPN 统一认证 / 图书馆网页登录") }
-                            OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, WebVpnAccountsActivity::class.java)) }) { Text("WebVPN 两套账号与自动登录") }
-                            OutlinedButton(onClick = { startActivity(Intent(this@MainActivity, OcrTrialActivity::class.java)) }) { Text("本地验证码 OCR 试验") }
-                            SettingSwitch(
-                                title = "直连优先，WebVPN 自动备用",
-                                detail = "仅提交前直连网络故障才切换；业务拒绝不切换。修改后需保存任务。",
-                                checked = config.webVpnBackup,
-                                onChecked = { config = config.copy(webVpnBackup = it) }
-                            )
                     }
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("预约计划与运行结果", style = MaterialTheme.typography.titleLarge)
-                            Text(if (liveConfig.enabled) "等待 ${liveConfig.pendingTimes().size} 个时间 · ${if (liveConfig.dryRun) "演练，不提交" else "真实预约"}" else "当前没有等待触发的定时任务")
+                            Text(if (liveConfig.enabled) "已安排一次真实预约 · 最多等待开放 10 分钟" else "当前没有等待触发的预约计划")
                             if (liveConfig.enabled) liveConfig.pendingTimes().forEach { at ->
                                 Text("计划：${RuntimeStore.format(at)}")
                             }
@@ -286,7 +267,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     Text(
-                        "安全提醒：直连图书馆使用 HTTP，请使用可信校园网。WebVPN 使用 HTTPS，但会话可能提前过期。",
+                        "安全提醒：图书馆使用 HTTP，请使用可信校园网；不再提供校外代理通道。",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -294,7 +275,7 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("准备", style = MaterialTheme.typography.titleMedium)
-                            Text("1. 在上方检查登录状态\n2. 选择楼层和阅览室\n3. 点击座位图加入候选，先点的优先\n4. 选择使用日期、时段，先演练再预约或安排定时任务")
+                            Text("1. 检查校园网和登录状态\n2. 选择楼层、阅览室和座位\n3. 选择使用日期和时段\n4. 点击预约，下一次 00:58 启动，最多等待开放 10 分钟")
                         }
                     }
 
@@ -302,10 +283,6 @@ class MainActivity : ComponentActivity() {
                         roomBrowser.launch(Intent(this@MainActivity, RoomBrowserActivity::class.java))
                     })
 
-                    ReleaseTimesField(config.times()) { times ->
-                        config = config.copy(releaseTimes = times, releaseHour = times.first() / 60,
-                            releaseMinute = times.first() % 60)
-                    }
                     SeatMapCard(seatMaps?.forRoom(config.room), config.seatNumbers) { selected ->
                         val draft = config.copy(seatNumbers = selected, seatChoices = emptyList(), mapSeats = emptyList())
                         val map = seatMaps?.forRoom(draft.room)
@@ -314,7 +291,7 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("预约哪一天", style = MaterialTheme.typography.titleMedium)
-                            Text("以任务运行当天为准。")
+                            Text("今天/明天以 00:58 启动当天为准；当前选择预计使用日：${FixedBookingPlan.targetDate(config)}")
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 if (config.reserveTomorrow) {
                                     OutlinedButton(
@@ -386,94 +363,42 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    SettingSwitch(
-                        title = "未开放时最多等待 10 分钟",
-                        detail = "任务实际启动后限时 10 分钟。明确未开放时约每秒检查接口，不重载整页；开放后按座位顺序预约。网络、账号或参数错误及提交结果不明时停止。演练仍不提交。",
-                        checked = config.waitForRelease,
-                        onChecked = { config = config.copy(waitForRelease = it) }
-                    )
+                    FixedBookingInfo()
                     OutlinedButton(onClick = {
                         startService(Intent(this@MainActivity, BookingService::class.java).setAction(BookingService.ACTION_CANCEL))
                         status = "已请求停止当前任务；不取消已成功的学校预约，也不取消其他定时计划"
                     }, modifier = Modifier.fillMaxWidth()) { Text("停止当前任务") }
-                    SettingSwitch(
-                        title = "演练模式",
-                        detail = if (config.appendLastThree) "只演练前四段；不提交预约，也不启动后三段" else "会走到座位图并识别座位，但不会提交预约",
-                        checked = config.dryRun,
-                        onChecked = { config = config.copy(dryRun = it) }
-                    )
-                    SettingSwitch(
-                        title = "按以上时间各运行一次",
-                        detail = "需要精确闹钟权限；运行后自动关闭",
-                        checked = config.enabled,
-                        onChecked = { config = config.copy(enabled = it) }
-                    )
-
-                    Button(
-                        onClick = {
+                    FixedBookingButton(onClick = book@{
                             val map = seatMaps?.forRoom(config.room)
                             val mapError = map?.selectionError(config.seatNumbers)
-                            val candidate = if (map != null && mapError == null) map.bind(config) else config
+                            val candidate = FixedBookingPlan.prepare(if (map != null && mapError == null) map.bind(config) else config)
                             val error = if (map == null) "此阅览室尚无已核对的座位图，请重新选择房间"
-                                else mapError ?: candidate.validationError()
-                            if (config.enabled && error != null) {
-                                status = error
-                                return@Button
-                            }
-                            config = candidate
-                            if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            if (config.enabled) {
-                                if (!scheduler.canScheduleExact()) {
-                                    pendingSchedule = config
-                                    exactPermission.launch(scheduler.exactAlarmSettingsIntent())
-                                    status = "请允许“闹钟和提醒”；返回应用后会继续安排任务"
-                                } else {
-                                    arrange(config)
-                                }
-                            } else {
-                                val cancelledTimes = store.load().pendingTimes()
-                                scheduler.cancel()
-                                config = config.withPending(emptyList())
-                                store.save(config)
-                                cancelledTimes.forEach { at -> runtime.record("CANCELLED", "定时任务已取消", RuntimeStore.scheduledAction(at)) }
-                                status = "自动运行已关闭"
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("保存并安排任务") }
-                    OutlinedButton(
-                        onClick = {
-                            val map = seatMaps?.forRoom(config.room)
-                            val mapError = map?.selectionError(config.seatNumbers)
-                            val candidate = if (map != null && mapError == null) map.bind(config) else config
-                            val error = if (map == null) "此阅览室尚无已核对的座位图，暂不能通过座位图预约"
                                 else mapError ?: candidate.validationError()
                             if (error != null) {
                                 status = error
-                                return@OutlinedButton
+                                return@book
                             }
                             config = candidate
-                            store.save(config)
-                            if (Build.VERSION.SDK_INT >= 33) {
-                                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            }
-                            runCatching { ContextCompat.startForegroundService(
-                                this@MainActivity,
-                                Intent(this@MainActivity, BookingService::class.java).apply {
-                                    action = BookingService.ACTION_RUN_ONCE
-                                }
-                            ) }.onSuccess {
-                                status = if (config.dryRun) "已开始立即演练" else "已开始单次预约"
-                            }.onFailure {
-                                status = "启动预约服务失败：${it.javaClass.simpleName}"
-                                runtime.record("FAILED", status, "manual-failed:${java.util.UUID.randomUUID()}", "立即任务")
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text(if (config.dryRun) "立即演练" else "立即预约所选座位") }
+                            if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            if (!scheduler.canScheduleExact()) {
+                                pendingSchedule = config
+                                exactPermission.launch(scheduler.exactAlarmSettingsIntent())
+                                status = "请允许“闹钟和提醒”；返回应用后会继续安排下次 00:58 的预约"
+                            } else arrange(config)
+                    })
+                    if (liveConfig.enabled) OutlinedButton(onClick = {
+                        val cancelled = store.load().pendingTimes()
+                        scheduler.cancel()
+                        pendingSchedule = null
+                        config = config.withPending(emptyList())
+                        store.save(config)
+                        cancelled.forEach { at -> runtime.record("CANCELLED", "用户取消了等待中的预约计划",
+                            RuntimeStore.scheduledAction(at)) }
+                        status = "已取消等待中的预约；不会取消学校已成功的预约"
+                    }, modifier = Modifier.fillMaxWidth()) { Text("取消已安排预约") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
                     Text(
-                        "请先演练。若页面无法识别座位号，应用会停止，不会猜测或点击其他座位。",
+                        "点击“预约”只安排下一次 00:58 的一次性任务，不会立即提交；当天 00:58 已过则安排到次日。需保持校园网可用。座位无法精确识别或提交结果不明时停止，不盲目重发。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(20.dp))

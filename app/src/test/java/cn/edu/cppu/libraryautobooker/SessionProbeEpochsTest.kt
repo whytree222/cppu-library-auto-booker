@@ -6,11 +6,11 @@ import org.junit.Test
 
 /** Synthetic cookie labels only: no school requests, credentials, or real session values. */
 class SessionProbeEpochsTest {
-    private val valid = SessionChecker.Result("valid", "synthetic verified result", vpnAuthState = "valid")
+    private val valid = SessionChecker.Result("valid", "synthetic verified result")
 
     @Test fun currentProbeMayApplyResponseCookiesAndStatusAndComplete() {
         val epochs = SessionProbeEpochs()
-        val ticket = epochs.begin(LibraryRoute.WEBVPN, "synthetic-before")
+        val ticket = epochs.begin(LibraryRoute.DIRECT, "synthetic-before")
         var cookie = "synthetic-before"
         var state = "checking"
         val results = mutableListOf<SessionChecker.Result>()
@@ -27,8 +27,8 @@ class SessionProbeEpochsTest {
 
     @Test fun authenticationNavigationDiscardsOldCookiesAndStateAndCompletesUnknown() {
         val epochs = SessionProbeEpochs()
-        val ticket = epochs.begin(LibraryRoute.WEBVPN, "synthetic-old")
-        epochs.invalidateAuthentication(LibraryRoute.WEBVPN)
+        val ticket = epochs.begin(LibraryRoute.DIRECT, "synthetic-old")
+        epochs.invalidateAuthentication(LibraryRoute.DIRECT)
         var writes = 0
         var result: SessionChecker.Result? = null
 
@@ -41,7 +41,7 @@ class SessionProbeEpochsTest {
 
     @Test fun changedCookieSnapshotCannotBeRestoredByLateResponse() {
         val epochs = SessionProbeEpochs()
-        val ticket = epochs.begin(LibraryRoute.WEBVPN, "synthetic-old")
+        val ticket = epochs.begin(LibraryRoute.DIRECT, "synthetic-old")
         var cookie = "synthetic-new-login"
         var state = "new-login-valid"
         var result: SessionChecker.Result? = null
@@ -58,8 +58,8 @@ class SessionProbeEpochsTest {
 
     @Test fun olderProbeCannotOverwriteNewerProbeButCanReturnResultForUnchangedSession() {
         val epochs = SessionProbeEpochs()
-        val older = epochs.begin(LibraryRoute.WEBVPN, "synthetic-shared")
-        val newer = epochs.begin(LibraryRoute.WEBVPN, "synthetic-shared")
+        val older = epochs.begin(LibraryRoute.DIRECT, "synthetic-shared")
+        val newer = epochs.begin(LibraryRoute.DIRECT, "synthetic-shared")
         var writes = 0
         var result: SessionChecker.Result? = null
 
@@ -70,25 +70,22 @@ class SessionProbeEpochsTest {
         assertSame(valid, result)
     }
 
-    @Test fun authenticationInvalidationAndProbeOrderingAreRouteScoped() {
+    @Test fun directAuthenticationInvalidationRejectsOutstandingProbe() {
         val epochs = SessionProbeEpochs()
         val direct = epochs.begin(LibraryRoute.DIRECT, "synthetic-direct")
-        epochs.begin(LibraryRoute.WEBVPN, "synthetic-vpn")
-        epochs.invalidateAuthentication(LibraryRoute.WEBVPN)
+        epochs.invalidateAuthentication(LibraryRoute.DIRECT)
         var writes = 0
         var result: SessionChecker.Result? = null
-
         epochs.deliver(direct, "synthetic-direct", valid, accept = { writes++ }, callback = { result = it })
-
-        assertEquals(1, writes)
-        assertSame(valid, result)
+        assertEquals(0, writes)
+        assertConservative(result)
     }
 
     @Test fun freshProbeAfterAuthenticationInvalidationCanCompleteNormally() {
         val epochs = SessionProbeEpochs()
-        epochs.begin(LibraryRoute.WEBVPN, "synthetic-old")
-        epochs.invalidateAuthentication(LibraryRoute.WEBVPN)
-        val fresh = epochs.begin(LibraryRoute.WEBVPN, "synthetic-fresh")
+        epochs.begin(LibraryRoute.DIRECT, "synthetic-old")
+        epochs.invalidateAuthentication(LibraryRoute.DIRECT)
+        val fresh = epochs.begin(LibraryRoute.DIRECT, "synthetic-fresh")
         var writes = 0
         var result: SessionChecker.Result? = null
 
@@ -100,21 +97,21 @@ class SessionProbeEpochsTest {
 
     @Test fun cookieRemovalAlsoInvalidatesSnapshotWhileMissingAndEmptyAreEquivalent() {
         val epochs = SessionProbeEpochs()
-        val beforeRemoval = epochs.begin(LibraryRoute.WEBVPN, "synthetic-old")
+        val beforeRemoval = epochs.begin(LibraryRoute.DIRECT, "synthetic-old")
         var writes = 0
         var removedResult: SessionChecker.Result? = null
         epochs.deliver(beforeRemoval, null, valid, accept = { writes++ }, callback = { removedResult = it })
         assertEquals(0, writes)
         assertConservative(removedResult)
 
-        val noCookie = epochs.begin(LibraryRoute.WEBVPN, null)
+        val noCookie = epochs.begin(LibraryRoute.DIRECT, null)
         epochs.deliver(noCookie, "", valid, accept = { writes++ }, callback = {})
         assertEquals(1, writes)
     }
 
     @Test fun ticketDiagnosticsNeverExposeItsCookieSnapshot() {
         val epochs = SessionProbeEpochs()
-        val ticket = epochs.begin(LibraryRoute.WEBVPN, "synthetic-do-not-print")
+        val ticket = epochs.begin(LibraryRoute.DIRECT, "synthetic-do-not-print")
         assertFalse(ticket.toString().contains("synthetic-do-not-print"))
     }
 
@@ -122,6 +119,5 @@ class SessionProbeEpochsTest {
         assertNotNull(result)
         assertEquals("unknown", result!!.state)
         assertFalse(result.networkFailure)
-        assertNull(result.vpnAuthState)
     }
 }

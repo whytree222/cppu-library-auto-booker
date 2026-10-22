@@ -17,13 +17,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.LibraryAutoBooker"
         android:usesCleartextTraffic="true">
-        <activity android:name=".WebVpnAccountsActivity" android:exported="false" />
         <activity android:name=".RoomBrowserActivity" android:exported="false" />
         <activity
             android:name=".LoginActivity"
-            android:exported="false" />
-        <activity
-            android:name=".OcrTrialActivity"
             android:exported="false" />
         <activity
             android:name=".SeatPickerActivity"

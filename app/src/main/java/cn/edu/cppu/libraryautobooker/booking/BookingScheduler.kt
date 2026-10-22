@@ -21,7 +21,8 @@ class BookingScheduler(private val context: Context) {
         data = android.net.Uri.parse("package:${context.packageName}")
     }
 
-    fun schedule(config: BookingConfig): ZonedDateTime {
+    fun schedule(draft: BookingConfig): ZonedDateTime {
+        val config = FixedBookingPlan.prepare(draft)
         val now = ZonedDateTime.now()
         require(config.times().all { it in 0..1439 }) { "抢座时间无效" }
         val triggers = config.times().map { nextTrigger(it / 60, it % 60, now) }.sorted()
@@ -32,7 +33,7 @@ class BookingScheduler(private val context: Context) {
         ConfigStore(context).save(planned)
         try {
             scheduleAt(planned.scheduledAtMillis)
-            RuntimeStore(context).record("SCHEDULED", "已安排 ${triggers.size} 个时间，下一次${if (config.dryRun) "演练（不提交）" else "真实预约"}：${RuntimeStore.format(planned.scheduledAtMillis)}",
+            RuntimeStore(context).record("SCHEDULED", "已安排一次 00:58 真实预约，最多等待开放 10 分钟：${RuntimeStore.format(planned.scheduledAtMillis)}",
                 RuntimeStore.scheduledAction(planned.scheduledAtMillis), if (config.dryRun) "定时演练" else "定时预约")
         } catch (error: RuntimeException) {
             ConfigStore(context).save(planned.withPending(emptyList()))

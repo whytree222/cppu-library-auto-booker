@@ -80,11 +80,9 @@ fun LoginStatusCard(statuses: LoginStatusStore.Snapshot, onCheck: (() -> Unit)? 
             Text("登录状态", style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold, color = Color(0xFF245A8D))
             StatusLine("校园网直连 · 图书馆", statuses.direct.state, statuses.direct.detail, statuses.direct.checkedAt, showDetails = details)
-            StatusLine("WebVPN · 学校统一认证", statuses.vpnAuth.state, statuses.vpnAuth.detail, statuses.vpnAuth.checkedAt, showDetails = details)
-            StatusLine("WebVPN · 图书馆登录", statuses.vpnLibrary.state, statuses.vpnLibrary.detail, statuses.vpnLibrary.checkedAt, showDetails = details)
-            Text("两层 WebVPN 会话分别检查；五天自动登录不代表固定有效期。状态仅代表最近检查结果。",
+            Text("需要连接可访问图书馆的校园网络；状态仅代表最近检查结果。",
                 style = MaterialTheme.typography.bodySmall)
-            if (onCheck != null) OutlinedButton(onClick = onCheck, modifier = Modifier.fillMaxWidth()) { Text("检查全部登录状态") }
+            if (onCheck != null) OutlinedButton(onClick = onCheck, modifier = Modifier.fillMaxWidth()) { Text("检查登录状态") }
             TextButton(onClick = { details = !details }) { Text(if (details) "收起登录详情" else "查看登录详情") }
             if (hasActions) TextButton(onClick = { actions = !actions }) { Text(if (actions) "收起登录操作" else "登录操作 / 连接设置") }
             if (actions) content()
@@ -111,4 +109,3 @@ fun PermissionStatusCard(exact: Boolean, notifications: Boolean, battery: Boolea
         }
     }
 }
-

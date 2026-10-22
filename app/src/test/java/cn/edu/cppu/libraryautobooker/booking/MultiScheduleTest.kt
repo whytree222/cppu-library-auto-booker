@@ -23,12 +23,12 @@ class MultiScheduleTest {
         assertEquals(listOf(1000L), store.load().pendingTimes())
     }
 
-    @Test fun multipleTimesArePersistedAndChronologicallyScheduled() {
+    @Test fun schedulerIgnoresLegacyCustomTimesAndUsesOneFixed0058Plan() {
         val scheduler = BookingScheduler(app)
         scheduler.schedule(BookingConfig(releaseTimes = listOf(1200, 360, 360, 800)))
         val saved = ConfigStore(app).load()
-        assertEquals(listOf(360, 800, 1200), saved.times())
-        assertEquals(3, saved.pendingTimes().size)
+        assertEquals(listOf(58), saved.times())
+        assertEquals(1, saved.pendingTimes().size)
         assertEquals(saved.pendingTimes().sorted(), saved.pendingTimes())
         assertEquals(saved.pendingTimes().first(), saved.scheduledAtMillis)
     }

@@ -25,7 +25,7 @@ import cn.edu.cppu.libraryautobooker.MainActivity
 import cn.edu.cppu.libraryautobooker.SessionCoordinator
 import cn.edu.cppu.libraryautobooker.AutoLogin
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
-import cn.edu.cppu.libraryautobooker.network.FallbackPolicy
+import cn.edu.cppu.libraryautobooker.network.SubmissionGuard
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import java.time.LocalDate
@@ -43,8 +43,7 @@ class BookingService : Service() {
     private var historyId: String? = null
     private var releaseDeadline = 0L
     private var gateActive = false
-    private var fallback: FallbackPolicy? = null
-    private var vpnPageRecoveryUsed = false
+    private val submission = SubmissionGuard()
     private var loginCheck: AutoCloseable? = null
 
     override fun onCreate() {
@@ -103,7 +102,6 @@ class BookingService : Service() {
             Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else LocalDate.now()
         sequence = BookingSequence(config, taskDay)
         running = true
-        fallback = FallbackPolicy(config.webVpnBackup)
         if (config.waitForRelease) {
             releaseDeadline = SystemClock.elapsedRealtime() + 600_000L
             main.postDelayed({
@@ -119,26 +117,22 @@ class BookingService : Service() {
     private fun startBatch() {
         releaseLoginCheck()
         val authGeneration = ++generation
-        val route = fallback?.route ?: LibraryRoute.DIRECT
-        record("RUNNING", sequence?.progress("${route.label}：正在验证登录；WebVPN 可使用独立保存的两套账号恢复") ?: "正在验证登录")
+        val route = LibraryRoute.DIRECT
+        record("RUNNING", sequence?.progress("${route.label}：正在验证图书馆登录，过期时自动重新登录") ?: "正在验证登录")
         loginCheck = SessionCoordinator.checkRoute(this, route) { result ->
             if (terminal || generation != authGeneration) return@checkRoute
             releaseLoginCheck()
             if (result.state == "valid") launchBatch()
             else if (result.networkFailure) networkFailure(result.detail)
-            else fail(if (route == LibraryRoute.WEBVPN) "${result.detail}；请在应用内完成 WebVPN 统一认证及图书馆网页登录" else result.detail)
+            else fail(result.detail)
         }
     }
 
     private fun networkFailure(detail: String) {
         if (terminal) return
-        if (fallback?.switchForNetworkFailure() == true) {
-            generation++
-            webView?.stopLoading(); webView?.destroy(); webView = null
-            record("RUNNING", "$detail；发生提交前直连网络故障，切换学校 WebVPN；重新读取日期、时段与签名")
-            startBatch()
-        } else fail(if (fallback?.hasSubmitted() == true)
-            "$detail；已经进入确认提交阶段，结果不明时不切换、不重发，请核对学校记录" else detail)
+        fail(if (submission.hasSubmitted())
+            "$detail；已经进入确认提交阶段，结果不明时不重发，请核对学校记录"
+            else "$detail；请检查校园网络，未提交预约")
     }
 
     private fun launchBatch() {
@@ -153,7 +147,7 @@ class BookingService : Service() {
             return
         }
         val currentGeneration = ++generation
-        val route = fallback?.route ?: LibraryRoute.DIRECT
+        val route = LibraryRoute.DIRECT
         gateActive = config.waitForRelease
         val bridge = Bridge(currentGeneration, run.batch, route)
         // Fresh fields and dialogs for each batch; app-wide cookies keep the login.
@@ -168,12 +162,7 @@ class BookingService : Service() {
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     if (route.pathOf(request.url.toString()) == null) {
-                        if (route == LibraryRoute.WEBVPN && !automationStarted && !vpnPageRecoveryUsed &&
-                            fallback?.hasSubmitted() != true && cn.edu.cppu.libraryautobooker.WebVpnLoginDriver.allowsNavigation(request.url.toString())) {
-                            main.post { if (!terminal && generation == currentGeneration) recoverWebVpnPage() }
-                            return true
-                        }
-                        fail(if (route == LibraryRoute.WEBVPN) "WebVPN 需要手动统一认证或页面跳转不符合图书馆代理路径；已停止" else "页面跳转到非图书馆站点，已停止")
+                        fail("页面跳转到非图书馆站点，已停止")
                         return true
                     }
                     return false
@@ -182,24 +171,11 @@ class BookingService : Service() {
                     if (terminal || generation != currentGeneration) return
                     val path = route.pathOf(url)
                     if (path == null) {
-                        if (route == LibraryRoute.WEBVPN && !automationStarted && !vpnPageRecoveryUsed && fallback?.hasSubmitted() != true &&
-                            cn.edu.cppu.libraryautobooker.WebVpnLoginDriver.allowsNavigation(url)) {
-                            main.post { if (!terminal && generation == currentGeneration) recoverWebVpnPage() }
-                            return
-                        }
-                        fail(if (route == LibraryRoute.WEBVPN) "WebVPN 会话失效或跳转到统一认证，请手动登录；未继续预约" else "页面跳转到非图书馆站点，已停止")
+                        fail("页面跳转到非图书馆站点，已停止")
                         return
                     }
                     if (path == "/login") {
                         RuntimeStore(this@BookingService).session("expired", "运行预约时发现登录已失效")
-                        if (route == LibraryRoute.WEBVPN) {
-                            if (!automationStarted && !vpnPageRecoveryUsed && fallback?.hasSubmitted() != true) {
-                                main.post { if (!terminal && generation == currentGeneration) recoverWebVpnPage() }
-                                return
-                            }
-                            fail("WebVPN 通道的图书馆登录已过期，请使用应用内 WebVPN 网页登录；未使用保存的直连密码")
-                            return
-                        }
                         if (automationStarted || recoveredLogin) {
                             fail("预约过程中登录失效，未确认预约结果；请核对记录后重试")
                             return
@@ -239,13 +215,13 @@ class BookingService : Service() {
                         if (error.errorCode in listOf(WebViewClient.ERROR_HOST_LOOKUP, WebViewClient.ERROR_CONNECT,
                                 WebViewClient.ERROR_TIMEOUT, WebViewClient.ERROR_IO))
                             networkFailure("${route.label}网页连接失败，错误代码 ${error.errorCode}")
-                        else fail("${route.label}网页加载失败，错误代码 ${error.errorCode}；未切换通道")
+                        else fail("${route.label}网页加载失败，错误代码 ${error.errorCode}")
                     }
                 }
                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
                     if (terminal || generation != currentGeneration || !request.isForMainFrame) return
                     if (response.statusCode in listOf(408, 502, 503, 504)) networkFailure("${route.label}网关返回 HTTP ${response.statusCode}")
-                    else fail("${route.label}返回 HTTP ${response.statusCode}；未切换通道")
+                    else fail("${route.label}返回 HTTP ${response.statusCode}")
                 }
                 override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
                     handler.cancel()
@@ -266,20 +242,6 @@ class BookingService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun recoverWebVpnPage() {
-        if (terminal || vpnPageRecoveryUsed || fallback?.hasSubmitted() == true) return
-        releaseLoginCheck()
-        vpnPageRecoveryUsed = true
-        val id = ++generation
-        webView?.stopLoading(); webView?.destroy(); webView = null
-        record("RUNNING", "提交预约前发现 WebVPN 会话失效，尝试恢复统一认证及图书馆登录；不重发已提交预约")
-        loginCheck = SessionCoordinator.checkRoute(this, LibraryRoute.WEBVPN) { result ->
-            if (terminal || generation != id) return@checkRoute
-            releaseLoginCheck()
-            if (result.state == "valid") launchBatch() else fail(result.detail)
-        }
-    }
 
     override fun onDestroy() {
         if (!terminal && sequence != null) record("INTERRUPTED", sequence!!.progress("预约服务提前结束，未确认最终结果；请核对学校记录"))
@@ -332,7 +294,7 @@ class BookingService : Service() {
         @JavascriptInterface
         fun beginSubmission(): Boolean {
             if (terminal || generation != sourceGeneration) return false
-            return fallback?.markSubmission(sourceRoute) == true
+            return submission.markSubmission(sourceRoute)
         }
 
         @JavascriptInterface
@@ -373,7 +335,7 @@ class BookingService : Service() {
         fun booked(seatNumber: String, detail: String) = dispatch {
             when (val result = sequence?.success(sourceBatch, seatNumber)) {
                 is BookingSequence.Result.Next -> {
-                    fallback?.confirmedNextBatch()
+                    submission.confirmedNextBatch()
                     record("RUNNING", result.detail)
                     showResult(result.detail)
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(result.detail))

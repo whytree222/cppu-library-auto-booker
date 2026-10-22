@@ -2,16 +2,13 @@
   'use strict';
   // Read-only room/rule discovery. Never invokes roomonclick, date selection,
   // checkIsBesk, seat-map navigation, or any reservation submission endpoint.
-  const vpnPrefix = '/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b';
   function scope() {
     try {
       const u = new URL(window.location.href);
       if (u.username || u.password || u.hash) return null;
       const direct = u.protocol === 'http:' && u.hostname === 'mlib.cppu.edu.cn' && !u.port;
-      const proxy = u.protocol === 'https:' && u.hostname === 'webvpn.cppu.edu.cn' && !u.port;
-      const prefix = proxy ? vpnPrefix : '';
-      if (!(direct || proxy) || u.pathname !== prefix + '/selectreadingroom') return null;
-      return { href: u.href, prefix };
+      if (!direct || u.pathname !== '/selectreadingroom') return null;
+      return { href: u.href, prefix: '' };
     } catch (_) { return null; }
   }
   const initialScope = scope();

@@ -20,8 +20,7 @@ function run(options = {}) {
     <button type="button">下一步</button></form></div>
     <div id="selecusetime" style="display:none"><input id="begintime"><input id="endtime">
       <button onclick="selectedtimes();">下一步</button></div></body>`,
-    { url: options.proxy ? 'https://webvpn.cppu.edu.cn/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b/selectreadingroom'
-      : 'http://mlib.cppu.edu.cn/selectreadingroom', runScripts: 'outside-only' });
+    { url: 'http://mlib.cppu.edu.cn/selectreadingroom', runScripts: 'outside-only' });
   const w = dom.window;
   const d = w.document;
   const messages = [];
@@ -30,8 +29,8 @@ function run(options = {}) {
   let next = 0;
   w.setTimeout = fn => { timers.push(fn); return timers.length; };
   w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
-  if (options.proxy) w.eval(fs.readFileSync('app/src/main/assets/transport.js', 'utf8').replace('__TRANSPORT_CONFIG__', JSON.stringify({
-    origin:'https://webvpn.cppu.edu.cn', prefix:'/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b'
+  if (options.transport) w.eval(fs.readFileSync('app/src/main/assets/transport.js', 'utf8').replace('__TRANSPORT_CONFIG__', JSON.stringify({
+    origin:'http://mlib.cppu.edu.cn', prefix:''
   })));
   d.querySelector('#roomdata div').onclick = () => { d.getElementById('dates').style.display = ''; };
   d.querySelector('#dates div').onclick = () => {
@@ -92,7 +91,7 @@ for (const [name, options] of [
   ['today full date', {}], ['today relative zero', { rawDate: '0' }],
   ['today missing date', { rawDate: null }], ['today label', { rawDate: '今日' }],
   ['tomorrow full date', { tomorrow: true }], ['hidden previous tomorrow options', { stale: true }],
-  ['WebVPN proxy path and form action', { proxy: true, tomorrow: true }]
+  ['campus transport path and form action', { transport: true, tomorrow: true }]
 ]) test(`select requested date and time slots: ${name}`, () => {
   const result = run(options);
   assert.equal(result.next, 1, JSON.stringify(result.messages));
@@ -139,7 +138,7 @@ const otherRoom = { id: '34', name: '文科样本区', groupId: '4', groupName: 
   { begin: '13:00:00', end: '17:00:00' }, { begin: '18:00:00', end: '21:30:00' }
 ] };
 test('fixed schedules belong to the chosen room and do not use seven legacy slots', () => {
-  const f = run({ room: otherRoom, selectedSlots: [1, 2], omitPastSlots: 1, tomorrow: true, proxy: true });
+  const f = run({ room: otherRoom, selectedSlots: [1, 2], omitPastSlots: 1, tomorrow: true, transport: true });
   assert.equal(f.next, 1, JSON.stringify(f.messages));
   assert.deepEqual(f.selected, ['slot1', 'slot2']);
 });
@@ -152,7 +151,7 @@ for (const option of ['wrongRoom', 'wrongEnd', 'missingSignature', 'duplicateRoo
 const freeRoom = { ...otherRoom, id: '35', name: '研修阅览区', timeMode: 'free', slots: [],
   minMinutes: 30, maxMinutes: 180, stepMinutes: 15 };
 for (const tomorrow of [true, false]) test(`free room uses original selectedtimes button with exact HH:mm: ${tomorrow}`, () => {
-  const f = run({ room: freeRoom, selectedSlots: [], startTime: '09:15', endTime: '11:00', tomorrow, proxy: true });
+  const f = run({ room: freeRoom, selectedSlots: [], startTime: '09:15', endTime: '11:00', tomorrow, transport: true });
   assert.equal(f.next, 1, JSON.stringify(f.messages));
   assert.deepEqual(f.freeValues, ['09:15', '11:00']);
 });

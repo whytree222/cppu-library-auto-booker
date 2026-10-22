@@ -27,8 +27,7 @@ function fixture(options = {}) {
       <button class="ui positive button">确认</button><button>取消</button></div></div></div>
     <div id="result" class="alertify ajs-hidden"><div class="ajs-dialog">
       <div class="ajs-content"></div><div class="ajs-footer"><button>确认</button></div></div></div>
-    </body>`, { url: (options.proxy ? 'https://webvpn.cppu.edu.cn/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b'
-      : 'http://mlib.cppu.edu.cn') + (options.path || (room?.timeMode === 'free' ? '/readingroomtablelist' : '/multireadingroomtablelist')), runScripts: 'outside-only' });
+    </body>`, { url: 'http://mlib.cppu.edu.cn' + (options.path || (room?.timeMode === 'free' ? '/readingroomtablelist' : '/multireadingroomtablelist')), runScripts: 'outside-only' });
   const w = dom.window;
   const d = w.document;
   const messages = [];
@@ -50,8 +49,8 @@ function fixture(options = {}) {
   };
   w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
   if (options.guard) w.AutoBooker.beginSubmission = () => !options.denySubmission;
-  if (options.proxy) w.eval(fs.readFileSync('app/src/main/assets/transport.js', 'utf8').replace('__TRANSPORT_CONFIG__', JSON.stringify({
-    origin:'https://webvpn.cppu.edu.cn', prefix:'/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b'
+  if (options.transport) w.eval(fs.readFileSync('app/src/main/assets/transport.js', 'utf8').replace('__TRANSPORT_CONFIG__', JSON.stringify({
+    origin:'http://mlib.cppu.edu.cn', prefix:''
   })));
   if (options.nativeBridge) w.AutoBooker.booked = (seat, detail) => messages.push({ state: 'success', detail, seat });
   for (const seat of d.querySelectorAll('#seat-map .seatCharts-seat[id]')) {
@@ -151,7 +150,7 @@ function fixture(options = {}) {
 for (const [name, options] of [
   ['tomorrow', {}], ['today', { today: true }], ['two time slots', { multi: true }],
   ['confirmation delayed beyond the old 500 ms check', { delay: 2000 }],
-  ['WebVPN path and native submission guard', { proxy: true, guard: true }]
+  ['campus transport and native submission guard', { transport: true, guard: true }]
 ]) test(`confirm once and recognize success: ${name}`, async () => {
   const f = fixture(options);
   try {
@@ -331,7 +330,7 @@ const freeRoom = { ...otherRoom, id: '35', name: '研修阅览区', timeMode: 'f
   minMinutes: 30, maxMinutes: 180, stepMinutes: 15 };
 for (const room of [otherRoom, freeRoom]) for (const today of [true, false]) {
   test(`${room.timeMode} room uses its own identity and exact live seat: ${today ? 'today' : 'tomorrow'}`, async () => {
-    const f = fixture({ room, today, proxy: true, mapNumbers: ['文A_001', '4-023.B'], numbers: ['4-023.B'],
+    const f = fixture({ room, today, transport: true, mapNumbers: ['文A_001', '4-023.B'], numbers: ['4-023.B'],
       selectedSlots: [1, 2], nativeBridge: true });
     try {
       await f.advance(5000);
@@ -381,4 +380,3 @@ for (const number of ['A 001', '<script>', '_001', 'A'.repeat(65)])
     try { await f.advance(5000); assert.equal(f.requests(), 0); assert.match(f.messages.at(-1).detail, /格式错误/); }
     finally { f.close(); }
   });
-

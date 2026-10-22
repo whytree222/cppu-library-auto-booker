@@ -7,12 +7,14 @@ import org.json.JSONObject
 class ConfigStore(context: Context) {
     private val prefs = context.getSharedPreferences("booking_config", Context.MODE_PRIVATE)
 
+    init { LegacyFeatureMigration.run(context) }
+
     fun load() = BookingConfig(
         enabled = prefs.getBoolean("enabled", false),
         dryRun = prefs.getBoolean("dry_run", true),
         reserveTomorrow = prefs.getBoolean("reserve_tomorrow", true),
-        releaseHour = prefs.getInt("release_hour", 6),
-        releaseMinute = prefs.getInt("release_minute", 0),
+        releaseHour = prefs.getInt("release_hour", 0),
+        releaseMinute = prefs.getInt("release_minute", 58),
         roomKeywords = prefs.getString("room_keywords", "").orEmpty(),
         seatKeywords = prefs.getString("seat_keywords", "").orEmpty(),
         seatChoices = readSeats(),
@@ -28,7 +30,6 @@ class ConfigStore(context: Context) {
         releaseTimes = readLongs("release_times").filter { it in 0..1439 }.map { it.toInt() },
         scheduledTimes = readLongs("scheduled_times").filter { it > 0 },
         waitForRelease = prefs.getBoolean("wait_for_release", false),
-        webVpnBackup = prefs.getBoolean("webvpn_backup", true),
         room = if (!prefs.contains("room_profile")) RoomProfile.DEFAULT else runCatching {
             RoomProfile.fromJson(JSONObject(prefs.getString("room_profile", "")!!))
         }.getOrNull() ?: RoomProfile("", "未识别的阅览室", "", "未知楼层", "unknown")
@@ -39,7 +40,6 @@ class ConfigStore(context: Context) {
             .putBoolean("enabled", config.enabled)
             .putBoolean("dry_run", config.dryRun)
             .putBoolean("wait_for_release", config.waitForRelease)
-            .putBoolean("webvpn_backup", config.webVpnBackup)
             .putString("room_profile", config.room.toJson().toString())
             .putBoolean("reserve_tomorrow", config.reserveTomorrow)
             .putInt("release_hour", config.releaseHour)
@@ -114,4 +114,3 @@ class ConfigStore(context: Context) {
         listOf(-1) // Retain an invalid marker; never silently change the user's requested slots.
     }
 }
-

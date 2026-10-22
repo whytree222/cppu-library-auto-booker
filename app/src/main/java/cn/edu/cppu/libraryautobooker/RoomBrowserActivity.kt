@@ -24,7 +24,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import cn.edu.cppu.libraryautobooker.data.RoomCatalogStore
 import cn.edu.cppu.libraryautobooker.data.RoomProfile
-import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import org.json.JSONArray
 import org.json.JSONObject
@@ -37,19 +36,10 @@ class RoomBrowserActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var message: TextView
     private lateinit var roomList: LinearLayout
-    private lateinit var routeButton: Button
     private val handler = Handler(Looper.getMainLooper())
     private val catalog by lazy { RoomCatalogStore(this) }
     private val script by lazy { assets.open("room-discovery.js").bufferedReader().use { it.readText() } }
-    @Volatile private var route = LibraryRoute.DIRECT
-    private fun preferredRoute(): LibraryRoute =
-        if (intent.hasExtra("webvpn")) {
-            if (intent.getBooleanExtra("webvpn", false)) LibraryRoute.WEBVPN else LibraryRoute.DIRECT
-        } else {
-            val prefs = RuntimeStore(this).prefs
-            runCatching { LibraryRoute.valueOf(prefs.getString("session_route", prefs.getString("active_route", "DIRECT"))!!) }
-                .getOrDefault(LibraryRoute.DIRECT)
-        }
+    private val route = LibraryRoute.DIRECT
     private val groups = linkedMapOf<String, String>()
     private val pendingGroups = ArrayDeque<String>()
     private val collected = linkedMapOf<String, RoomProfile>()
@@ -66,7 +56,6 @@ class RoomBrowserActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        route = preferredRoute()
         CookieManager.getInstance().setAcceptCookie(true)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 12, 12, 0) }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
@@ -79,22 +68,6 @@ class RoomBrowserActivity : Activity() {
             setPadding(8, 8, 8, 12)
         }
         root.addView(message)
-        routeButton = Button(this).apply {
-            text = "访问线路：${route.label}（点此切换）"
-            setOnClickListener {
-                AlertDialog.Builder(this@RoomBrowserActivity).setTitle("选择能够访问学校的线路")
-                    .setItems(arrayOf("校园网直连", "学校 WebVPN")) { _, index ->
-                        cancelSync()
-                        webView.stopLoading()
-                        route = if (index == 0) LibraryRoute.DIRECT else LibraryRoute.WEBVPN
-                        text = "访问线路：${route.label}（点此切换）"
-                        groups.clear(); currentGroupId = "0"; pageLoaded = false
-                        message.text = "正在通过${route.label}重新读取学校列表；如未登录，请点“登录 / 重新读取”。"
-                        webView.loadUrl(route.url("/selectreadingroom"))
-                    }.setNegativeButton("取消", null).show()
-            }
-        }
-        root.addView(routeButton)
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         actions.addView(Button(this).apply {
             text = "同步全部楼层"
@@ -109,7 +82,7 @@ class RoomBrowserActivity : Activity() {
             setOnClickListener {
                 cancelSync()
                 reloadAfterLogin = true
-                startActivity(Intent(this@RoomBrowserActivity, LoginActivity::class.java).putExtra("webvpn", route == LibraryRoute.WEBVPN))
+                startActivity(Intent(this@RoomBrowserActivity, LoginActivity::class.java))
             }
         }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(actions)
@@ -189,17 +162,11 @@ class RoomBrowserActivity : Activity() {
         if (method == "POST") return path in setOf("/readingroom/checktimecanbesk", "/readingroom/getbesktimelist")
         if (method != "GET") return false
         if (path == "/selectreadingroom") return true
-        // Static files are necessary for the school's own jQuery/proxy processing.
+        // Static files are necessary for the school's own jQuery processing.
         // Other GET endpoints (including seat maps and state-changing URLs) stay blocked.
         val staticFile = Regex("(?i)^/(?:js|assets|css|images|fonts|plugins|scripts)/[a-z0-9_./@-]+\\.(?:js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot)$")
         if (path != null && staticFile.matches(path) && path.split('/').none { it == ".." }) return true
-        if (requestRoute != LibraryRoute.WEBVPN) return false
-        return runCatching {
-            val uri = URI(url)
-            uri.scheme == "https" && uri.host == "webvpn.cppu.edu.cn" && uri.userInfo == null && uri.port in listOf(-1, 443) &&
-                Regex("(?i)^/wengine-vpn/(?:js|css|images|fonts)/[a-z0-9_./@-]+\\.(?:js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot)$").matches(uri.rawPath.orEmpty()) &&
-                uri.rawPath.split('/').none { it == ".." }
-        }.getOrDefault(false)
+        return false
     }
 
     private fun blockedResponse() = WebResourceResponse("text/plain", "UTF-8", 403, "Read-only room discovery",

@@ -25,15 +25,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Prepare verified offline OCR model
-        run: python scripts/prepare_ocr.py
-      - name: Verify offline model contract (synthetic input only)
-        run: |
-          python -m pip install 'onnxruntime==1.24.3'
-          python scripts/verify_ocr_model.py
       - name: Install Android SDK
         run: |
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' | sort -V | tail -1)
@@ -61,8 +52,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum app/build/outputs/apk/debug/app-debug.apk
-          if gh release view v0.16.0 >/dev/null 2>&1; then
-            gh release upload v0.16.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.17.0 >/dev/null 2>&1; then
+            gh release upload v0.17.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.16.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.16.0 · 预约、权限、记录独立页面' --notes '底部导航分为预约、权限、记录三个页面。预约页集中楼层阅览室、交互座位图、放号时间及使用日期时段；权限页集中精确闹钟、通知、省电和自启动检查，以及60秒后台唤醒测试；记录页独立展示最近三次任务，支持展开步骤。切换页面保留预约草稿、各页滚动位置及可保存的展开状态，不触发预约或修改已安排任务；从权限设置返回后刷新授权状态，首次权限引导保留。当前源码及上一发布版未发现WebDAV功能或依赖，未误删WebVPN校外访问。沿用原有登录、真实座位图、定时及防重复提交流程。使用离线和模拟测试验证，未在学校系统提交真实预约。'
+            gh release create v0.17.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.0 · 校园网直连与一键预约' --notes '移除WebVPN校外代理、网址转换、统一认证、两套账号设置及对应验证码OCR依赖。仅保留校园网直连和图书馆自动重新登录。移除自定义/多个抢座时间、演练和立即提交入口，选好座位与使用日期时段后，点击一个预约按钮安排下一次手机本地00:58的一次性真实预约，明确未开放时最多等待10分钟，不每日循环。保留取消计划、停止当前任务，网络或账号错误及提交结果不明停止，避免重复预约。升级取消旧自定义时间任务并清除退役WebVPN保存信息，保留直连账号和选座使用时段，需用户重新点击预约。沿用独立预约、权限、记录三页及真实楼层座位图。离线模拟和Android测试验证，未连接学校创建真实预约。'
           fi

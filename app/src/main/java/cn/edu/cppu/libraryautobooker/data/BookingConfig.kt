@@ -8,8 +8,8 @@ data class BookingConfig(
     val enabled: Boolean = false,
     val dryRun: Boolean = true,
     val reserveTomorrow: Boolean = true,
-    val releaseHour: Int = 6,
-    val releaseMinute: Int = 0,
+    val releaseHour: Int = 0,
+    val releaseMinute: Int = 58,
     val roomKeywords: String = "",
     val seatKeywords: String = "",
     val seatChoices: List<SeatChoice> = emptyList(),
@@ -24,7 +24,6 @@ data class BookingConfig(
     val releaseTimes: List<Int> = emptyList(),
     val scheduledTimes: List<Long> = emptyList(),
     val waitForRelease: Boolean = false,
-    val webVpnBackup: Boolean = true,
     val room: RoomProfile = RoomProfile.DEFAULT
 ) {
     /** Binds an already-queued alarm handoff to this exact room/seat/time draft. */
@@ -32,7 +31,7 @@ data class BookingConfig(
         val snapshot = JSONObject().put("room", room.toJson()).put("seats", JSONArray(seatNumbers))
             .put("slots", JSONArray(selectedSlots)).put("tomorrow", reserveTomorrow)
             .put("start", startTime).put("end", endTime).put("append", appendLastThree)
-            .put("dryRun", dryRun).put("wait", waitForRelease).put("vpn", webVpnBackup)
+            .put("dryRun", dryRun).put("wait", waitForRelease)
         if (mapSeats.isNotEmpty()) snapshot.put("mapSeats", JSONArray().apply { mapSeats.forEach {
             put(JSONObject().put("id", it.id).put("row", it.row).put("column", it.column))
         } })
@@ -85,4 +84,3 @@ data class BookingConfig(
             scheduledAtMillis = pending.firstOrNull() ?: 0L)
     }
 }
-

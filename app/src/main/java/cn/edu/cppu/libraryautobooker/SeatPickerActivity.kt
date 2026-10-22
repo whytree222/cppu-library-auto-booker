@@ -14,7 +14,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.SeatChoice
-import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import org.json.JSONArray
 import org.json.JSONObject
@@ -68,9 +67,7 @@ class SeatPickerActivity : Activity() {
                     if (!captureEnabled) showSelections()
                 }
             }
-            val route = runCatching { LibraryRoute.valueOf(RuntimeStore(this@SeatPickerActivity).prefs.getString("active_route", "DIRECT")!!) }
-                .getOrDefault(LibraryRoute.DIRECT)
-            loadUrl(route.url("/selectreadingroom"))
+            loadUrl(LibraryRoute.DIRECT.url("/selectreadingroom"))
         }
         frame.addView(webView, FrameLayout.LayoutParams(-1, -1))
         captureLayer = View(this).apply {
@@ -155,4 +152,3 @@ class SeatPickerActivity : Activity() {
         super.onDestroy()
     }
 }
-

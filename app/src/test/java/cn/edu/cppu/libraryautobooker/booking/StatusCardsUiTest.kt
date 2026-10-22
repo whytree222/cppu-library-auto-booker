@@ -26,13 +26,13 @@ import org.robolectric.annotation.LooperMode
 class StatusCardsUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun twoVpnLayersAreVisibleWithSeparateLabelsAndDetails() {
-        val entry = LoginStatusStore.Entry("valid", "已验证", 1000)
+    @Test fun onlyCampusLoginStatusAndDetailsAreShown() {
+        val entry = LoginStatusStore.Entry("expired", "请重新登录图书馆", 1000)
         compose.setContent { MaterialTheme { Column(Modifier.verticalScroll(rememberScrollState())) {
-            LoginStatusCard(LoginStatusStore.Snapshot(entry, entry, LoginStatusStore.Entry("expired", "请重新登录图书馆", 1000)))
+            LoginStatusCard(LoginStatusStore.Snapshot(entry))
         } } }
-        compose.onNodeWithText("WebVPN · 学校统一认证").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("WebVPN · 图书馆登录").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("校园网直连 · 图书馆").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("WebVPN · 图书馆登录").assertDoesNotExist()
         compose.onNodeWithText("未登录 / 已过期").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("查看登录详情").performScrollTo().performClick()
         compose.onNodeWithText("请重新登录图书馆").performScrollTo().assertIsDisplayed()
@@ -49,4 +49,3 @@ class StatusCardsUiTest {
         compose.onNodeWithText("登录状态").assertDoesNotExist()
     }
 }
-

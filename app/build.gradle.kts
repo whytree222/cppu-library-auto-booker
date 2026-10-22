@@ -1,5 +1,3 @@
-import java.security.MessageDigest
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -14,8 +12,8 @@ android {
         applicationId = "cn.edu.cppu.libraryautobooker"
         minSdk = 26
         targetSdk = 35
-        versionCode = 42
-        versionName = "0.16.0"
+        versionCode = 43
+        versionName = "0.17.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -56,7 +54,6 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.24.3")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
@@ -64,26 +61,3 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
-
-// CI prepares checksum-pinned assets. Local builds must run scripts/prepare_ocr.py first.
-val verifyOcrAssets by tasks.registering {
-    doLast {
-        val assets = file("src/main/assets/ocr")
-        check(file("${assets}/common_old.onnx").isFile && file("${assets}/charsets.json").isFile) {
-            "Missing local OCR assets. Run: python scripts/prepare_ocr.py"
-        }
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(file("${assets}/common_old.onnx").readBytes())
-            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        check(digest == "b8f2ad9cbc1f2e3922a6cb9459e30824e7e2467f3fb4fd61420640e34ea0bf68") {
-            "OCR model integrity mismatch. Run: python scripts/prepare_ocr.py"
-        }
-        val alphabetDigest = MessageDigest.getInstance("SHA-256")
-            .digest(file("${assets}/charsets.json").readBytes())
-            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        check(alphabetDigest == "9359f328328c7bc3a1018be2e5f442e8e755d2e92cf91231815768101765b404") {
-            "OCR alphabet integrity mismatch. Run: python scripts/prepare_ocr.py"
-        }
-    }
-}
-tasks.named("preBuild").configure { dependsOn(verifyOcrAssets) }

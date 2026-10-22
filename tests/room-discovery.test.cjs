@@ -64,16 +64,9 @@ test('discovers actual floor identities and fixed rules without exporting source
   ]);
 }));
 
-test('same authenticated proxy scope retains proxy prefix for read-only requests', async () => use({ url: 'https://webvpn.cppu.edu.cn' + prefix + '/selectreadingroom?groupid=1' }, async f => {
-  f.api.start(); const state = await f.drain();
-  assert.equal(state.kind, 'done');
-  assert.ok(f.requests.every(r => r.url.startsWith(prefix + '/readingroom/')));
-  assert.ok(f.requests.every(r => !/postbesk|commit|checkIsBesk|tablelist/i.test(r.url)));
-}));
-
 test('rejects arbitrary origins, paths, wrong library proxy and SSO page before API installation', async () => {
   for (const url of ['https://attacker.example/selectreadingroom', 'http://mlib.cppu.edu.cn/login',
-    'https://webvpn.cppu.edu.cn/http/other/selectreadingroom', 'https://webvpn.cppu.edu.cn/tpass/login',
+    'https://webvpn.cppu.edu.cn' + prefix + '/selectreadingroom', 'https://webvpn.cppu.edu.cn/http/other/selectreadingroom', 'https://webvpn.cppu.edu.cn/tpass/login',
     'http://user:secret@mlib.cppu.edu.cn/selectreadingroom', 'http://mlib.cppu.edu.cn/selectreadingroom#changed']) {
     await use({ url }, async f => { assert.equal(f.api, undefined); assert.equal(f.requests.length, 0); });
   }

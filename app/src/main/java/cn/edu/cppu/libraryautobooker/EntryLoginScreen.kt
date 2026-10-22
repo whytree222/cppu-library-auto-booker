@@ -45,8 +45,6 @@ import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.delay
 
 /** The entry page contains only login controls, not the reservation dashboard. */
 @Composable
@@ -72,17 +70,7 @@ fun EntryLoginScreen(
     var checkAttempt by remember { mutableStateOf(0) }
     val pausedSinceCheck = remember { booleanArrayOf(false) }
     val preferredSessionCheck = remember { UiSessionRequest() }
-    val vpnStatusCheck = remember { UiSessionRequest() }
-    fun cancelSessionChecks() {
-        preferredSessionCheck.cancel()
-        vpnStatusCheck.cancel()
-    }
-    fun refreshVpnStatus() {
-        if (!active || !foreground || vpnStatusCheck.pending) return
-        val ticket = vpnStatusCheck.begin()
-        val handle = SessionCoordinator.checkWebVpnStatus(app) { vpnStatusCheck.complete(ticket) {} }
-        vpnStatusCheck.attach(ticket, handle)
-    }
+    fun cancelSessionChecks() { preferredSessionCheck.cancel() }
     fun checkSession(onResult: (String, Long) -> Unit) {
         if (!active || !foreground) return
         val ticket = preferredSessionCheck.begin()
@@ -121,17 +109,6 @@ fun EntryLoginScreen(
             lifecycle?.removeObserver(observer)
         }
     }
-    LaunchedEffect(Unit) {
-        (context as? LifecycleOwner)?.lifecycle?.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            try {
-                while (true) {
-                    if (WebVpnAutoLogin.hasEnabledAccount(app)) refreshVpnStatus()
-                    delay(60_000L)
-                }
-            } finally { vpnStatusCheck.cancel() }
-        }
-    }
-
     fun checked(state: String) {
         if (!active || !foreground) return
         busy = false
@@ -143,10 +120,8 @@ fun EntryLoginScreen(
         gateOnly = autoEnterValid && state != "expired"
         detail = when (state) {
             "valid" -> "当前登录仍有效，可以直接继续"
-            "expired" -> if (RuntimeStore(app).prefs.getString("session_route", "DIRECT") == "WEBVPN")
-                "WebVPN 通道的图书馆登录过期，请使用下方 WebVPN 网页登录" else "请登录学校图书馆账号"
-            "vpn_login_required" -> "学校 WebVPN 需要重新认证，请打开网页登录；可本机识别并填写验证码"
-            else -> "无法验证登录，可重新检查或使用下方 WebVPN 认证入口"
+            "expired" -> "请登录学校图书馆账号"
+            else -> "无法验证登录，请检查校园网络后重新检查，或使用学校网页登录"
         }
     }
     LaunchedEffect(checkAttempt, foreground) {
@@ -154,8 +129,7 @@ fun EntryLoginScreen(
         busy = true
         detail = "正在检查登录状态…"
         checkSession { state, ticket ->
-            if (active && state == "expired" && store.enabled && !store.paused &&
-                RuntimeStore(app).prefs.getString("session_route", "DIRECT") != "WEBVPN") {
+            if (active && state == "expired" && store.enabled && !store.paused) {
                 detail = "登录已过期，正在自动重新登录…"
                 AutoLogin.login(app) { valid, message ->
                     if (active && foreground && preferredSessionCheck.isCurrent(ticket)) {
@@ -189,15 +163,9 @@ fun EntryLoginScreen(
                 if (!busy) Button(onClick = { checkAttempt++ }) { Text("重新检查") }
                 TextButton(onClick = {
                     store.setEnabled(false)
-                    schoolLogin.launch(Intent(context, LoginActivity::class.java).putExtra("webvpn", true))
-                }, enabled = !busy) { Text("WebVPN 统一认证 / 图书馆网页登录") }
+                    schoolLogin.launch(Intent(context, LoginActivity::class.java))
+                }, enabled = !busy) { Text("使用学校网页登录") }
                 LoginStatusCard(rememberLoginStatuses())
-                TextButton(onClick = { context.startActivity(Intent(context, WebVpnAccountsActivity::class.java)) }, enabled = !busy) {
-                    Text("WebVPN 两套账号与自动登录")
-                }
-                TextButton(onClick = {
-                    context.startActivity(Intent(context, OcrTrialActivity::class.java))
-                }, enabled = !busy) { Text("本地验证码 OCR 试验") }
             }
         }
         return
@@ -293,10 +261,6 @@ fun EntryLoginScreen(
                 store.setPreference(autoRelogin)
                 schoolLogin.launch(Intent(context, LoginActivity::class.java))
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("使用学校网页登录") }
-            TextButton(onClick = {
-                password = ""; store.setEnabled(false)
-                schoolLogin.launch(Intent(context, LoginActivity::class.java).putExtra("webvpn", true))
-            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 统一认证 / 图书馆网页登录") }
             if (store.configured) TextButton(onClick = {
                 runCatching { store.clear(); store.setPreference(autoRelogin) }.onSuccess {
                     username = ""; password = ""; detail = "已删除保存的账号密码，当前网页会话不受影响"
@@ -304,16 +268,8 @@ fun EntryLoginScreen(
             }, enabled = !busy) { Text("删除已保存的账号密码") }
             LoginStatusCard(rememberLoginStatuses(), onCheck = {
                 SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}
-                vpnStatusCheck.cancel()
-                refreshVpnStatus()
             })
-            TextButton(onClick = { context.startActivity(Intent(context, WebVpnAccountsActivity::class.java)) }, enabled = !busy) {
-                Text("WebVPN 两套账号与自动登录")
-            }
-            TextButton(onClick = {
-                context.startActivity(Intent(context, OcrTrialActivity::class.java))
-            }, enabled = !busy) { Text("本地验证码 OCR 试验") }
-            Text("直连图书馆使用 HTTP，请仅在可信校园网络中登录；WebVPN 使用 HTTPS。", style = MaterialTheme.typography.bodySmall)
+            Text("图书馆使用 HTTP，请仅在可信校园网络中登录。", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
