@@ -1,13 +1,16 @@
 package cn.edu.cppu.libraryautobooker.booking
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import cn.edu.cppu.libraryautobooker.RunHistoryPage
+import cn.edu.cppu.libraryautobooker.LibraryAppPages
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import org.junit.Rule
 import org.junit.Test
@@ -50,5 +53,34 @@ class RunHistoryPageUiTest {
         }
         compose.onNodeWithText("演练完成，未提交预约").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("查看步骤（3）").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun savedExpansionStaysWithItsRecordWhenANewerRunArrivesOnAnotherPage() {
+        val history = mutableStateOf(listOf(RuntimeStore.RunRecord("old-run", "旧任务", 1000L,
+            "DONE", listOf("旧任务的闹钟收到", "旧任务完成"))))
+        compose.setContent {
+            MaterialTheme {
+                LibraryAppPages(
+                    booking = { Text("预约设置内容") },
+                    permissions = { Text("权限设置内容") },
+                    history = { RunHistoryPage(history.value) }
+                )
+            }
+        }
+        compose.onNodeWithTag("page-history").performClick()
+        compose.onNodeWithText("查看步骤（2）").performScrollTo().performClick()
+        compose.onNodeWithText("旧任务的闹钟收到").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("page-booking").performClick()
+        compose.onNodeWithText("预约设置内容").assertIsDisplayed()
+        compose.runOnIdle {
+            history.value = history.value + RuntimeStore.RunRecord("new-run", "新任务", 2000L,
+                "DONE", listOf("新任务的服务启动", "新任务完成"))
+        }
+        compose.onNodeWithTag("page-history").performClick()
+        compose.onNodeWithText("新任务完成").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("新任务的服务启动").assertDoesNotExist()
+        compose.onNodeWithText("查看步骤（2）").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("旧任务的闹钟收到").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("收起步骤").performScrollTo().assertIsDisplayed()
     }
 }

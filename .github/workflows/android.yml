@@ -60,6 +60,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
           if gh release view v0.16.0 >/dev/null 2>&1; then
             gh release upload v0.16.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
