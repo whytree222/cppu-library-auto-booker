@@ -12,10 +12,10 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class ReleaseWaitConfigTest {
-    @Test fun waitIsOptInAndPersists() {
+    @Test fun fixedPlanDefaultsToWaitingAndOverridesAnOldDisabledChoice() {
         val store = ConfigStore(RuntimeEnvironment.getApplication())
-        assertFalse(store.load().waitForRelease)
-        store.save(BookingConfig(waitForRelease = true))
+        assertTrue(store.load().waitForRelease)
+        store.save(FixedBookingPlan.prepare(BookingConfig(waitForRelease = false)))
         assertTrue(store.load().waitForRelease)
         assertTrue(AutomationScript.build("__BOOKING_CONFIG__", store.load()).contains("\"waitForRelease\":true"))
     }
@@ -30,4 +30,3 @@ class ReleaseWaitConfigTest {
         assertTrue(sequence.failure("10 分钟上限").detail.contains("前四段已成功"))
     }
 }
-
