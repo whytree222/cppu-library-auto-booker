@@ -170,6 +170,7 @@ class MainActivity : ComponentActivity() {
                 var rooms by remember { mutableStateOf(RoomCatalogStore(this@MainActivity).load()) }
                 val seatMaps = remember { runCatching { SeatMapCatalog.load(this@MainActivity) }.getOrNull() }
                 var status by remember { mutableStateOf("尚未启用") }
+                var permissionStatus by remember { mutableStateOf("") }
                 var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
                 var savedEnabled by remember { mutableStateOf(config.enabled) }
                 val liveConfig = remember(refreshVersion) { store.load() }
@@ -180,10 +181,15 @@ class MainActivity : ComponentActivity() {
                         savedEnabled = liveConfig.enabled
                     }
                 }
-                val sessionDetail = remember(refreshVersion) { runtime.prefs.getString("session_detail", "登录状态待验证").orEmpty() }
-                val sessionAt = remember(refreshVersion) { runtime.prefs.getLong("session_at", 0L) }
                 val taskDetail = remember(refreshVersion) { runtime.prefs.getString("task_detail", "尚未安排任务").orEmpty() }
                 val history = remember(refreshVersion) { runtime.history() }
+                val exactAllowed = remember(refreshVersion) { scheduler.canScheduleExact() }
+                val notificationsAllowed = remember(refreshVersion) {
+                    NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()
+                }
+                val batteryAllowed = remember(refreshVersion) {
+                    getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+                }
                 val testDetail = remember(refreshVersion) {
                     val state = runtime.prefs.getString("test_state", "")
                     val due = runtime.prefs.getLong("test_due", 0L)
@@ -242,11 +248,12 @@ class MainActivity : ComponentActivity() {
                     return@MaterialTheme
                 }
 
-                Column(
+                LibraryAppPages(booking = {
+                  Column(
                     modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Text("图书馆自动预约", style = MaterialTheme.typography.headlineMedium)
+                    Text("预约设置", style = MaterialTheme.typography.headlineSmall)
                     Text("${config.room.groupName} · ${config.room.name} · 直连优先 / 学校 WebVPN 备用", style = MaterialTheme.typography.bodyMedium)
                     LoginStatusCard(rememberLoginStatuses(), hasActions = true, onCheck = {
                         SessionChecker.probe(this@MainActivity, LibraryRoute.DIRECT, updateSession = false) {}
@@ -277,31 +284,6 @@ class MainActivity : ComponentActivity() {
                             }
                             Text(taskDetail)
                         }
-                    }
-                    PermissionStatusCard(scheduler.canScheduleExact(),
-                        NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled(),
-                        getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) {
-                            OutlinedButton(onClick = { exactPermission.launch(scheduler.exactAlarmSettingsIntent()) }) { Text("设置闹钟和提醒") }
-                            OutlinedButton(onClick = { showPermissionSetup = true }) { Text("重新查看权限引导") }
-                            OutlinedButton(onClick = {
-                                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-                            }) { Text("打开系统应用设置") }
-                            OutlinedButton(onClick = {
-                                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                            }) { Text("查看系统省电设置") }
-                            OutlinedButton(onClick = {
-                                if (!scheduler.canScheduleExact()) {
-                                    status = "请允许精确闹钟，然后再次点击测试"
-                                    exactPermission.launch(scheduler.exactAlarmSettingsIntent())
-                                } else {
-                                    if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                    runCatching { scheduler.scheduleWakeTest() }
-                                        .onSuccess { status = "60 秒后测试后台唤醒，请锁屏等待；不会预约，也不改变正式任务" }
-                                        .onFailure { status = it.message ?: "安排测试失败，请检查系统权限" }
-                                }
-                            }) { Text("60 秒后台唤醒测试（不预约）") }
-                            Text("请避开放号前 20 分钟测试，以免连续闹钟受到系统频率限制。", style = MaterialTheme.typography.bodySmall)
-                            Text(testDetail)
                     }
                     Text(
                         "安全提醒：直连图书馆使用 HTTP，请使用可信校园网。WebVPN 使用 HTTPS，但会话可能提前过期。",
@@ -490,13 +472,48 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth()
                     ) { Text(if (config.dryRun) "立即演练" else "立即预约所选座位") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
-                    RunHistoryCard(history)
                     Text(
                         "请先演练。若页面无法识别座位号，应用会停止，不会猜测或点击其他座位。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(20.dp))
-                }
+                  }
+                }, permissions = {
+                    PermissionsPage(
+                        exact = exactAllowed,
+                        notifications = notificationsAllowed,
+                        battery = batteryAllowed,
+                        testDetail = testDetail,
+                        message = permissionStatus,
+                        onExactAlarm = { exactPermission.launch(scheduler.exactAlarmSettingsIntent()) },
+                        onNotifications = {
+                            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
+                                    this@MainActivity, Manifest.permission.POST_NOTIFICATIONS
+                                ) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                            }
+                        },
+                        onAppSettings = {
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                        },
+                        onBatterySettings = { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
+                        onPermissionGuide = { showPermissionSetup = true },
+                        onWakeTest = {
+                            if (!scheduler.canScheduleExact()) {
+                                permissionStatus = "请允许精确闹钟，然后再次点击测试"
+                                exactPermission.launch(scheduler.exactAlarmSettingsIntent())
+                            } else {
+                                if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                runCatching { scheduler.scheduleWakeTest() }
+                                    .onSuccess { permissionStatus = "60 秒后测试后台唤醒，请锁屏等待；不会预约，也不改变正式任务" }
+                                    .onFailure { permissionStatus = it.message ?: "安排测试失败，请检查系统权限" }
+                            }
+                        }
+                    )
+                }, history = { RunHistoryPage(history) })
             }
         }
     }
@@ -512,4 +529,3 @@ private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChe
         Switch(checked = checked, onCheckedChange = onChecked)
     }
 }
-

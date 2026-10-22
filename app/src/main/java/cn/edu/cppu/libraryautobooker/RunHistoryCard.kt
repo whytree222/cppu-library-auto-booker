@@ -12,7 +12,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -26,7 +26,7 @@ fun RunHistoryCard(history: List<RuntimeStore.RunRecord>) {
             Text("仅保留最近 3 次任务，超出后自动清除最早一次。", style = MaterialTheme.typography.bodySmall)
             if (history.isEmpty()) Text("暂无运行记录")
             history.asReversed().forEach { run ->
-                var expanded by remember(run.id) { mutableStateOf(false) }
+                var expanded by rememberSaveable(run.id) { mutableStateOf(false) }
                 HorizontalDivider()
                 Text("${run.title} · ${RuntimeStore.format(run.startedAt)}", style = MaterialTheme.typography.labelLarge)
                 Text(run.lines.lastOrNull().orEmpty(), style = MaterialTheme.typography.bodyMedium)

@@ -60,9 +60,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.15.0 >/dev/null 2>&1; then
-            gh release upload v0.15.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.16.0 >/dev/null 2>&1; then
+            gh release upload v0.16.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.15.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.15.0 · 按楼层交互座位图选座' --notes '内置从学校正常页面采集的一至四楼7间阅览室真实座位布局，共962个标记。按楼层选择房间，点击座位加入或移除候选，支持候选前移、清空和双向滑动；取代手输座位号。重复、异常和3个无编号标记禁选，不虚构编号。保留原始大小写（包括K043c），所选座位行列坐标随任务保存，运行时复核学校实际布局，位置变化则停止。点击地图只修改草稿，选好日期时段后显式立即预约或保存定时计划；默认演练不提交。图不表示实时空闲，仍以学校当前页面及返回结果为准。切换房间清空旧选座和定时任务；追加后三段保留同座位坐标。保留直连/WebVPN及现有登录流程。测试使用离线采集布局和模拟提交，未创建真实预约；学校规则变化时需同步后先演练。'
+            gh release create v0.16.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.16.0 · 预约、权限、记录独立页面' --notes '底部导航分为预约、权限、记录三个页面。预约页集中楼层阅览室、交互座位图、放号时间及使用日期时段；权限页集中精确闹钟、通知、省电和自启动检查，以及60秒后台唤醒测试；记录页独立展示最近三次任务，支持展开步骤。切换页面保留预约草稿、各页滚动位置及可保存的展开状态，不触发预约或修改已安排任务；从权限设置返回后刷新授权状态，首次权限引导保留。当前源码及上一发布版未发现WebDAV功能或依赖，未误删WebVPN校外访问。沿用原有登录、真实座位图、定时及防重复提交流程。使用离线和模拟测试验证，未在学校系统提交真实预约。'
           fi
-
