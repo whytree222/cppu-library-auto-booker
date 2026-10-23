@@ -46,6 +46,33 @@ class RoomProfileTest {
         assertEquals("B-001", js.getJSONArray("seatNumbers").getString(0))
     }
 
+    @Test fun datedRoomRulesRoundTripWithoutTurningLegacyCacheIntoEitherUsageDay() {
+        val dated = second.copy(slotsDate = "2026-10-24")
+        assertEquals(dated, RoomProfile.fromJson(dated.toJson()))
+        ConfigStore(app).save(BookingConfig(room = dated, seatNumbers = listOf("B001"), selectedSlots = listOf(0)))
+        assertEquals(dated, ConfigStore(app).load().room)
+        RoomCatalogStore(app).merge(listOf(dated))
+        assertEquals(dated, RoomCatalogStore(app).find(second.id))
+
+        val legacy = second.toJson().apply { remove("slotsDate") }
+        assertEquals("", RoomProfile.fromJson(legacy)!!.slotsDate)
+        assertEquals("", RoomProfile.DEFAULT.slotsDate)
+        assertNotEquals(dated, RoomProfile.fromJson(legacy))
+    }
+
+    @Test fun malformedOrImpossibleScheduleDatesAreNeverAcceptedOrSilentlyDropped() {
+        listOf("2026-1-24", "2026-10-24T00:00:00", "2026-02-30", "2026-13-01", "2026-10-24\n",
+            "2026/10/24", "not-a-date").forEach { date ->
+            assertNotNull(second.copy(slotsDate = date).validationError())
+            assertNull(RoomProfile.fromJson(second.toJson().put("slotsDate", date)))
+        }
+        assertNull(RoomProfile.fromJson(second.toJson().put("slotsDate", 20261024)))
+        assertNull(RoomProfile.fromJson(second.toJson().put("slotsDate", JSONObject.NULL)))
+        assertNull(second.copy(slotsDate = "2028-02-29").validationError())
+        assertNotEquals(BookingConfig(room = second).reservationFingerprint(),
+            BookingConfig(room = second.copy(slotsDate = "2026-10-24")).reservationFingerprint())
+    }
+
     @Test fun fixedTimesAreSpecificToTheSelectedRoomAndNeverUseDefaultSeven() {
         val config = BookingConfig(room = second, seatNumbers = listOf("B001"), selectedSlots = listOf(0, 1))
         assertNull(config.validationError())
@@ -126,4 +153,3 @@ class RoomProfileTest {
         assertNotNull(ConfigStore(app).load().validationError())
     }
 }
-

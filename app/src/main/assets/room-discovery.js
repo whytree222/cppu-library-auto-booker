@@ -26,8 +26,13 @@
     return parts[0].padStart(2, '0') + ':' + parts[1] + ':' + (parts[2] || '00');
   };
   const copy = v => JSON.parse(JSON.stringify(v));
-  const alive = () => scope()?.href === initialScope.href && !cancelled;
-  let cancelled = false, started = false, pending = null, timer = null;
+  const calendarDate = offset => {
+    const date = new Date();
+    date.setDate(date.getDate() + offset);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const alive = () => scope()?.href === initialScope.href && !cancelled && (!anchorDate || calendarDate(0) === anchorDate);
+  let cancelled = false, started = false, pending = null, timer = null, anchorDate = null;
   let state = { kind: 'idle', profiles: [], unavailable: [], completed: 0, total: 0 };
   function inspect() {
     if (!alive()) return { kind: 'stopped', reason: 'page-changed' };
@@ -92,24 +97,33 @@
   function wait() {
     return new Promise(resolve => { timer = setTimeout(() => { timer = null; resolve(); }, 400); });
   }
-  function parseSlots(response, roomId) {
+  function parseSlots(response, roomId, requestedDay) {
     if (!Array.isArray(response.Data) || response.Data.length > 400) return null;
-    const slots = new Map();
+    // The school returns today's and tomorrow's rows in the same response.
+    // They may have different seconds or omit already-past slots today. Never
+    // union them or copy another day's rules into the requested use date.
+    const days = new Map();
     for (const row of response.Data) {
       if (id(row?.roomNo, false) !== roomId) return null;
+      if (![0, 1, '0', '1'].includes(row.isUseDay)) return null;
+      const day = Number(row.isUseDay);
       const begin = time(row.beginTime), end = time(row.endTime);
       if (!begin || !end || begin >= end) return null;
-      slots.set(begin + '-' + end, { begin, end });
+      if (!days.has(day)) days.set(day, new Map());
+      const slots = days.get(day), key = begin + '-' + end;
+      if (slots.has(key)) return null;
+      slots.set(key, { begin, end });
     }
-    const sorted = [...slots.values()].sort((a, b) => a.begin.localeCompare(b.begin));
+    const day = requestedDay ?? (days.has(1) ? 1 : 0);
+    const sorted = [...(days.get(day)?.values() || [])].sort((a, b) => a.begin.localeCompare(b.begin));
     if (!sorted.length || sorted.length > 48 || sorted.some((slot, i) => i && sorted[i - 1].end > slot.begin)) return null;
-    return sorted;
+    return { slots: sorted, slotsDate: calendarDate(day) };
   }
-  async function run(snapshot) {
+  async function run(snapshot, requestedDay) {
     try {
       for (const room of snapshot.rooms) {
         if (!alive()) return;
-        if (room.timeMode === 'free') state.profiles.push(room);
+        if (room.timeMode === 'free') state.profiles.push({ ...room, slotsDate: calendarDate(requestedDay ?? 1) });
         else if (room.timeMode !== 'fixed') state.unavailable.push({ id: room.id, name: room.name, reason: 'time-mode-unknown' });
         else {
           const eligible = await request('/readingroom/checktimecanbesk', { id: room.id });
@@ -119,8 +133,8 @@
             if (!eligibilityId) throw 'response-format';
             await wait(); if (!alive()) return;
             const response = await request('/readingroom/getbesktimelist', { roomid: room.id, beskids: eligibilityId });
-            const slots = Number(response.ReturnValue) === 0 ? parseSlots(response, room.id) : null;
-            if (slots) state.profiles.push({ ...room, slots });
+            const rules = Number(response.ReturnValue) === 0 ? parseSlots(response, room.id, requestedDay) : null;
+            if (rules) state.profiles.push({ ...room, ...rules });
             else state.unavailable.push({ id: room.id, name: room.name, reason: 'time-rules-unavailable' });
           }
         }
@@ -134,13 +148,23 @@
   }
   const api = {
     snapshot: () => copy(inspect()),
-    start() {
+    start(options) {
       if (started) return copy(state);
       const snapshot = inspect();
       if (snapshot.kind !== 'ready') return snapshot;
+      let requestedDay;
+      if (options !== undefined) {
+        if (!options || typeof options !== 'object' || Array.isArray(options) ||
+            !id(options.roomId, false) || ![0, 1].includes(options.useDay)) return { kind: 'unsupported', reason: 'invalid-target' };
+        const matches = snapshot.rooms.filter(room => room.id === options.roomId);
+        if (matches.length !== 1) return { kind: 'unsupported', reason: 'room-not-found' };
+        snapshot.rooms = matches;
+        requestedDay = options.useDay;
+      }
       started = true;
+      anchorDate = calendarDate(0);
       state = { kind: 'running', profiles: [], unavailable: [], completed: 0, total: snapshot.rooms.length, groupId: snapshot.groupId };
-      run(snapshot);
+      run(snapshot, requestedDay);
       return copy(state);
     },
     status: () => copy(state),

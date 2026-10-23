@@ -79,9 +79,9 @@ test('reads variable free-time metadata, never inventing slots or interpreting r
   assert.equal(f.requests.length, 0); assert.doesNotMatch(JSON.stringify(state), /begintime|endtime|01:00:00|23:00:00/);
 }));
 
-test('normalizes valid school clock forms and orders the deduplicated fixed schedule', async () => use({ response(c) {
+test('normalizes valid school clock forms and orders one use day without mixing days', async () => use({ response(c) {
   c.success(c.url.endsWith('checktimecanbesk') ? { ReturnValue: 0, CanBaskID: 72 } : { ReturnValue: 0, Data: [
-    timeRow({ beginTime: '10:01', endTime: '11:29' }), timeRow({ beginTime: '8:10:01', endTime: '10:00' }), timeRow({ beginTime: '8:10:01', endTime: '10:00' })
+    timeRow({ beginTime: '10:01', endTime: '11:29' }), timeRow({ beginTime: '8:10:01', endTime: '10:00' }), timeRow({ isUseDay: 0, beginTime: '8:10:01', endTime: '10:00' })
   ] });
 } }, async f => {
   f.api.start(); const state = await f.drain();
@@ -89,6 +89,56 @@ test('normalizes valid school clock forms and orders the deduplicated fixed sche
     { begin: '08:10:01', end: '10:00:00' }, { begin: '10:01:00', end: '11:29:00' }
   ]);
 }));
+
+test('targeted refresh reads only the selected room and exact use day with a dated public snapshot', async () => {
+  for (const useDay of [0, 1]) await use({
+    rooms: [rawRoom(), rawRoom({ ControlNo: 20, controlNo: 20, ReadingRoomName: '报刊阅览区' })],
+    response(c) { c.success(c.url.endsWith('checktimecanbesk') ? { ReturnValue: 0, CanBaskID: 72 } : { ReturnValue: 0, Data: [
+      timeRow({ roomNo: 20, isUseDay: 0, beginTime: '10:01:00', endTime: '11:29:00' }),
+      timeRow({ roomNo: 20, isUseDay: 1, beginTime: '10:01:10', endTime: '11:29:00' })
+    ] }); }
+  }, async f => {
+    f.api.start({ roomId: '20', useDay });
+    const state = await f.drain(), room = state.profiles[0];
+    assert.equal(state.kind, 'done'); assert.equal(state.total, 1); assert.equal(room.id, '20');
+    assert.equal(room.slots[0].begin, useDay ? '10:01:10' : '10:01:00');
+    const date = new f.w.Date(); date.setDate(date.getDate() + useDay);
+    assert.equal(room.slotsDate, `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`);
+    assert.deepEqual(f.requests.map(r => r.data), [{ id: '20' }, { roomid: '20', beskids: '72' }]);
+    assert.doesNotMatch(JSON.stringify(state), /never-export|sign|beskCanId/);
+  });
+});
+
+test('all-room sync prefers a coherent tomorrow snapshot, never a union with incomplete today', async () => use({ response(c) {
+  c.success(c.url.endsWith('checktimecanbesk') ? { ReturnValue: 0, CanBaskID: 72 } : { ReturnValue: 0, Data: [
+    timeRow({ isUseDay: 0, beginTime: '18:01:30', endTime: '19:29:30' }),
+    timeRow({ isUseDay: 1, beginTime: '08:10:01', endTime: '10:00:59' }),
+    timeRow({ isUseDay: 1, beginTime: '18:01:30', endTime: '19:29:11' })
+  ] });
+} }, async f => {
+  f.api.start(); const state = await f.drain();
+  assert.equal(state.profiles.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(state.profiles[0].slots)), [
+    { begin: '08:10:01', end: '10:00:59' }, { begin: '18:01:30', end: '19:29:11' }
+  ]);
+}));
+
+test('requested day absent or duplicate same-day ranges never fallback to another date', async () => {
+  for (const rows of [[timeRow({ isUseDay: 0 })], [timeRow(), timeRow()], [timeRow({ isUseDay: 2 })],
+    [timeRow({ isUseDay: null })], [timeRow({ isUseDay: true })]]) {
+    await use({ response(c) { c.success(c.url.endsWith('checktimecanbesk') ? { ReturnValue: 0, CanBaskID: 72 } : { ReturnValue: 0, Data: rows }); } }, async f => {
+      f.api.start({ roomId: '26', useDay: 1 }); const state = await f.drain();
+      assert.equal(state.profiles.length, 0); assert.equal(state.unavailable[0].reason, 'time-rules-unavailable');
+    });
+  }
+});
+
+test('invalid targeted room or use day stops before any request', async () => {
+  for (const options of [{ roomId: '99', useDay: 1 }, { roomId: '26', useDay: 2 },
+    { roomId: '26', useDay: '1' }, { roomId: '26' }, null, []]) await use({}, async f => {
+    assert.equal(f.api.start(options).kind, 'unsupported'); assert.equal(f.requests.length, 0);
+  });
+});
 
 test('unreadable or foreign/overlapping fixed schedules leave room visible but unselectable', async () => {
   for (const rows of [[], [timeRow({ roomNo: 27 })], [timeRow({ beginTime: '24:10:00' })],

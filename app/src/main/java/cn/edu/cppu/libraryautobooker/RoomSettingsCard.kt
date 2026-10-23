@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.dp
 import cn.edu.cppu.libraryautobooker.data.BookingConfig
 import cn.edu.cppu.libraryautobooker.data.RoomProfile
 
-/** A new identity or time-rule snapshot must never inherit the old room's reservation target. */
+/** A newly chosen room must never inherit another room's reservation target. */
 internal fun resetRoomDraft(config: BookingConfig, room: RoomProfile): BookingConfig =
     config.copy(room = room, seatNumbers = emptyList(), seatChoices = emptyList(), mapSeats = emptyList(),
         selectedSlots = emptyList(), appendLastThree = false).withPending(emptyList())
@@ -48,7 +48,9 @@ fun RoomSettingsCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("选择楼层和阅览室", style = MaterialTheme.typography.titleMedium)
             Text("当前预约：${selected.groupName.ifBlank { "未分组" }} · ${selected.name}")
-            Text("内置已核对的一至四楼 7 间阅览室，也可同步学校最新时间规则。切换房间或规则变化会取消旧定时任务并清空座位、时段，需重新确认保存。",
+            Text("内置一至四楼 7 间阅览室座位图。选择房间或今天／明天后，会自动尝试核对一次该房间当天的时间规则；仅浏览楼层不会更改预约。",
+                style = MaterialTheme.typography.bodySmall)
+            Text("切换房间需重新选座、选时段。同一房间按完整起止时间保留已选项；已选时段有变化时需重新选择，规则变化会取消旧定时任务。",
                 style = MaterialTheme.typography.bodySmall)
             Box(Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = { floorsExpanded = true }, modifier = Modifier.fillMaxWidth()) {
@@ -81,9 +83,11 @@ fun RoomSettingsCard(
             }
             OutlinedButton(onClick = onSync, modifier = Modifier.fillMaxWidth()) { Text("从学校同步阅览室") }
             Text(if (selected.timeMode == "free") "预约方式：填写开始和结束时间"
-                else "预约方式：选择该房间的固定时段（已同步 ${selected.slots.size} 个）",
+                else "预约方式：选择该房间的固定时段（共 ${selected.slots.size} 个）",
+                style = MaterialTheme.typography.bodySmall)
+            Text(if (selected.slotsDate.isEmpty()) "时段来源：缓存，尚未按使用日期核对；学校未开放或同步失败时保留缓存，预约时仍精确核对学校网页。"
+                else "学校已核对的使用日期：${selected.slotsDate}；其他日期的规则仍需重新核对。",
                 style = MaterialTheme.typography.bodySmall)
         }
     }
 }
-

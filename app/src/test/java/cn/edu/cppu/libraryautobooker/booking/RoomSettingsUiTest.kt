@@ -64,7 +64,9 @@ class RoomSettingsUiTest {
                     { selectedCount++ }, { syncCount++ })
             }
         } }
-        compose.onNodeWithText("预约方式：选择该房间的固定时段（已同步 7 个）").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("预约方式：选择该房间的固定时段（共 7 个）").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("时段来源：缓存，尚未按使用日期核对；学校未开放或同步失败时保留缓存，预约时仍精确核对学校网页。")
+            .performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("从学校同步阅览室").performScrollTo().performClick()
         assertEquals(1, syncCount)
         assertEquals(0, selectedCount)

@@ -25,6 +25,7 @@ function run(options = {}) {
   const d = w.document;
   const messages = [];
   const timers = [];
+  const labelClicks = [];
   let freeValues;
   let next = 0;
   w.setTimeout = fn => { timers.push(fn); return timers.length; };
@@ -43,8 +44,9 @@ function run(options = {}) {
       return;
     }
     d.getElementById('slots').style.display = '';
-    const starts = room?.slots.map(slot => slot.begin) || ['08:10:01', '10:01:00', '11:31:00', '14:31:00', '16:31:30', '18:01:30', '19:31:00'];
-    const ends = room?.slots.map(slot => slot.end) || ['10:00:00', '11:29:00', '14:29:00', '16:30:30', '18:00:30', '19:29:30', '22:01:00'];
+    const liveSlots = options.liveSlots || room?.slots;
+    const starts = liveSlots?.map(slot => slot.begin) || ['08:10:01', '10:01:00', '11:31:00', '14:31:00', '16:31:30', '18:01:30', '19:31:00'];
+    const ends = liveSlots?.map(slot => slot.end) || ['10:00:00', '11:29:00', '14:29:00', '16:30:30', '18:00:30', '19:29:30', '22:01:00'];
     for (let index = options.omitPastSlots || 0; index < starts.length; index++) {
       const params = new URLSearchParams({ roomno: options.wrongRoom ? '99' : roomId,
         isuseday: String(options.wrongOffset ? 1 - offset : offset), begintime: starts[index],
@@ -56,15 +58,23 @@ function run(options = {}) {
       card.innerHTML = `<input style="display:none" type="checkbox" name="url" id="slot${index}">
         <label for="slot${index}">使用日:${options.labelDate ?? targetDate}</label>`;
       card.querySelector('input').value = params.toString();
+      card.querySelector('input').checked = !!options.initialCheckedIndices?.includes(index);
+      card.querySelector('label').addEventListener('click', () => {
+        labelClicks.push(index);
+        if (options.checkStaleOnClick) d.querySelector('#stale-slot').checked = true;
+        if (options.changeActionOnClick) d.querySelector('#slots form').action = 'https://example.org/multireadingroomtablelist';
+      });
+      if (options.duplicateLabelIndex === index) card.appendChild(card.querySelector('label').cloneNode(true));
       d.getElementById('selectdate').appendChild(card);
     }
   };
-  if (options.stale) {
+  if (options.stale || options.staleChecked) {
     const old = d.createElement('div'); old.style.display = 'none';
     old.innerHTML = `<form action="/multireadingroomtablelist"><div id="selectdate"><div class="item-info">
-      <input type="checkbox" name="url" value="roomno=26&isuseday=1&useday=${dateString(1)}">
+      <input type="checkbox" name="url" id="stale-slot" value="roomno=26&isuseday=1&useday=${dateString(1)}">
       </div></div><button type="button">下一步</button></form>`;
     d.body.prepend(old);
+    old.querySelector('input').checked = !!options.staleChecked;
   }
   d.querySelector('#slots button').onclick = () => {
     if (options.schoolNotice) {
@@ -83,8 +93,12 @@ function run(options = {}) {
     waitForRelease: !!options.wait, room, startTime: options.startTime, endTime: options.endTime })));
   for (let count = 0; count < 8 && timers.length && !next && !messages.some(m => m.state === 'error'); count++) timers.shift()();
   const selected = [...d.querySelectorAll('#slots input:checked')].map(input => input.id);
+  const selectedRanges = [...d.querySelectorAll('#slots input:checked')].map(input => {
+    const params = new URLSearchParams(input.value);
+    return `${params.get('begintime')}-${params.get('endtime')}`;
+  });
   w.close();
-  return { messages, selected, next, freeValues };
+  return { messages, selected, next, freeValues, selectedRanges, labelClicks };
 }
 
 for (const [name, options] of [
@@ -148,6 +162,112 @@ for (const option of ['wrongRoom', 'wrongEnd', 'missingSignature', 'duplicateRoo
     assert.equal(f.next, 0);
     assert.equal(f.messages.at(-1).state, 'error');
   });
+
+// Pin the old public cached rules independently of the evolving bundled asset.
+// Live website cards below must not be derived from the same current catalogue.
+const pressRoom = { id: '20', name: '报刊阅览区', groupId: '2', groupName: '二楼', timeMode: 'fixed', slots: [
+  { begin: '08:10:01', end: '10:00:59' }, { begin: '10:01:00', end: '11:29:00' },
+  { begin: '11:31:00', end: '14:29:00' }, { begin: '14:31:00', end: '16:30:30' },
+  { begin: '16:31:30', end: '18:00:30' }, { begin: '18:01:30', end: '19:29:30' },
+  { begin: '19:31:00', end: '22:01:00' }
+] };
+const changedPressSlots = () => pressRoom.slots.map((slot, index) => ({ ...slot,
+  ...(index === 1 ? { begin: '10:01:10' } : {}), ...(index === 5 ? { end: '19:29:11' } : {}) }));
+
+test('an unselected live time change does not block exact selected ranges', () => {
+  const liveSlots = pressRoom.slots.map((slot, index) => ({ ...slot, ...(index === 5 ? { end: '19:29:11' } : {}) }));
+  const f = run({ room: pressRoom, liveSlots, selectedSlots: [0, 1, 2, 3], tomorrow: true });
+  assert.equal(f.next, 1, JSON.stringify(f.messages));
+  assert.deepEqual(f.selected, ['slot0', 'slot1', 'slot2', 'slot3']);
+});
+
+test('the actual room20 second-slot change stops selected 1–4 with safe time diagnostics', () => {
+  const f = run({ room: pressRoom, liveSlots: changedPressSlots(), selectedSlots: [0, 1, 2, 3], tomorrow: true });
+  assert.equal(f.next, 0);
+  assert.deepEqual(f.selected, []);
+  const detail = f.messages.at(-1).detail;
+  assert.match(detail, /预期 .*10:01:00-11:29:00/);
+  assert.match(detail, /网页可选 .*10:01:10-11:29:00/);
+  assert.match(detail, /刷新时段并重新选择/);
+  assert.doesNotMatch(detail, /fresh-|sign|beskid|beskCanId/);
+});
+
+test('selected 3–4 still work when only unselected room20 slots 2 and 6 changed', () => {
+  const f = run({ room: pressRoom, liveSlots: changedPressSlots(), selectedSlots: [2, 3], tomorrow: true });
+  assert.equal(f.next, 1, JSON.stringify(f.messages));
+  assert.deepEqual(f.selected, ['slot2', 'slot3']);
+});
+
+test('reordered live cards are matched by exact times rather than position', () => {
+  const f = run({ room: pressRoom, liveSlots: [...pressRoom.slots].reverse(), selectedSlots: [2, 3], tomorrow: true });
+  assert.equal(f.next, 1, JSON.stringify(f.messages));
+  assert.deepEqual(f.selectedRanges.sort(), ['11:31:00-14:29:00', '14:31:00-16:30:30']);
+});
+
+test('a new live interval between exact selected ranges requires reselection rather than skipping it', () => {
+  const room = { ...otherRoom, slots: [
+    { begin: '08:00:00', end: '09:00:00' }, { begin: '10:00:00', end: '11:00:00' }
+  ] };
+  const liveSlots = [room.slots[0], { begin: '09:10:00', end: '09:50:00' }, room.slots[1]];
+  const f = run({ room, liveSlots, selectedSlots: [0, 1], tomorrow: true });
+  assert.equal(f.next, 0);
+  assert.match(f.messages.at(-1).detail, /原选择已不连续.*刷新时段并重新选择/);
+  assert.deepEqual(f.selected, []);
+  assert.deepEqual(f.labelClicks, []);
+});
+
+for (const index of [0, 2]) test(`duplicate ${index === 2 ? 'selected' : 'unselected'} live ranges stop before selection`, () => {
+  const f = run({ room: pressRoom, liveSlots: [...pressRoom.slots, pressRoom.slots[index]],
+    selectedSlots: [2, 3], tomorrow: true });
+  assert.equal(f.next, 0);
+  assert.match(f.messages.at(-1).detail, /重复/);
+  assert.deepEqual(f.labelClicks, []);
+});
+
+for (const invalid of [{ begin: '8:10:01' }, { begin: '10:00:59' }, { end: '11:00:00' }])
+  test(`unselected malformed, empty or overlapping live ranges fail closed: ${JSON.stringify(invalid)}`, () => {
+    const liveSlots = pressRoom.slots.map((slot, index) => ({ ...slot, ...(index === 0 ? invalid : {}) }));
+    const f = run({ room: pressRoom, liveSlots, selectedSlots: [2, 3], tomorrow: true });
+    assert.equal(f.next, 0);
+    assert.match(f.messages.at(-1).detail, /时间格式或范围无效|重叠/);
+  });
+
+test('a previously checked unselected live range is cleared through its unique school label', () => {
+  const f = run({ room: pressRoom, liveSlots: changedPressSlots(), selectedSlots: [2, 3],
+    initialCheckedIndices: [1, 5], tomorrow: true });
+  assert.equal(f.next, 1, JSON.stringify(f.messages));
+  assert.deepEqual(f.selected, ['slot2', 'slot3']);
+  assert.ok(f.labelClicks.includes(1) && f.labelClicks.includes(5));
+});
+
+test('a checked unselected range with an ambiguous school label is not guessed', () => {
+  const f = run({ room: pressRoom, selectedSlots: [2, 3], initialCheckedIndices: [1],
+    duplicateLabelIndex: 1, tomorrow: true });
+  assert.equal(f.next, 0);
+  assert.match(f.messages.at(-1).detail, /标签不能唯一对应/);
+  assert.deepEqual(f.labelClicks, []);
+});
+
+test('a hidden checked old name=url checkbox stops without invented unchecking clicks', () => {
+  const f = run({ room: pressRoom, selectedSlots: [2, 3], staleChecked: true, tomorrow: true });
+  assert.equal(f.next, 0);
+  assert.match(f.messages.at(-1).detail, /隐藏或额外勾选的旧时段/);
+  assert.deepEqual(f.labelClicks, []);
+  assert.deepEqual(f.selected, []);
+});
+
+test('a hidden old checkbox newly checked during label events cannot leak into next', () => {
+  const f = run({ room: pressRoom, selectedSlots: [2, 3], stale: true, checkStaleOnClick: true, tomorrow: true });
+  assert.equal(f.next, 0);
+  assert.match(f.messages.at(-1).detail, /勾选后发现隐藏或额外/);
+});
+
+test('a form redirected by label events is rechecked before next', () => {
+  const f = run({ room: pressRoom, selectedSlots: [2, 3], changeActionOnClick: true, tomorrow: true });
+  assert.equal(f.next, 0);
+  assert.match(f.messages.at(-1).detail, /表单目标发生变化/);
+});
+
 const freeRoom = { ...otherRoom, id: '35', name: '研修阅览区', timeMode: 'free', slots: [],
   minMinutes: 30, maxMinutes: 180, stepMinutes: 15 };
 for (const tomorrow of [true, false]) test(`free room uses original selectedtimes button with exact HH:mm: ${tomorrow}`, () => {

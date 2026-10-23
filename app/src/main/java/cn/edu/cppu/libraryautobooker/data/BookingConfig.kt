@@ -28,7 +28,9 @@ data class BookingConfig(
 ) {
     /** Binds an already-queued alarm handoff to this exact room/seat/time draft. */
     fun reservationFingerprint(): String {
-        val snapshot = JSONObject().put("room", room.toJson()).put("seats", JSONArray(seatNumbers))
+        // Verification-date provenance is not a new booking target. Keep the
+        // fingerprint compatible with undated queued tasks; exact rules remain.
+        val snapshot = JSONObject().put("room", room.toJson().apply { remove("slotsDate") }).put("seats", JSONArray(seatNumbers))
             .put("slots", JSONArray(selectedSlots)).put("tomorrow", reserveTomorrow)
             .put("start", startTime).put("end", endTime).put("append", appendLastThree)
             .put("dryRun", dryRun).put("wait", waitForRelease)

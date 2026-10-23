@@ -52,8 +52,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum app/build/outputs/apk/debug/app-debug.apk
-          if gh release view v0.17.1 >/dev/null 2>&1; then
-            gh release upload v0.17.1 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.17.2 >/dev/null 2>&1; then
+            gh release upload v0.17.2 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.17.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.1 · 恢复直接预约' --notes '恢复直接预约按钮，与下次00:58定时预约并列。直接预约立即按当前日期和所选房间、座位、使用时段尝试真实预约，不等00:58，也不等待尚未开放；无需精确闹钟权限。定时入口仍为下一次00:58启动、明确未开放时最多等待10分钟的一次性计划。两个入口分别显示预计使用日期。直接预约通过不可变目标快照交给后台，不覆盖已有定时计划及其选座时段；任务运行中拒绝并发重复启动。保留精确座位图复核、同座位追加、学校确认与未知结果停止规则。仍仅校园网直连，不恢复WebVPN或OCR。离线模拟与Android单元/界面测试验证，未在学校系统创建真实预约。'
+            gh release create v0.17.2 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.2 · 按房间和使用日更新时段' --notes '切换房间或今天/明天时自动读取对应时段，不再混合两天或套用一楼时间。显示核对日期与缓存状态，读取失败不伪报成功；仅读取当前房间，45秒上限，退出即停止。保留同一房间的座位，已选时间仅按完整起止时间保留，变化时提示重选；实际规则更新取消旧等待计划，日期元数据更新不覆盖独立计划。修复未选时段合法秒数变化导致整组停止的问题，所选时间变化、错误房间/日期、签名不完整、重复重叠和隐藏额外勾选仍停止。不按序号或分钟猜测替换时间；运行时仍精确核验。保留直接预约、下次00:58一次性计划、最多等待开放10分钟及未知提交结果停止规则。仍仅校园网直连，不恢复WebVPN或OCR。使用离线模拟、Android单元和界面测试验证，未在学校系统创建真实预约。'
           fi

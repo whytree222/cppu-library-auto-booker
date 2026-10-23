@@ -194,20 +194,50 @@
         const safe = value => String(value || '空').replace(/[^\dA-Za-z\u4e00-\u9fff:./ -]/g, '').slice(0, 40);
         return fail(`时段不属于${targetRoom.name}或目标日期，或签名字段不完整；目标 ${targetDate}，房间 ${safe(params.get('roomno'))}，使用日 ${safe(params.get('useday'))}，相对日 ${safe(params.get('isuseday'))}；已停止`);
       }
-      const bySlot = new Map();
-      for (const box of choices) {
+      const liveSlots = choices.map(box => {
         const params = new URLSearchParams(box.value || '');
-        const index = expectedSlots.findIndex(slot => slot.begin === params.get('begintime') && slot.end === params.get('endtime'));
-        if (index < 0 || bySlot.has(index)) return fail('网页时段与所选阅览室的时段目录不一致，请重新同步；已停止');
-        bySlot.set(index, box);
+        return { box, begin: params.get('begintime'), end: params.get('endtime'), value: box.value };
+      });
+      if (liveSlots.length > 48 || liveSlots.some(slot => !clock(slot.begin) || !clock(slot.end) || slot.begin >= slot.end))
+        return fail('网页时段的时间格式或范围无效；已停止');
+      const rangeKey = slot => `${slot.begin}-${slot.end}`;
+      const liveByRange = new Map();
+      for (const slot of liveSlots) {
+        if (liveByRange.has(rangeKey(slot))) return fail('网页时段重复，不能唯一对应所选时间；已停止');
+        liveByRange.set(rangeKey(slot), slot.box);
       }
-      if (slots.some(index => !bySlot.has(index) || bySlot.get(index).disabled)) {
-        return fail('所选时段在目标日期不可预约；已停止');
+      const orderedLive = [...liveSlots].sort((a, b) => a.begin.localeCompare(b.begin));
+      if (orderedLive.some((slot, index) => index && orderedLive[index - 1].end > slot.begin))
+        return fail('网页时段相互重叠，不能安全选择；已停止');
+      const selectedRanges = slots.map(index => rangeKey(expectedSlots[index]));
+      if (new Set(selectedRanges).size !== selectedRanges.length)
+        return fail('所选时段目录重复，请刷新时段并重新选择；已停止');
+      if (selectedRanges.some(key => !liveByRange.has(key))) {
+        const available = orderedLive.slice(0, 16).map(rangeKey).join('、');
+        const more = orderedLive.length > 16 ? `（共 ${orderedLive.length} 段）` : '';
+        return fail(`所选时段已变化或缺失；预期 ${selectedRanges.join('、')}；网页可选 ${available}${more}；请刷新时段并重新选择；已停止，未提交预约`);
       }
+      const selectedBoxes = new Set(selectedRanges.map(key => liveByRange.get(key)));
+      const liveIndexes = orderedLive.flatMap((slot, index) => selectedBoxes.has(slot.box) ? [index] : []);
+      if (liveIndexes.some((index, offset) => index !== liveIndexes[0] + offset))
+        return fail('网页在所选时段之间增加了其他时段，原选择已不连续；请刷新时段并重新选择；已停止，未提交预约');
+      if ([...selectedBoxes].some(box => box.disabled)) return fail('所选时段在目标日期不可预约；已停止');
+      const bookingForm = choices[0].closest('form');
+      if (choices.some(box => box.closest('form') !== bookingForm)) return fail('出现多个时段页面；已停止');
+      const originalAction = bookingForm?.getAttribute('action') || '';
+      let action;
+      try { action = new URL(window.LibraryTransport?.url(originalAction) || originalAction, location.href); } catch (_) { }
+      const expectedPath = location.pathname.replace(/\/selectreadingroom$/, '/multireadingroomtablelist');
+      if (!bookingForm || action?.origin !== location.origin || action.username || action.password || action.pathname !== expectedPath)
+        return fail('时段表单目标不是学校原有座位图；已停止');
+      // The school's checksubmit() reads all checked name=url inputs, including
+      // hidden old cards. Do not invent a click for an unverified or hidden card.
+      const hasCheckedExtra = () => queryAll('input[type="checkbox"][name="url"]')
+        .some(box => box.checked && !choices.includes(box));
+      if (hasCheckedExtra()) return fail('存在隐藏或额外勾选的旧时段，不能安全取消；请刷新页面；已停止');
       choices.forEach(box => {
         if (finished) return;
-        const index = [...bySlot].find(([, value]) => value === box)?.[0];
-        const shouldCheck = slots.includes(index);
+        const shouldCheck = selectedBoxes.has(box);
         if (box.checked === shouldCheck) return;
         const labels = [...(box.closest('.item-info') || box.parentElement).querySelectorAll('label')]
           .filter(item => visible(item) && item.htmlFor === box.id);
@@ -218,17 +248,15 @@
         labels[0].click();
       });
       if (finished) return;
-      if (choices.some(box => box.checked !== slots.includes([...bySlot].find(([, value]) => value === box)?.[0]))) {
+      if (choices.some(box => box.checked !== selectedBoxes.has(box))) {
         return fail('无法按所选顺序勾选使用时段；已停止');
       }
-      const bookingForm = choices[0].closest('form');
-      if (choices.some(box => box.closest('form') !== bookingForm)) return fail('出现多个时段页面；已停止');
-      let action;
-      try { action = new URL(window.LibraryTransport?.url(bookingForm?.getAttribute('action') || '') ||
-        bookingForm?.getAttribute('action') || '', location.href); } catch (_) { }
-      const expectedPath = location.pathname.replace(/\/selectreadingroom$/, '/multireadingroomtablelist');
-      if (!bookingForm || action?.origin !== location.origin || action.username || action.password || action.pathname !== expectedPath)
-        return fail('时段表单目标不是学校原有座位图；已停止');
+      const currentChoices = boxes();
+      if (currentChoices.length !== choices.length || liveSlots.some(slot => !currentChoices.includes(slot.box) || slot.box.value !== slot.value))
+        return fail('勾选期间网页时段发生变化；请刷新时段并重新选择；已停止');
+      if (choices.some(box => box.closest('form') !== bookingForm) || bookingForm.getAttribute('action') !== originalAction)
+        return fail('勾选期间时段表单目标发生变化；已停止');
+      if (hasCheckedExtra()) return fail('勾选后发现隐藏或额外的旧时段；请刷新页面；已停止');
       const next = bookingForm && [...bookingForm.querySelectorAll('button,input[type="submit"],a')]
         .filter(element => visible(element) && !element.disabled && /^下一步$/.test(text(element)));
       if (next.length !== 1) return fail('不能唯一识别时段页面的“下一步”按钮');

@@ -25,13 +25,13 @@ fun FixedBookingInfo() {
 }
 
 @Composable
-fun FixedBookingButton(onClick: () -> Unit) {
-    Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) { Text("预约 · 下次 00:58 启动") }
+fun FixedBookingButton(enabled: Boolean = true, onClick: () -> Unit) {
+    Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("预约 · 下次 00:58 启动") }
 }
 
 @Composable
-fun ImmediateBookingButton(onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) { Text("直接预约") }
+fun ImmediateBookingButton(enabled: Boolean = true, onClick: () -> Unit) {
+    OutlinedButton(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("直接预约") }
     Text("立即按当前日期和所选使用时段尝试真实预约；不等到 00:58，也不等待开放十分钟。不改动已安排的定时计划。",
         style = MaterialTheme.typography.bodySmall)
 }

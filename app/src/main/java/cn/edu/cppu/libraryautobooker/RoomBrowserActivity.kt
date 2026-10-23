@@ -2,6 +2,7 @@ package cn.edu.cppu.libraryautobooker
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -30,13 +31,68 @@ import org.json.JSONObject
 import java.net.URI
 import java.io.ByteArrayInputStream
 import java.util.ArrayDeque
+import java.time.LocalDate
+import java.util.UUID
 
 /** Reads only public room identities/time rules through the school's existing session. */
 class RoomBrowserActivity : Activity() {
+    internal data class RefreshRequest(val room: RoomProfile, val useDay: Int, val expectedDate: String, val requestId: String) {
+        fun current(today: LocalDate = LocalDate.now()) = expectedDate == today.plusDays(useDay.toLong()).toString()
+        fun matches(profile: RoomProfile, today: LocalDate = LocalDate.now()) = current(today) &&
+            profile.id == room.id && profile.name == room.name && profile.groupId == room.groupId &&
+            profile.groupName == room.groupName && profile.timeMode == room.timeMode &&
+            profile.slotsDate == expectedDate && profile.validationError() == null
+    }
+
+    companion object {
+        const val EXTRA_ROOM_PROFILE = "room_profile"
+        const val EXTRA_USE_DAY = "use_day"
+        const val EXTRA_EXPECTED_DATE = "expected_date"
+        const val EXTRA_REFRESH_ERROR = "refresh_error"
+        const val EXTRA_REQUEST_ID = "refresh_request_id"
+
+        fun refreshIntent(context: Context, room: RoomProfile, reserveTomorrow: Boolean): Intent {
+            require(room.validationError() == null)
+            val day = if (reserveTomorrow) 1 else 0
+            return Intent(context, RoomBrowserActivity::class.java)
+                .putExtra(EXTRA_ROOM_PROFILE, room.toJson().toString())
+                .putExtra(EXTRA_USE_DAY, day)
+                .putExtra(EXTRA_EXPECTED_DATE, LocalDate.now().plusDays(day.toLong()).toString())
+                .putExtra(EXTRA_REQUEST_ID, UUID.randomUUID().toString())
+        }
+
+        internal fun refreshRequested(intent: Intent) = intent.hasExtra(EXTRA_ROOM_PROFILE) ||
+            intent.hasExtra(EXTRA_USE_DAY) || intent.hasExtra(EXTRA_EXPECTED_DATE) || intent.hasExtra(EXTRA_REQUEST_ID)
+
+        internal fun requestId(intent: Intent): String? = runCatching {
+            intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf {
+                it.length <= 80 && Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").matches(it)
+            }
+        }.getOrNull()
+
+        internal fun readRefreshRequest(intent: Intent): RefreshRequest? = runCatching {
+            require(intent.hasExtra(EXTRA_ROOM_PROFILE) && intent.hasExtra(EXTRA_USE_DAY) && intent.hasExtra(EXTRA_EXPECTED_DATE))
+            val text = intent.getStringExtra(EXTRA_ROOM_PROFILE) ?: error("missing room")
+            require(text.length <= 32_000)
+            val room = RoomProfile.fromJson(JSONObject(text)) ?: error("invalid room")
+            val day = intent.getIntExtra(EXTRA_USE_DAY, -1)
+            require(day in 0..1)
+            val date = intent.getStringExtra(EXTRA_EXPECTED_DATE) ?: error("missing date")
+            require(RoomProfile.validSlotsDate(date))
+            val ticket = requestId(intent) ?: error("missing request ticket")
+            RefreshRequest(room, day, date, ticket).also { require(it.current()) }
+        }.getOrNull()
+    }
+
     private lateinit var webView: WebView
     private lateinit var message: TextView
     private lateinit var roomList: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
+    // Separate from callback-generation cancellation so initial page loading is bounded too.
+    private val targetDeadlineHandler = Handler(Looper.getMainLooper())
+    private val targetTimeout = Runnable {
+        if (targeted && !targetComplete) failTarget("刷新超过 45 秒，学校页面未能及时返回；请检查校园网后重新选择。")
+    }
     private val catalog by lazy { RoomCatalogStore(this) }
     private val script by lazy { assets.open("room-discovery.js").bufferedReader().use { it.readText() } }
     private val route = LibraryRoute.DIRECT
@@ -53,9 +109,16 @@ class RoomBrowserActivity : Activity() {
     private var deadline = 0L
     private var reloadAfterLogin = false
     private var pageLoaded = false
+    private var targetRefresh: RefreshRequest? = null
+    private var targeted = false
+    private var targetAutoStarted = false
+    private var targetStopped = false
+    private var targetComplete = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        targeted = refreshRequested(intent)
+        targetRefresh = if (targeted) readRefreshRequest(intent) else null
         CookieManager.getInstance().setAcceptCookie(true)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 12, 12, 0) }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
@@ -71,16 +134,21 @@ class RoomBrowserActivity : Activity() {
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         actions.addView(Button(this).apply {
             text = "同步全部楼层"
+            isEnabled = !targeted
             setOnClickListener {
                 val ids = listOf("0") + groups.keys.toList()
                 startSync(ids)
             }
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        actions.addView(Button(this).apply { text = "选择楼层同步"; setOnClickListener { chooseGroup() } }, LinearLayout.LayoutParams(0, -2, 1f))
+        actions.addView(Button(this).apply { text = "选择楼层同步"; isEnabled = !targeted; setOnClickListener { chooseGroup() } }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(Button(this).apply {
             text = "登录 / 重新读取"
             setOnClickListener {
                 cancelSync()
+                if (targeted) {
+                    failTarget("请先返回应用完成登录，再重新选择房间或使用日刷新时段。")
+                    return@setOnClickListener
+                }
                 reloadAfterLogin = true
                 startActivity(Intent(this@RoomBrowserActivity, LoginActivity::class.java))
             }
@@ -88,7 +156,11 @@ class RoomBrowserActivity : Activity() {
         root.addView(actions)
         root.addView(Button(this).apply {
             text = "停止同步"
-            setOnClickListener { cancelSync(); message.text = "已停止同步；未发出预约请求。"; renderRooms() }
+            setOnClickListener {
+                cancelSync()
+                if (targeted) failTarget("已停止刷新；未发出预约请求。")
+                else { message.text = "已停止同步；未发出预约请求。"; renderRooms() }
+            }
         })
         roomList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(this).apply { addView(roomList) }
@@ -121,29 +193,26 @@ class RoomBrowserActivity : Activity() {
                     pageLoaded = false
                     if (!allowedPage(url)) {
                         view.stopLoading()
-                        cancelSync()
-                        message.text = "请点“登录 / 重新读取”完成学校登录。"
+                        stopWithMessage("学校登录页或其他页面不能用于刷新时段，请先返回应用完成登录。")
                     }
                 }
                 override fun onPageFinished(view: WebView, url: String) {
-                    if (view.url == url && allowedPage(url)) {
+                    if (!targetComplete && view.url == url && allowedPage(url)) {
                         pageLoaded = true
                         if (active && !closed) inspectPage(url)
                     }
                 }
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                    if (request.isForMainFrame) { cancelSync(); message.text = "学校页面未能加载，请检查当前访问线路后重新读取。" }
+                    if (request.isForMainFrame) stopWithMessage("学校页面未能加载，请检查校园网后重新读取。")
                 }
                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
                     if (request.isForMainFrame && response.statusCode >= 400) {
-                        cancelSync()
-                        message.text = if (response.statusCode == 429) "学校要求降低访问频率，已停止同步，请稍后再试。" else "学校页面暂时不可用，已停止同步。"
+                        stopWithMessage(if (response.statusCode == 429) "学校要求降低访问频率，已停止同步，请稍后再试。" else "学校页面暂时不可用，已停止同步。")
                     }
                 }
                 override fun onReceivedSslError(view: WebView, sslHandler: SslErrorHandler, error: android.net.http.SslError) {
                     sslHandler.cancel()
-                    cancelSync()
-                    message.text = "学校连接的证书验证未通过，已停止同步；不会忽略证书错误。"
+                    stopWithMessage("学校连接的证书验证未通过，已停止同步；不会忽略证书错误。")
                 }
             }
         }
@@ -151,7 +220,12 @@ class RoomBrowserActivity : Activity() {
         setContentView(root)
         ViewCompat.requestApplyInsets(root)
         renderRooms()
-        webView.loadUrl(route.url("/selectreadingroom"))
+        if (targeted && targetRefresh == null) failTarget("刷新目标或使用日已失效，请返回应用重新选择；未采用其他房间的规则。")
+        else {
+            if (targeted) targetDeadlineHandler.postDelayed(targetTimeout, 45_000L)
+            webView.loadUrl(route.url("/selectreadingroom") +
+                (targetRefresh?.let { "?groupid=${it.room.groupId}" } ?: ""))
+        }
     }
 
     private fun allowedPage(url: String) = route.pathOf(url) == "/selectreadingroom"
@@ -175,24 +249,24 @@ class RoomBrowserActivity : Activity() {
     private fun rejectNavigation(url: String): Boolean {
         if (allowedPage(url)) {
             // A user-selected group cancels the automatic sequence before the next read.
-            if (syncing && runCatching { URI(url).rawQuery }.getOrNull() != "groupid=$expectedGroup") cancelSync()
+            if (syncing && runCatching { URI(url).rawQuery }.getOrNull() != "groupid=$expectedGroup")
+                stopWithMessage("学校楼层页面已改变，已停止本次同步。")
             return false
         }
-        cancelSync()
-        message.text = "此窗口只读取阅览室列表；如登录过期，请点“登录 / 重新读取”。"
+        stopWithMessage("此窗口只读取阅览室列表；如登录过期，请返回应用先完成登录。")
         return true
     }
 
     private fun evaluate(expression: String, token: Int, pageUrl: String, callback: (JSONObject) -> Unit) {
-        if (closed || !active || token != generation || webView.url != pageUrl || !allowedPage(pageUrl)) return
+        if (closed || targetComplete || !active || token != generation || webView.url != pageUrl || !allowedPage(pageUrl)) return
         webView.evaluateJavascript(expression) { encoded ->
-            if (closed || !active || token != generation || webView.url != pageUrl) return@evaluateJavascript
+            if (closed || targetComplete || !active || token != generation || webView.url != pageUrl) return@evaluateJavascript
             val result = runCatching {
                 require(encoded.length <= 200_000)
                 JSONObject(JSONArray("[$encoded]").getString(0))
             }.getOrNull()
             if (result == null) {
-                cancelSync(); message.text = "未能读取学校房间数据，未同步未确认的规则。"
+                stopWithMessage("未能读取学校房间数据，未同步未确认的规则。")
             } else callback(result)
         }
     }
@@ -201,12 +275,11 @@ class RoomBrowserActivity : Activity() {
         val token = generation
         evaluate(script + "\nJSON.stringify(window.LibraryRoomDiscovery?.snapshot() || {kind:'unsupported'})", token, url) { data ->
             if (data.optString("kind") != "ready") {
-                cancelSync()
-                message.text = if (data.optString("kind") == "login-required") "学校登录已过期，请先登录再同步阅览室。" else "学校没有提供可识别的阅览室列表，请登录后重新读取。"
+                stopWithMessage(if (data.optString("kind") == "login-required") "学校登录已过期，请先登录再同步阅览室。" else "学校没有提供可识别的阅览室列表，请登录后重新读取。")
                 return@evaluate
             }
             val rows = data.optJSONArray("groups") ?: JSONArray()
-            if (rows.length() > 40) { cancelSync(); message.text = "学校楼层列表异常，已停止读取。"; return@evaluate }
+            if (rows.length() > 40) { stopWithMessage("学校楼层列表异常，已停止读取。"); return@evaluate }
             val found = linkedMapOf<String, String>()
             for (index in 0 until rows.length()) {
                 val group = rows.optJSONObject(index) ?: continue
@@ -216,9 +289,34 @@ class RoomBrowserActivity : Activity() {
             }
             groups.clear(); groups.putAll(found)
             currentGroupId = data.optString("groupId", "0")
+            val target = targetRefresh
+            if (targeted) {
+                if (targetStopped) return@evaluate
+                if (target == null || !target.current()) {
+                    failTarget("使用日已跨午夜变化，请返回应用重新选择；未保存本次时段。")
+                    return@evaluate
+                }
+                val actualRooms = data.optJSONArray("rooms") ?: JSONArray()
+                val matches = (0 until actualRooms.length()).mapNotNull { actualRooms.optJSONObject(it) }
+                    .filter { it.optString("id") == target.room.id }
+                val actual = matches.singleOrNull()
+                if (currentGroupId != target.room.groupId || actual == null ||
+                    actual.optString("name") != target.room.name || actual.optString("groupId") != target.room.groupId ||
+                    actual.optString("groupName") != target.room.groupName || actual.optString("timeMode") != target.room.timeMode) {
+                    failTarget("学校当前房间、楼层或时间模式与选择不一致，已停止刷新。")
+                    return@evaluate
+                }
+                if (!targetAutoStarted) {
+                    targetAutoStarted = true
+                    startSync(listOf(target.room.groupId))
+                    return@evaluate
+                }
+                if (!syncing) return@evaluate
+            }
             if (syncing) {
-                if (currentGroupId != expectedGroup) { cancelSync(); message.text = "学校返回的楼层与目标不一致，已停止同步。"; return@evaluate }
-                evaluate("JSON.stringify(window.LibraryRoomDiscovery.start())", token, url) { poll(token, url, it) }
+                if (currentGroupId != expectedGroup) { stopWithMessage("学校返回的楼层与目标不一致，已停止同步。"); return@evaluate }
+                val options = target?.let { JSONObject().put("roomId", it.room.id).put("useDay", it.useDay).toString() }.orEmpty()
+                evaluate("JSON.stringify(window.LibraryRoomDiscovery.start($options))", token, url) { poll(token, url, it) }
             } else {
                 message.text = "已读取 ${groups.size} 个楼层。点“同步全部楼层”读取各阅览室；下方已有同步记录可直接选择。"
                 renderRooms()
@@ -236,9 +334,15 @@ class RoomBrowserActivity : Activity() {
 
     private fun startSync(ids: List<String>) {
         if (!active || closed) return
+        if (targeted && (targetStopped || targetRefresh?.current() != true || ids != listOf(targetRefresh!!.room.groupId))) {
+            failTarget("刷新目标或使用日已改变，请返回应用重新选择。")
+            return
+        }
         if (syncing) { message.text = "正在顺序同步，请等待完成或先停止。"; return }
         if (ids.isEmpty() || ids.size > 40 || ids.any { !Regex("^(?:0|[1-9]\\d{0,8})$").matches(it) || it != "0" && it !in groups }) {
-            message.text = "楼层尚未从学校确认，请先重新读取。"; return
+            if (targeted) failTarget("学校尚未确认所选楼层，未读取或采用其他楼层的时段。")
+            else message.text = "楼层尚未从学校确认，请先重新读取。"
+            return
         }
         cancelSync()
         syncing = true
@@ -251,13 +355,28 @@ class RoomBrowserActivity : Activity() {
 
     private fun nextGroup() {
         if (!syncing || !active || closed) return
-        if (SystemClock.elapsedRealtime() >= deadline) { cancelSync(); message.text = "同步超过五分钟，已停止；请按楼层分次同步。"; return }
+        if (SystemClock.elapsedRealtime() >= deadline) { stopWithMessage("同步超过五分钟，已停止；请按楼层分次同步。"); return }
         if (pendingGroups.isEmpty()) {
             val count = collected.size
+            val target = targetRefresh
+            if (targeted && (target == null || collected.size != 1 || !target.matches(collected.values.single()))) {
+                failTarget("未取得所选房间和使用日的完整时段，请返回应用重新选择；未采用其他日期。")
+                return
+            }
             runCatching { catalog.merge(collected.values.toList()) }.onFailure {
-                cancelSync(); message.text = "房间规则校验或保存失败，未使用未确认的数据。"; return
+                stopWithMessage("房间规则校验或保存失败，未使用未确认的数据。"); return
             }
             syncing = false; expectedGroup = null
+            if (target != null) {
+                val room = collected.values.single()
+                setResult(RESULT_OK, Intent().putExtra(EXTRA_ROOM_PROFILE, room.toJson().toString())
+                    .putExtra(EXTRA_USE_DAY, target.useDay).putExtra(EXTRA_EXPECTED_DATE, target.expectedDate)
+                    .putExtra(EXTRA_REQUEST_ID, target.requestId))
+                targetComplete = true
+                targetDeadlineHandler.removeCallbacks(targetTimeout)
+                finish()
+                return
+            }
             message.text = "同步完成：$count 个阅览室可选，${unavailable.size} 个暂未取得完整时间规则。同步不代表学校允许立即预约。"
             renderRooms(); return
         }
@@ -269,7 +388,8 @@ class RoomBrowserActivity : Activity() {
 
     private fun poll(token: Int, pageUrl: String, data: JSONObject) {
         if (!syncing || token != generation || closed || !active) return
-        if (SystemClock.elapsedRealtime() >= deadline) { cancelSync(); message.text = "同步超过五分钟，已停止；请按楼层分次同步。"; return }
+        if (targeted && targetRefresh?.current() != true) { failTarget("使用日已跨午夜变化，已停止刷新；请返回应用重新选择。"); return }
+        if (SystemClock.elapsedRealtime() >= deadline) { stopWithMessage("同步超过五分钟，已停止；请按楼层分次同步。"); return }
         when (data.optString("kind")) {
             "running" -> {
                 message.text = "正在同步 ${groups[expectedGroup] ?: "所有分组"}：${data.optInt("completed")} / ${data.optInt("total")} 个阅览室。"
@@ -278,14 +398,21 @@ class RoomBrowserActivity : Activity() {
             "done" -> {
                 val profiles = data.optJSONArray("profiles") ?: JSONArray()
                 val rejected = data.optJSONArray("unavailable") ?: JSONArray()
-                if (profiles.length() > 200 || rejected.length() > 200) { cancelSync(); message.text = "学校房间数据超过安全上限，已停止同步。"; return }
+                if (profiles.length() > 200 || rejected.length() > 200) { stopWithMessage("学校房间数据超过安全上限，已停止同步。"); return }
+                if (targeted && (profiles.length() != 1 || rejected.length() != 0)) {
+                    val detail = rejected.optJSONObject(0)?.let { reason(it.optString("reason")) }
+                        ?: "学校未返回所选使用日的完整时段"
+                    failTarget("刷新失败：$detail；未采用旧规则或其他使用日。")
+                    return
+                }
                 for (index in 0 until profiles.length()) {
                     val room = profiles.optJSONObject(index)?.let(RoomProfile::fromJson)
                     val previous = room?.let { collected[it.id] }
                     val promoted = previous != null && room != null && previous.groupId == "0" &&
                         previous.copy(groupId = room.groupId, groupName = room.groupName) == room
-                    if (room == null || room.groupId != expectedGroup || previous != null && previous != room && !promoted) {
-                        cancelSync(); message.text = "房间或楼层规则不一致，已停止同步，未保存本轮数据。"; return
+                    if (room == null || room.groupId != expectedGroup || previous != null && previous != room && !promoted ||
+                        targeted && targetRefresh?.matches(room) != true) {
+                        stopWithMessage("房间、楼层或使用日规则不一致，已停止同步，未保存本轮数据。"); return
                     }
                     collected[room.id] = room
                     unavailable.remove(room.id)
@@ -296,12 +423,12 @@ class RoomBrowserActivity : Activity() {
                     val name = room.optString("name")
                     if (id !in collected && Regex("^[1-9]\\d{0,8}$").matches(id) && name.isNotBlank() && name.length <= 80) unavailable[id] = name to reason(room.optString("reason"))
                 }
-                if (collected.size + unavailable.size > 200) { cancelSync(); message.text = "房间数量超过安全上限，已停止同步。"; return }
+                if (collected.size + unavailable.size > 200) { stopWithMessage("房间数量超过安全上限，已停止同步。"); return }
                 handler.postDelayed({ if (token == generation && active) nextGroup() }, 450L)
             }
             else -> {
                 val detail = reason(data.optString("reason", data.optString("kind")))
-                cancelSync(); message.text = "同步已停止：$detail。本轮未保存未完成的数据。"; renderRooms()
+                stopWithMessage("同步已停止：$detail。本轮未保存未完成的数据。"); renderRooms()
             }
         }
     }
@@ -321,6 +448,15 @@ class RoomBrowserActivity : Activity() {
     private fun renderRooms() {
         if (!::roomList.isInitialized) return
         roomList.removeAllViews()
+        if (targeted) {
+            targetRefresh?.let { target ->
+                roomList.addView(TextView(this).apply {
+                    text = "正在刷新：${target.room.groupName} · ${target.room.name}\n使用日：${target.expectedDate}\n只读取该房间当天时段，不会提交预约。"
+                    setPadding(12, 12, 12, 12)
+                })
+            }
+            return
+        }
         for (room in catalog.load()) {
             if (room.id in unavailable) continue
             roomList.addView(Button(this).apply {
@@ -348,8 +484,28 @@ class RoomBrowserActivity : Activity() {
         pendingGroups.clear()
     }
 
+    private fun failTarget(detail: String) {
+        if (!targeted || targetComplete) return
+        targetStopped = true
+        cancelSync()
+        val result = Intent().putExtra(EXTRA_REFRESH_ERROR, detail)
+            .putExtra(EXTRA_REQUEST_ID, targetRefresh?.requestId ?: requestId(intent))
+        targetRefresh?.let { result.putExtra(EXTRA_USE_DAY, it.useDay).putExtra(EXTRA_EXPECTED_DATE, it.expectedDate) }
+        setResult(RESULT_CANCELED, result)
+        if (::message.isInitialized) message.text = "$detail\n本次刷新不会自动重试，也未提交预约。"
+        targetComplete = true
+        targetDeadlineHandler.removeCallbacks(targetTimeout)
+        finish()
+    }
+
+    private fun stopWithMessage(detail: String) {
+        if (targeted) failTarget(detail)
+        else { cancelSync(); message.text = detail }
+    }
+
     override fun onResume() {
         super.onResume(); active = true
+        if (targetComplete) return
         if (::webView.isInitialized) {
             webView.onResume()
             if (reloadAfterLogin) { reloadAfterLogin = false; webView.loadUrl(route.url("/selectreadingroom")) }
@@ -359,6 +515,7 @@ class RoomBrowserActivity : Activity() {
 
     override fun onPause() {
         active = false
+        if (targeted && !targetComplete) failTarget("已离开时段刷新页面，后台读取已停止，请重新选择房间或使用日。")
         if (syncing) message.text = "已离开同步页面，后台读取已停止；返回后请重新同步。"
         cancelSync()
         reloadAfterLogin = true
@@ -367,6 +524,7 @@ class RoomBrowserActivity : Activity() {
     }
 
     override fun onDestroy() {
+        targetDeadlineHandler.removeCallbacks(targetTimeout)
         cancelSync(); closed = true
         CookieManager.getInstance().flush()
         if (::webView.isInitialized) { webView.stopLoading(); webView.destroy() }
