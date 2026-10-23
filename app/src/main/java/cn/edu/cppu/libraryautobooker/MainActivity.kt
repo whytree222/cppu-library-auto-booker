@@ -53,6 +53,7 @@ import cn.edu.cppu.libraryautobooker.data.SeatMapCatalog
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import androidx.core.app.NotificationManagerCompat
 import cn.edu.cppu.libraryautobooker.booking.FixedBookingPlan
+import cn.edu.cppu.libraryautobooker.booking.ImmediateBookingPlan
 import androidx.core.content.ContextCompat
 import java.time.format.DateTimeFormatter
 
@@ -275,7 +276,7 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("准备", style = MaterialTheme.typography.titleMedium)
-                            Text("1. 检查校园网和登录状态\n2. 选择楼层、阅览室和座位\n3. 选择使用日期和时段\n4. 点击预约，下一次 00:58 启动，最多等待开放 10 分钟")
+                            Text("1. 检查校园网和登录状态\n2. 选择楼层、阅览室和座位\n3. 选择使用日期和时段\n4. 直接预约现在尝试，或安排下次 00:58 启动、最多等待开放 10 分钟")
                         }
                     }
 
@@ -291,7 +292,8 @@ class MainActivity : ComponentActivity() {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("预约哪一天", style = MaterialTheme.typography.titleMedium)
-                            Text("今天/明天以 00:58 启动当天为准；当前选择预计使用日：${FixedBookingPlan.targetDate(config)}")
+                            Text("直接预约预计使用日：${ImmediateBookingPlan.targetDate(config)}（今天/明天以现在为准）")
+                            Text("00:58 定时预约预计使用日：${FixedBookingPlan.targetDate(config)}（今天/明天以计划启动日为准）")
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 if (config.reserveTomorrow) {
                                     OutlinedButton(
@@ -363,11 +365,32 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                    ImmediateBookingButton(onClick = direct@{
+                        if (BookingService.running) {
+                            status = "已有预约任务正在运行，请等待结果或先停止当前任务"
+                            return@direct
+                        }
+                        val map = seatMaps?.forRoom(config.room)
+                        val mapError = map?.selectionError(config.seatNumbers)
+                        val candidate = ImmediateBookingPlan.prepare(
+                            if (map != null && mapError == null) map.bind(config) else config)
+                        val error = if (map == null) "此阅览室尚无已核对的座位图，请重新选择房间"
+                            else mapError ?: candidate.validationError()
+                        if (error != null) {
+                            status = error
+                            return@direct
+                        }
+                        runCatching {
+                            val request = ImmediateBookingPlan.intent(this@MainActivity, candidate)
+                            ContextCompat.startForegroundService(this@MainActivity, request)
+                        }.onSuccess {
+                            status = "已启动直接预约，请在记录页查看学校返回结果；不代表预约成功"
+                        }.onFailure {
+                            status = "无法启动直接预约：${it.javaClass.simpleName}"
+                            runtime.record("FAILED", status, "manual-failed:${java.util.UUID.randomUUID()}", "直接预约")
+                        }
+                    })
                     FixedBookingInfo()
-                    OutlinedButton(onClick = {
-                        startService(Intent(this@MainActivity, BookingService::class.java).setAction(BookingService.ACTION_CANCEL))
-                        status = "已请求停止当前任务；不取消已成功的学校预约，也不取消其他定时计划"
-                    }, modifier = Modifier.fillMaxWidth()) { Text("停止当前任务") }
                     FixedBookingButton(onClick = book@{
                             val map = seatMaps?.forRoom(config.room)
                             val mapError = map?.selectionError(config.seatNumbers)
@@ -396,9 +419,13 @@ class MainActivity : ComponentActivity() {
                             RuntimeStore.scheduledAction(at)) }
                         status = "已取消等待中的预约；不会取消学校已成功的预约"
                     }, modifier = Modifier.fillMaxWidth()) { Text("取消已安排预约") }
+                    OutlinedButton(onClick = {
+                        startService(Intent(this@MainActivity, BookingService::class.java).setAction(BookingService.ACTION_CANCEL))
+                        status = "已请求停止当前任务；不取消已成功的学校预约，也不取消其他定时计划"
+                    }, modifier = Modifier.fillMaxWidth()) { Text("停止当前任务") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
                     Text(
-                        "点击“预约”只安排下一次 00:58 的一次性任务，不会立即提交；当天 00:58 已过则安排到次日。需保持校园网可用。座位无法精确识别或提交结果不明时停止，不盲目重发。",
+                        "“直接预约”现在尝试；“预约 · 下次 00:58 启动”只安排下一次一次性任务，已过则到次日。请核对两个入口各自的预计使用日期。需保持校园网可用；座位无法精确识别或提交结果不明时停止，不盲目重发。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(20.dp))

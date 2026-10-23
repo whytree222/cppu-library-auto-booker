@@ -52,8 +52,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum app/build/outputs/apk/debug/app-debug.apk
-          if gh release view v0.17.0 >/dev/null 2>&1; then
-            gh release upload v0.17.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.17.1 >/dev/null 2>&1; then
+            gh release upload v0.17.1 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.17.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.0 · 校园网直连与一键预约' --notes '移除WebVPN校外代理、网址转换、统一认证、两套账号设置及对应验证码OCR依赖。仅保留校园网直连和图书馆自动重新登录。移除自定义/多个抢座时间、演练和立即提交入口，选好座位与使用日期时段后，点击一个预约按钮安排下一次手机本地00:58的一次性真实预约，明确未开放时最多等待10分钟，不每日循环。保留取消计划、停止当前任务，网络或账号错误及提交结果不明停止，避免重复预约。升级取消旧自定义时间任务并清除退役WebVPN保存信息，保留直连账号和选座使用时段，需用户重新点击预约。沿用独立预约、权限、记录三页及真实楼层座位图。离线模拟和Android测试验证，未连接学校创建真实预约。'
+            gh release create v0.17.1 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.1 · 恢复直接预约' --notes '恢复直接预约按钮，与下次00:58定时预约并列。直接预约立即按当前日期和所选房间、座位、使用时段尝试真实预约，不等00:58，也不等待尚未开放；无需精确闹钟权限。定时入口仍为下一次00:58启动、明确未开放时最多等待10分钟的一次性计划。两个入口分别显示预计使用日期。直接预约通过不可变目标快照交给后台，不覆盖已有定时计划及其选座时段；任务运行中拒绝并发重复启动。保留精确座位图复核、同座位追加、学校确认与未知结果停止规则。仍仅校园网直连，不恢复WebVPN或OCR。离线模拟与Android单元/界面测试验证，未在学校系统创建真实预约。'
           fi

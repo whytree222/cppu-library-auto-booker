@@ -28,6 +28,7 @@ import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import cn.edu.cppu.libraryautobooker.network.SubmissionGuard
 import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
+import cn.edu.cppu.libraryautobooker.data.SeatMapCatalog
 import java.time.LocalDate
 import java.time.Instant
 import java.time.ZoneId
@@ -73,10 +74,33 @@ class BookingService : Service() {
             if (intent?.action == ACTION_SCHEDULED) {
                 val expected = intent.getLongExtra("expected_at", 0L)
                 RuntimeStore(this).record("FAILED", "上一笔预约仍在运行，本次时间未执行，避免并发重复提交；请将抢座时间适当分开", RuntimeStore.scheduledAction(expected), "定时任务")
+            } else if (intent?.action == ACTION_RUN_ONCE) {
+                RuntimeStore(this).record("FAILED", "已有预约任务运行中，本次直接预约未重复启动",
+                    "manual-busy:${UUID.randomUUID()}", "直接预约未启动")
             }
             return START_NOT_STICKY
         }
-        val config = ConfigStore(this).load()
+        val manual = if (intent?.action == ACTION_RUN_ONCE)
+            ImmediateBookingPlan.decode(intent.getStringExtra(ImmediateBookingPlan.EXTRA_REQUEST)) else null
+        if (intent?.action == ACTION_RUN_ONCE && manual == null) {
+            RuntimeStore(this).record("FAILED", "直接预约参数缺失或无效，未进入网页预约",
+                "manual-invalid:${UUID.randomUUID()}", "直接预约")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val config = manual?.config ?: ConfigStore(this).load()
+        if (manual != null) {
+            val matchesMap = runCatching {
+                val map = requireNotNull(SeatMapCatalog.load(this).forRoom(config.room))
+                map.bind(config).mapSeats == config.mapSeats
+            }.getOrDefault(false)
+            if (!matchesMap) {
+                RuntimeStore(this).record("FAILED", "直接预约的座位图定位不匹配，请重新选座",
+                    "manual-invalid:${UUID.randomUUID()}", "直接预约")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
         if (intent?.action == ACTION_SCHEDULED && intent.getStringExtra("booking_fingerprint") != config.reservationFingerprint()) {
             val expected = intent.getLongExtra("expected_at", 0L)
             RuntimeStore(this).record("CANCELLED", "闹钟触发后阅览室、座位或时间设置已变化；旧任务已停止，未进入网页预约",
@@ -99,7 +123,7 @@ class BookingService : Service() {
         historyId = if (intent?.action == ACTION_SCHEDULED) RuntimeStore.scheduledAction(plannedAt)
             else "manual:${UUID.randomUUID()}"
         val taskDay = if (intent?.action == ACTION_SCHEDULED && plannedAt > 0)
-            Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else LocalDate.now()
+            Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else manual?.anchorDate ?: LocalDate.now()
         sequence = BookingSequence(config, taskDay)
         running = true
         if (config.waitForRelease) {
