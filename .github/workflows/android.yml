@@ -52,8 +52,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum app/build/outputs/apk/debug/app-debug.apk
-          if gh release view v0.17.4 >/dev/null 2>&1; then
-            gh release upload v0.17.4 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.17.5 >/dev/null 2>&1; then
+            gh release upload v0.17.5 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.17.4 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.4 · 全楼层本地时段核对' --notes '补齐另外六间阅览室的实际时段核对，使用日2026-10-24：科技第二段10:01:10开始；社科二区第一段10:00:01结束、第四段14:31:00开始；理科第一段10:00:01结束；文科第六段19:29:00结束。社科一区、过刊与旧记录一致。本地七间房分别保存时段和核对日期，保留原座位布局。继续本地优先，切换房间/日期不自动联网；预约时仍验证真实房间、日期、时段、座位与登录。仅正常查看网页取得时段，没有创建真实预约。'
+            gh release create v0.17.5 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.5 · 直接预约结果弹窗' --notes '直接预约的最终反馈以应用内弹窗显示，保留学校原因和房间座位信息，长内容可滚动。通过本次请求编号关联结果，不弹旧任务或定时任务，不把选座/提交/追加中的进度当作成功。参数错误和启动失败也弹窗说明；超时、服务中断或结果不明提示核对学校记录。关闭弹窗不会重新预约，详细步骤继续保留记录页。保留本地各房间时间表，不恢复自动同步。离线与Android单元/界面测试验证，未提交真实预约。'
           fi

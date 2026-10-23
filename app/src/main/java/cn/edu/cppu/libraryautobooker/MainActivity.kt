@@ -181,6 +181,22 @@ class MainActivity : ComponentActivity() {
                 }
                 val taskDetail = remember(refreshVersion) { runtime.prefs.getString("task_detail", "尚未安排任务").orEmpty() }
                 val history = remember(refreshVersion) { runtime.history() }
+                var watchedManualId by rememberSaveable { mutableStateOf<String?>(null) }
+                var feedbackTitle by rememberSaveable { mutableStateOf<String?>(null) }
+                var feedbackDetail by rememberSaveable { mutableStateOf("") }
+                LaunchedEffect(history, watchedManualId) {
+                    val id = watchedManualId
+                    val record = history.firstOrNull { it.id == id }
+                    val result = record?.let(DirectBookingFeedback::from)
+                    if (result != null) {
+                        watchedManualId = null
+                        feedbackTitle = result.title
+                        feedbackDetail = result.detail
+                    }
+                }
+                if (foreground && feedbackTitle != null) DirectBookingFeedbackDialog(feedbackTitle!!, feedbackDetail) {
+                    feedbackTitle = null; feedbackDetail = ""
+                }
                 val exactAllowed = remember(refreshVersion) { scheduler.canScheduleExact() }
                 val notificationsAllowed = remember(refreshVersion) {
                     NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()
@@ -468,9 +484,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    ImmediateBookingButton(enabled = !rulesLoading, onClick = direct@{
+                    ImmediateBookingButton(enabled = !rulesLoading && watchedManualId == null, onClick = direct@{
                         if (BookingService.running) {
                             status = "已有预约任务正在运行，请等待结果或先停止当前任务"
+                            feedbackTitle = "直接预约未启动"; feedbackDetail = status
                             return@direct
                         }
                         val map = seatMaps?.forRoom(config.room)
@@ -481,16 +498,21 @@ class MainActivity : ComponentActivity() {
                             else mapError ?: candidate.validationError()
                         if (error != null) {
                             status = error
+                            feedbackTitle = "请检查预约设置"; feedbackDetail = error
                             return@direct
                         }
                         runCatching {
                             val request = ImmediateBookingPlan.intent(this@MainActivity, candidate)
+                            watchedManualId = requireNotNull(ImmediateBookingPlan.actionId(request))
                             ContextCompat.startForegroundService(this@MainActivity, request)
                         }.onSuccess {
-                            status = "已启动直接预约，请在记录页查看学校返回结果；不代表预约成功"
+                            status = "已启动直接预约，结果将弹窗提示；不代表预约成功"
                         }.onFailure {
                             status = "无法启动直接预约：${it.javaClass.simpleName}"
-                            runtime.record("FAILED", status, "manual-failed:${java.util.UUID.randomUUID()}", "直接预约")
+                            val failedId = watchedManualId
+                            watchedManualId = null
+                            feedbackTitle = "直接预约未启动"; feedbackDetail = status
+                            runtime.record("FAILED", status, failedId ?: "manual-failed:${java.util.UUID.randomUUID()}", "直接预约")
                         }
                     })
                     FixedBookingInfo()

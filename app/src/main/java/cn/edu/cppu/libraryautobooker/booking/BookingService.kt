@@ -69,6 +69,8 @@ class BookingService : Service() {
             if (sequence == null) stopSelf()
             return START_NOT_STICKY
         }
+        val manualActionId = if (intent?.action == ACTION_RUN_ONCE)
+            ImmediateBookingPlan.actionId(intent) ?: "manual:${UUID.randomUUID()}" else null
         // Repeated taps/alarms must not restart an in-flight booking.
         if (sequence != null) {
             if (intent?.action == ACTION_SCHEDULED) {
@@ -76,7 +78,7 @@ class BookingService : Service() {
                 RuntimeStore(this).record("FAILED", "上一笔预约仍在运行，本次时间未执行，避免并发重复提交；请将抢座时间适当分开", RuntimeStore.scheduledAction(expected), "定时任务")
             } else if (intent?.action == ACTION_RUN_ONCE) {
                 RuntimeStore(this).record("FAILED", "已有预约任务运行中，本次直接预约未重复启动",
-                    "manual-busy:${UUID.randomUUID()}", "直接预约未启动")
+                    manualActionId, "直接预约未启动")
             }
             return START_NOT_STICKY
         }
@@ -84,7 +86,7 @@ class BookingService : Service() {
             ImmediateBookingPlan.decode(intent.getStringExtra(ImmediateBookingPlan.EXTRA_REQUEST)) else null
         if (intent?.action == ACTION_RUN_ONCE && manual == null) {
             RuntimeStore(this).record("FAILED", "直接预约参数缺失或无效，未进入网页预约",
-                "manual-invalid:${UUID.randomUUID()}", "直接预约")
+                manualActionId, "直接预约")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -96,7 +98,7 @@ class BookingService : Service() {
             }.getOrDefault(false)
             if (!matchesMap) {
                 RuntimeStore(this).record("FAILED", "直接预约的座位图定位不匹配，请重新选座",
-                    "manual-invalid:${UUID.randomUUID()}", "直接预约")
+                    manualActionId, "直接预约")
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -113,7 +115,7 @@ class BookingService : Service() {
             return START_NOT_STICKY
         }
         config.validationError()?.let { error ->
-            RuntimeStore(this).record("FAILED", "任务参数未通过检查：$error；未进入网页预约")
+            RuntimeStore(this).record("FAILED", "任务参数未通过检查：$error；未进入网页预约", manualActionId)
             showResult(error)
             stopSelf()
             return START_NOT_STICKY
@@ -121,7 +123,7 @@ class BookingService : Service() {
 
         val plannedAt = intent?.getLongExtra("expected_at", 0L) ?: 0L
         historyId = if (intent?.action == ACTION_SCHEDULED) RuntimeStore.scheduledAction(plannedAt)
-            else "manual:${UUID.randomUUID()}"
+            else manualActionId ?: "manual:${UUID.randomUUID()}"
         val taskDay = if (intent?.action == ACTION_SCHEDULED && plannedAt > 0)
             Instant.ofEpochMilli(plannedAt).atZone(ZoneId.systemDefault()).toLocalDate() else manual?.anchorDate ?: LocalDate.now()
         sequence = BookingSequence(config, taskDay)

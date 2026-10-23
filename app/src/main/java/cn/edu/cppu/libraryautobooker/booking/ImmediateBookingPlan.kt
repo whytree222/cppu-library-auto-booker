@@ -8,10 +8,15 @@ import cn.edu.cppu.libraryautobooker.data.RoomProfile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import java.util.UUID
 
 /** An immutable manual request; never saves over the pending scheduled plan. */
 object ImmediateBookingPlan {
     const val EXTRA_REQUEST = "immediate_booking_request"
+    const val EXTRA_ACTION_ID = "immediate_booking_action_id"
+    fun actionId(intent: Intent?): String? = intent?.getStringExtra(EXTRA_ACTION_ID)?.takeIf {
+        Regex("^manual:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").matches(it)
+    }
     data class Request(val config: BookingConfig, val anchorDate: LocalDate)
     fun targetDate(draft: BookingConfig, today: LocalDate = LocalDate.now()): LocalDate =
         today.plusDays(if (draft.reserveTomorrow) 1 else 0)
@@ -21,6 +26,7 @@ object ImmediateBookingPlan {
     fun intent(context: Context, draft: BookingConfig, today: LocalDate = LocalDate.now()) =
         Intent(context, BookingService::class.java).setAction(BookingService.ACTION_RUN_ONCE)
             .putExtra(EXTRA_REQUEST, encode(draft, today))
+            .putExtra(EXTRA_ACTION_ID, "manual:${UUID.randomUUID()}")
 
     fun encode(draft: BookingConfig, today: LocalDate = LocalDate.now()): String {
         val config = prepare(draft)

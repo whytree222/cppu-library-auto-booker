@@ -3,6 +3,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const root = 'app/src/main/java/cn/edu/cppu/libraryautobooker/';
 
+test('direct feedback watches only its request id and consumes only terminal results',()=>{
+  const main=fs.readFileSync(root+'MainActivity.kt','utf8');
+  const service=fs.readFileSync(root+'booking/BookingService.kt','utf8');
+  const feedback=fs.readFileSync(root+'DirectBookingFeedback.kt','utf8');
+  assert.match(main,/history.firstOrNull \{ it.id == id \}/);
+  assert.match(main,/watchedManualId = requireNotNull\(ImmediateBookingPlan.actionId\(request\)\)/);
+  assert.match(main,/DirectBookingFeedbackDialog/);
+  assert.match(service,/else manualActionId \?:/);
+  assert.match(feedback,/setOf\("DONE", "FAILED", "INTERRUPTED"\)/);
+  assert.match(feedback,/record.id.startsWith\("manual:"\)/);
+  assert.match(feedback,/verticalScroll/);
+  assert.doesNotMatch(feedback,/startForegroundService|\.launch\(|SYSTEM_ALERT_WINDOW/);
+});
+
 test('room and date switches are local; online rules loading requires explicit button action',()=>{
   const main = fs.readFileSync(root+'MainActivity.kt','utf8');
   assert.doesNotMatch(main,/rulesRefreshSerial|rulesToday|LaunchedEffect\(config\.room/);
