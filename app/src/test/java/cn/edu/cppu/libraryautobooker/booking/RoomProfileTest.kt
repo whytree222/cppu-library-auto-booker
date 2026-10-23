@@ -26,6 +26,22 @@ class RoomProfileTest {
         }
     }
 
+    @Test fun localRoomsLoadIndependentlyAndKnownNewRulesReplaceUndatedOldCache() {
+        val catalog = RoomCatalogStore(app)
+        val rooms = catalog.load()
+        assertEquals(7, rooms.size)
+        val press = rooms.single { it.id == "20" }
+        assertEquals("10:01:10", press.slots[1].begin)
+        assertEquals("19:29:11", press.slots[5].end)
+        assertEquals("2026-10-24", press.slotsDate)
+        assertEquals("10:01:00", rooms.single { it.id == "26" }.slots[1].begin)
+        catalog.merge(listOf(press.copy(slotsDate = "", slots = RoomProfile.DEFAULT.slots)))
+        assertEquals(press, RoomCatalogStore(app).find("20"))
+        val newer = press.copy(slotsDate = "2026-10-25", slots = RoomProfile.DEFAULT.slots)
+        catalog.merge(listOf(newer))
+        assertEquals(newer, RoomCatalogStore(app).find("20"))
+    }
+
     @Test fun oldConfigMigratesToKnownRoomButCorruptNewIdentityNeverSilentlyFallsBack() {
         assertEquals(RoomProfile.DEFAULT, ConfigStore(app).load().room)
         app.getSharedPreferences("booking_config", Context.MODE_PRIVATE).edit()

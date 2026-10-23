@@ -15,7 +15,12 @@ class RoomCatalogStore(context: Context) {
             require(array.length() <= 200)
             (0 until array.length()).mapNotNull { RoomProfile.fromJson(array.getJSONObject(it)) }
         }.getOrDefault(emptyList())
-        return (saved + bundled + RoomProfile.DEFAULT).distinctBy { it.id }
+        val currentSaved = saved.map { old ->
+            val shipped = bundled.find { it.id == old.id && it.name == old.name && it.groupId == old.groupId && it.groupName == old.groupName }
+            if (shipped != null && shipped.slotsDate.isNotEmpty() &&
+                (old.slotsDate.isEmpty() || old.slotsDate < shipped.slotsDate)) shipped else old
+        }
+        return (currentSaved + bundled + RoomProfile.DEFAULT).distinctBy { it.id }
             .sortedWith(compareBy({ it.groupId.toInt() }, { it.id.toInt() }))
     }
 
@@ -31,4 +36,3 @@ class RoomCatalogStore(context: Context) {
         check(prefs.edit().putString("rooms", array.toString()).commit())
     }
 }
-

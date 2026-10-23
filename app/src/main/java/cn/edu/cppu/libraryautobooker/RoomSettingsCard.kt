@@ -48,7 +48,7 @@ fun RoomSettingsCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("选择楼层和阅览室", style = MaterialTheme.typography.titleMedium)
             Text("当前预约：${selected.groupName.ifBlank { "未分组" }} · ${selected.name}")
-            Text("内置一至四楼 7 间阅览室座位图。选择房间或今天／明天后，会自动尝试核对一次该房间当天的时间规则；仅浏览楼层不会更改预约。",
+            Text("内置一至四楼 7 间阅览室的座位图和独立时间表。切换房间立即读取本地数据；切换今天／明天不联网、不弹出同步页面。",
                 style = MaterialTheme.typography.bodySmall)
             Text("切换房间需重新选座、选时段。同一房间按完整起止时间保留已选项；已选时段有变化时需重新选择，规则变化会取消旧定时任务。",
                 style = MaterialTheme.typography.bodySmall)
@@ -86,7 +86,7 @@ fun RoomSettingsCard(
                 else "预约方式：选择该房间的固定时段（共 ${selected.slots.size} 个）",
                 style = MaterialTheme.typography.bodySmall)
             Text(if (selected.slotsDate.isEmpty()) "时段来源：缓存，尚未按使用日期核对；学校未开放或同步失败时保留缓存，预约时仍精确核对学校网页。"
-                else "学校已核对的使用日期：${selected.slotsDate}；其他日期的规则仍需重新核对。",
+                else "本地时间表最近核对的使用日期：${selected.slotsDate}；不代表其他日期开放或座位空闲。",
                 style = MaterialTheme.typography.bodySmall)
         }
     }

@@ -63,7 +63,7 @@ class SeatMapCatalog private constructor(val maps: List<RoomSeatMap>) {
                 val room = RoomProfile(id, item.getString("name"), groupId, floor, "fixed",
                     (0 until slots.length()).map { slot -> slots.getJSONObject(slot).let {
                         RoomSlot(it.getString("begin"), it.getString("end"))
-                    } })
+                    } }, slotsDate = item.optString("slotsDate", ""))
                 require(room.validationError() == null)
                 val matrix = item.getJSONArray("rows")
                 require(matrix.length() in 1..200)
@@ -94,4 +94,3 @@ class SeatMapCatalog private constructor(val maps: List<RoomSeatMap>) {
         }
     }
 }
-

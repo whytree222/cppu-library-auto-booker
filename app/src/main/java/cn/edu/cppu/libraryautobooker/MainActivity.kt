@@ -168,11 +168,9 @@ class MainActivity : ComponentActivity() {
                 var pendingSchedule by remember { mutableStateOf<BookingConfig?>(null) }
                 var savedEnabled by remember { mutableStateOf(config.enabled) }
                 var rulesLoading by remember { mutableStateOf(false) }
-                var rulesStatus by remember { mutableStateOf("切换阅览室或使用日后会自动核对对应时段。") }
-                var rulesRefreshSerial by remember { mutableStateOf(0) }
+                var rulesStatus by remember { mutableStateOf("使用各房间本地保存的时间表；切换房间、日期不会在线同步。") }
                 var rulesTicket by remember { mutableStateOf<RoomRulesTicket?>(null) }
                 var rulesRequestId by remember { mutableStateOf<String?>(null) }
-                val rulesToday = remember(refreshVersion) { LocalDate.now().toString() }
                 val liveConfig = remember(refreshVersion) { store.load() }
                 LaunchedEffect(refreshVersion) {
                     if (liveConfig.enabled != savedEnabled || liveConfig.scheduledAtMillis != config.scheduledAtMillis) {
@@ -235,14 +233,26 @@ class MainActivity : ComponentActivity() {
                                 RuntimeStore.scheduledAction(at))
                         }
                         status = "已选择${room.name}；请在座位图选座、选择时间并保存任务"
-                    } else rulesRefreshSerial++
+                    } else if (room != currentRoom) {
+                        val oldPlan = store.load()
+                        val affected = roomRulesAffectPlan(oldPlan, room)
+                        val preserve = oldPlan.enabled && !affected
+                        val adopted = applyRoomRules(config, room)
+                        if (affected) {
+                            scheduler.cancel(); pendingSchedule = null
+                            oldPlan.pendingTimes().forEach { at -> runtime.record("CANCELLED",
+                                "本地时段已更新，请核对后重新安排对应日期的计划", RuntimeStore.scheduledAction(at)) }
+                        }
+                        config = if (preserve) adopted.withPending(oldPlan.pendingTimes()) else adopted
+                        if (!preserve) store.save(config.withPending(emptyList()))
+                    }
+                    rulesStatus = "已读取 ${room.name} 的本地时间表；未发起在线同步。"
                 }
                 val roomBrowser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
                     rooms = RoomCatalogStore(this@MainActivity).load()
                     val id = if (result.resultCode == RESULT_OK) result.data?.getStringExtra("room_id") ?: config.room.id
                         else config.room.id
                     if (result.resultCode == RESULT_OK) rooms.firstOrNull { it.id == id }?.let(selectRoom)
-                    else rulesRefreshSerial++
                 }
                 val roomRulesRefresh = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
                     val ticket = rulesTicket
@@ -270,7 +280,7 @@ class MainActivity : ComponentActivity() {
                                 data.getStringExtra(RoomBrowserActivity.EXTRA_EXPECTED_DATE).orEmpty())) {
                             rulesStatus = "房间、使用日或日期已经改变，已忽略旧刷新结果；请重新刷新。"
                         } else if (BookingService.running) {
-                            rulesStatus = "预约任务已开始，本次未改动运行目标；任务结束后会重新核对时段。"
+                            rulesStatus = "预约任务已开始，本次未改动运行目标；如需更新，请结束后手动操作。"
                         } else runCatching {
                             val previous = config
                             val changed = roomRulesChanged(previous.room, updated)
@@ -302,16 +312,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Keep draft reservation settings alive while an expired session is restored.
-                if (loginEntryVisible) {
-                    EntryLoginScreen(autoEnterValid = !managingLogin) {
-                        loginEntryVisible = false; managingLogin = false; refreshVersion++
-                    }
-                    return@MaterialTheme
-                }
-
-                LaunchedEffect(config.room.id, config.room.name, config.room.groupId, config.room.groupName,
-                    config.room.timeMode, config.reserveTomorrow, rulesToday, rulesRefreshSerial, BookingService.running) {
+                // Online rules loading is exclusively a user-invoked action.
+                val refreshRules: () -> Unit = {
                     if (!rulesLoading && !BookingService.running && config.room.validationError() == null) {
                         runCatching {
                             val request = RoomBrowserActivity.refreshIntent(this@MainActivity, config.room, config.reserveTomorrow)
@@ -325,7 +327,15 @@ class MainActivity : ComponentActivity() {
                             rulesLoading = false; rulesTicket = null; rulesRequestId = null
                             rulesStatus = "无法启动时段刷新，当前仅为缓存；请稍后重新刷新。"
                         }
-                    } else if (BookingService.running) rulesStatus = "预约任务运行中，暂不刷新；任务结束后再核对对应房间和使用日。"
+                    } else if (BookingService.running) rulesStatus = "预约任务运行中，暂不刷新；任务结束后可手动更新。"
+                }
+
+                // Keep draft reservation settings alive while an expired session is restored.
+                if (loginEntryVisible) {
+                    EntryLoginScreen(autoEnterValid = !managingLogin) {
+                        loginEntryVisible = false; managingLogin = false; refreshVersion++
+                    }
+                    return@MaterialTheme
                 }
 
                 LibraryAppPages(booking = {
@@ -403,9 +413,9 @@ class MainActivity : ComponentActivity() {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("选择使用时间 · ${config.room.name}", style = MaterialTheme.typography.titleMedium)
                             Text(rulesStatus, style = MaterialTheme.typography.bodySmall)
-                            OutlinedButton(onClick = { rulesRefreshSerial++ },
+                            OutlinedButton(onClick = refreshRules,
                                 enabled = !rulesLoading && !BookingService.running, modifier = Modifier.fillMaxWidth()) {
-                                Text(if (rulesLoading) "正在更新时段…" else "刷新当前房间和使用日的时段")
+                                Text(if (rulesLoading) "正在更新时段…" else "手动在线更新当前房间时段")
                             }
                             if (config.room.timeMode == "free") {
                                 Text("该阅览室按起止时间预约，请以 24 小时制填写 HH:mm；实际开放日期和时长限制以学校系统为准。")
@@ -421,7 +431,7 @@ class MainActivity : ComponentActivity() {
                                     label = { Text("结束时间（HH:mm）") }, placeholder = { Text("12:00") },
                                     singleLine = true, modifier = Modifier.fillMaxWidth())
                             } else {
-                                Text("选择 1–4 个连续时段；时间属于当前房间，来源日期见上方。切换使用日会重新读取，不混合今天和明天；运行时仍核对真实时段。")
+                                Text("选择 1–4 个连续时段；使用当前房间的本地时间表。切换今天／明天只改变使用日期，不联网。真正预约时仍精确核对学校时段。")
                                 if (config.room.slots.isEmpty()) {
                                     Text("尚未获取该阅览室的固定时段，请先从学校同步阅览室。", color = MaterialTheme.colorScheme.error)
                                 }

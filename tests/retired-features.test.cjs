@@ -2,6 +2,18 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const root = 'app/src/main/java/cn/edu/cppu/libraryautobooker/';
+
+test('room and date switches are local; online rules loading requires explicit button action',()=>{
+  const main = fs.readFileSync(root+'MainActivity.kt','utf8');
+  assert.doesNotMatch(main,/rulesRefreshSerial|rulesToday|LaunchedEffect\(config\.room/);
+  const choose = main.slice(main.indexOf('val selectRoom:'),main.indexOf('val roomBrowser ='));
+  assert.doesNotMatch(choose,/\.launch\(|refreshIntent|refreshRules\(/);
+  assert.match(main,/val refreshRules: \(\) -> Unit/);
+  assert.match(main,/OutlinedButton\(onClick = refreshRules/);
+  assert.match(main,/config = config.copy\(reserveTomorrow = false\)/);
+  assert.match(main,/config = config.copy\(reserveTomorrow = true\)/);
+  assert.match(main,/使用当前房间的本地时间表/);
+});
 test('dashboard has separate immediate and fixed actions while retired modules stay removed',()=>{
   const main = fs.readFileSync(root+'MainActivity.kt','utf8');
   const entry = fs.readFileSync(root+'EntryLoginScreen.kt','utf8');
