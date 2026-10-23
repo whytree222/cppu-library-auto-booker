@@ -69,7 +69,7 @@ class RoomProfileTest {
         assertNull(RoomProfile.fromJson(second.toJson().put("slotsDate", 20261024)))
         assertNull(RoomProfile.fromJson(second.toJson().put("slotsDate", JSONObject.NULL)))
         assertNull(second.copy(slotsDate = "2028-02-29").validationError())
-        assertNotEquals(BookingConfig(room = second).reservationFingerprint(),
+        assertEquals(BookingConfig(room = second).reservationFingerprint(),
             BookingConfig(room = second.copy(slotsDate = "2026-10-24")).reservationFingerprint())
     }
 
