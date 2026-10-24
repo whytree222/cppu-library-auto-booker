@@ -26,7 +26,7 @@ import org.robolectric.annotation.LooperMode
 class PermissionsPageUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun openingPermissionsPageDoesNotRequestAnythingAndKeepsBookingControlsOut() {
+    @Test fun openingPermissionsPageDoesNotRequestAnythingAndKeepsAdvancedCollapsed() {
         val actions = mutableListOf<String>()
         compose.setContent {
             MaterialTheme {
@@ -41,6 +41,8 @@ class PermissionsPageUiTest {
         compose.onNodeWithText("权限设置").assertIsDisplayed()
         compose.onNodeWithText("未允许 · 需开启").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("需手动确认").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("尚未进行后台唤醒测试").assertDoesNotExist()
+        compose.onNodeWithTag("advanced-toggle").performScrollTo().performClick()
         compose.onNodeWithText("尚未进行后台唤醒测试").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("保存并安排任务").assertDoesNotExist()
         compose.onNodeWithText("最近运行记录").assertDoesNotExist()
@@ -57,12 +59,15 @@ class PermissionsPageUiTest {
                     onPermissionGuide = { actions += "guide" }, onWakeTest = { actions += "test" })
             }
         }
-        listOf("设置闹钟和提醒", "通知授权 / 设置", "打开系统应用设置", "查看系统省电设置",
-            "重新查看权限引导", "60 秒后台唤醒测试（不预约）").forEach { label ->
-            compose.onNodeWithText(label).performScrollTo().performClick()
-        }
+        compose.onNodeWithTag("permission-exact").performScrollTo().performClick()
+        compose.onNodeWithTag("permission-notifications").performScrollTo().performClick()
+        compose.onNodeWithTag("permission-battery").performScrollTo().performClick()
+        compose.onNodeWithTag("permission-autostart").performScrollTo().performClick()
+        compose.onNodeWithTag("advanced-toggle").performScrollTo().performClick()
+        compose.onNodeWithTag("permission-wake-test").performScrollTo().performClick()
+        compose.onNodeWithText("重新查看权限引导").performScrollTo().performClick()
         compose.runOnIdle {
-            assertEquals(listOf("alarm", "notifications", "app", "battery", "guide", "test"), actions)
+            assertEquals(listOf("alarm", "notifications", "battery", "app", "test", "guide"), actions)
         }
         compose.onNodeWithText("测试已安排，不会预约").performScrollTo().assertIsDisplayed()
     }

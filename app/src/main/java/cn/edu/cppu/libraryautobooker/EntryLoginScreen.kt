@@ -5,19 +5,22 @@ import android.content.Intent
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -155,7 +158,8 @@ fun EntryLoginScreen(
     }
 
     if (gateOnly) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding(),
+            contentAlignment = Alignment.Center) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 if (busy) CircularProgressIndicator()
@@ -171,14 +175,24 @@ fun EntryLoginScreen(
         return
     }
 
-    Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding(),
+        contentAlignment = Alignment.Center) {
         Column(
             Modifier.widthIn(max = 440.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text("图书馆自动预约", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-            Text("登录", style = MaterialTheme.typography.headlineLarge)
-            Text("连接校园网络后登录", style = MaterialTheme.typography.bodyMedium)
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                IconBadge(Icons.Filled.Lock)
+                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text("图书馆预约", style = MaterialTheme.typography.titleLarge)
+                    Text("校园网直连", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Text("登录", style = MaterialTheme.typography.headlineSmall)
+            Text("连接校园网络后登录", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(username, { username = it }, label = { Text("学校账号") },
                 singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(password, { password = it }, label = { Text("密码") },

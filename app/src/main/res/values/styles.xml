@@ -2,9 +2,11 @@
 <resources>
     <style name="Theme.LibraryAutoBooker" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#176B4D</item>
-        <item name="android:navigationBarColor">#F7FAF8</item>
-        <item name="android:statusBarColor">#F7FAF8</item>
+        <item name="android:colorAccent">#176B50</item>
+        <item name="android:windowBackground">#F7F6F9</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 </resources>

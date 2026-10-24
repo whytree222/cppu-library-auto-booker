@@ -1,17 +1,26 @@
 package cn.edu.cppu.libraryautobooker
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,18 +28,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-private enum class AppPage(val label: String, val symbol: String, val description: String) {
-    BOOKING("预约", "座", "选择房间、座位和使用时间"),
-    PERMISSIONS("权限", "权", "集中管理权限与后台运行"),
-    HISTORY("记录", "记", "查看最近任务的结果与步骤")
+private enum class AppPage(val label: String, val icon: ImageVector) {
+    BOOKING("预约", Icons.Filled.DateRange),
+    PERMISSIONS("权限", Icons.Filled.Lock),
+    HISTORY("记录", Icons.AutoMirrored.Filled.List)
 }
 
 /** Draft and task state stay in MainActivity; only presentation changes with the page. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryAppPages(
     booking: @Composable () -> Unit,
@@ -41,30 +51,50 @@ fun LibraryAppPages(
     val selected = AppPage.entries.firstOrNull { it.name == selectedName } ?: AppPage.BOOKING
     val pageState = rememberSaveableStateHolder()
     BackHandler(enabled = selected != AppPage.BOOKING) { selectedName = AppPage.BOOKING.name }
+    val appBarHeight = 64.dp * LocalDensity.current.fontScale.coerceAtLeast(1f)
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        containerColor = Color(0xFFF7F9F8),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            Surface(tonalElevation = 2.dp) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Text("图书馆自动预约", style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold)
-                    Text(selected.description, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+            Column {
+                TopAppBar(
+                    expandedHeight = appBarHeight,
+                    title = {
+                        Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text("图书馆预约", style = MaterialTheme.typography.titleLarge)
+                            Text("校园网直连", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                        titleContentColor = MaterialTheme.colorScheme.onBackground
+                    )
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
             }
         },
         bottomBar = {
-            NavigationBar {
-                AppPage.entries.forEach { page ->
-                    NavigationBarItem(
-                        selected = selected == page,
-                        onClick = { selectedName = page.name },
-                        icon = { Text(page.symbol, fontWeight = FontWeight.Bold) },
-                        label = { Text(page.label) },
-                        modifier = Modifier.testTag("page-${page.name.lowercase()}")
-                    )
+            Column {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                    AppPage.entries.forEach { page ->
+                        NavigationBarItem(
+                            selected = selected == page,
+                            onClick = { selectedName = page.name },
+                            icon = { Icon(page.icon, contentDescription = null) },
+                            label = { Text(page.label, style = MaterialTheme.typography.labelMedium) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            modifier = Modifier.testTag("page-${page.name.lowercase()}")
+                        )
+                    }
                 }
             }
         }

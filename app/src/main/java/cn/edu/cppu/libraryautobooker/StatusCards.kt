@@ -5,13 +5,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -20,10 +25,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import cn.edu.cppu.libraryautobooker.data.LoginStatusStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
@@ -43,69 +47,71 @@ fun rememberLoginStatuses(): LoginStatusStore.Snapshot {
     return snapshot
 }
 
-@Composable
-fun StatusLine(label: String, state: String, detail: String, checkedAt: Long? = null,
-               statusText: String? = null, showDetails: Boolean = true) {
-    val color = when (state) {
-        "valid" -> Color(0xFF176B4D)
-        "expired", "blocked" -> Color(0xFFB3261E)
-        "checking", "warning" -> Color(0xFF875500)
-        else -> Color(0xFF536171)
-    }
-    val badge = statusText ?: when (state) {
-        "valid" -> "有效 · 最近检查"
-        "expired" -> "未登录 / 已过期"
-        "checking" -> "检查中"
-        else -> "无法确认"
-    }
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Surface(color = color.copy(alpha = 0.10f), shape = MaterialTheme.shapes.small) {
-            Text(badge, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = color,
-                style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-        }
-        if (showDetails) Text(detail, style = MaterialTheme.typography.bodySmall, color = Color(0xFF475467))
-        if (checkedAt != null) Text(if (checkedAt <= 0) "尚无完成检查记录" else "最近检查：${RuntimeStore.format(checkedAt)}",
-            style = MaterialTheme.typography.labelSmall, color = Color(0xFF667085))
-    }
+internal fun loginPill(state: String): Pair<String, StatusTone> = when (state) {
+    "valid" -> "登录有效" to StatusTone.Success
+    "expired" -> "未登录 / 已过期" to StatusTone.Error
+    "blocked" -> "登录受限" to StatusTone.Error
+    "checking" -> "检查中" to StatusTone.Info
+    else -> "无法确认" to StatusTone.Neutral
 }
 
 @Composable
-fun LoginStatusCard(statuses: LoginStatusStore.Snapshot, onCheck: (() -> Unit)? = null, hasActions: Boolean = false,
-                    content: @Composable ColumnScope.() -> Unit = {}) {
+fun LoginStatusCard(
+    statuses: LoginStatusStore.Snapshot,
+    onCheck: (() -> Unit)? = null,
+    hasActions: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit = {}
+) {
     var details by remember { mutableStateOf(false) }
     var actions by remember { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F5FC), contentColor = Color(0xFF223047))) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("登录状态", style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold, color = Color(0xFF245A8D))
-            StatusLine("校园网直连 · 图书馆", statuses.direct.state, statuses.direct.detail, statuses.direct.checkedAt, showDetails = details)
-            Text("需要连接可访问图书馆的校园网络；状态仅代表最近检查结果。",
-                style = MaterialTheme.typography.bodySmall)
-            if (onCheck != null) OutlinedButton(onClick = onCheck, modifier = Modifier.fillMaxWidth()) { Text("检查登录状态") }
-            TextButton(onClick = { details = !details }) { Text(if (details) "收起登录详情" else "查看登录详情") }
-            if (hasActions) TextButton(onClick = { actions = !actions }) { Text(if (actions) "收起登录操作" else "登录操作 / 连接设置") }
-            if (actions) content()
+    val (badge, tone) = loginPill(statuses.direct.state)
+    AppCard {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            IconBadge(Icons.Filled.Lock)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("登录状态", style = MaterialTheme.typography.titleMedium)
+                Text("校园网直连 · 图书馆", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            StatusPill(badge, tone)
         }
-    }
-}
-
-@Composable
-fun PermissionStatusCard(exact: Boolean, notifications: Boolean, battery: Boolean,
-                         content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F3FA), contentColor = Color(0xFF223047))) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("权限与后台运行", style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold, color = Color(0xFF67418C))
-            StatusLine("闹钟和提醒 · 定时任务必需", if (exact) "valid" else "blocked",
-                "用于登记精确闹钟；已允许也不能保证每次秒级准点。", statusText = if (exact) "已允许" else "未允许 · 需开启")
-            StatusLine("结果通知 · 建议开启", if (notifications) "valid" else "warning",
-                "用于显示后台任务和预约结果。", statusText = if (notifications) "已允许" else "未允许")
-            StatusLine("系统省电豁免 · 建议检查", if (battery) "valid" else "warning",
-                "影响锁屏时后台运行；不是已允许网络访问的保证。", statusText = if (battery) "已开启" else "未开启")
-            StatusLine("自启动与厂商后台限制", "unknown", "Android 没有通用接口确认小米自启动或无限制策略，请到系统应用设置手动核对。",
-                statusText = "需手动确认")
-            content()
+        Text("最近检查：${RuntimeStore.format(statuses.direct.checkedAt)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onCheck != null) {
+                if (statuses.direct.state != "valid") {
+                    FilledTonalButton(onClick = onCheck, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("检查登录")
+                    }
+                } else {
+                    OutlinedButton(onClick = onCheck, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("检查登录")
+                    }
+                }
+            }
+            TextButton(onClick = { details = !details }) {
+                Text(if (details) "收起登录详情" else "查看登录详情")
+            }
+        }
+        if (details) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            Text(statuses.direct.detail, style = MaterialTheme.typography.bodyMedium)
+            Text("需要连接可访问图书馆的校园网络；状态仅代表最近一次检查结果。图书馆站点使用 HTTP，请仅在可信网络中使用。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (hasActions) {
+            TextButton(onClick = { actions = !actions }) {
+                Text(if (actions) "收起登录操作" else "登录操作 / 连接设置")
+            }
+            if (actions) content()
         }
     }
 }

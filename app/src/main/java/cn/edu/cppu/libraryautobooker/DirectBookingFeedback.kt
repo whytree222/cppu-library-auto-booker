@@ -6,7 +6,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,11 +38,36 @@ internal data class DirectBookingFeedback(val title: String, val detail: String)
 
 @Composable
 internal fun DirectBookingFeedbackDialog(title: String, detail: String, onDismiss: () -> Unit) {
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
-        Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SelectionContainer { Text(detail) }
-            Text("详细步骤保留在“记录”页。关闭弹窗不会重新提交预约。", style = MaterialTheme.typography.bodySmall)
-        }
-    }, confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } })
+    val warning = "待核对" in title
+    val error = !warning && ("未完成" in title || "未启动" in title || "检查" in title)
+    val color = when {
+        error -> MaterialTheme.colorScheme.error
+        warning -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.primary
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                when {
+                    error -> Icons.Filled.Warning
+                    warning -> Icons.Filled.Info
+                    else -> Icons.Filled.CheckCircle
+                },
+                contentDescription = null,
+                tint = color
+            )
+        },
+        title = { Text(title) },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SelectionContainer { Text(detail, style = MaterialTheme.typography.bodyMedium) }
+                Text("详细步骤保留在“记录”页。关闭弹窗不会重新提交预约。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } }
+    )
 }

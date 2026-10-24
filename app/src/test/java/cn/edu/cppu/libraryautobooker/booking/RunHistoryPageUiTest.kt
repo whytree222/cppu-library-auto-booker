@@ -31,7 +31,7 @@ class RunHistoryPageUiTest {
         compose.onNodeWithText("暂无运行记录").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("仅保留最近 3 次任务，超出后自动清除最早一次。")
             .performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("完成一次演练或安排预约后，任务记录会显示在这里。")
+        compose.onNodeWithText("安排或执行一次预约后，结果会显示在这里。")
             .performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("保存并安排任务").assertDoesNotExist()
         compose.onNodeWithText("权限与后台运行").assertDoesNotExist()

@@ -11,7 +11,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import cn.edu.cppu.libraryautobooker.LoginStatusCard
-import cn.edu.cppu.libraryautobooker.PermissionStatusCard
 import cn.edu.cppu.libraryautobooker.data.LoginStatusStore
 import org.junit.Rule
 import org.junit.Test
@@ -37,15 +36,5 @@ class StatusCardsUiTest {
         compose.onNodeWithText("查看登录详情").performScrollTo().performClick()
         compose.onNodeWithText("请重新登录图书馆").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("权限与后台运行").assertDoesNotExist()
-    }
-    @Test fun permissionsAreGroupedAndUndetectableAutostartIsNotReportedAsGranted() {
-        compose.setContent { MaterialTheme { Column(Modifier.verticalScroll(rememberScrollState())) {
-            PermissionStatusCard(false, true, false) {}
-        } } }
-        compose.onNodeWithText("权限与后台运行").assertIsDisplayed()
-        compose.onNodeWithText("未允许 · 需开启").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("自启动与厂商后台限制").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("需手动确认").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("登录状态").assertDoesNotExist()
     }
 }

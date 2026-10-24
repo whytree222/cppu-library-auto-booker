@@ -15,7 +15,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28])
+@Config(sdk = [28], qualifiers = "w411dp-h1600dp")
 @LooperMode(LooperMode.Mode.PAUSED)
 class SeatMapUiTest {
     @get:Rule val compose = createComposeRule()
@@ -24,19 +24,21 @@ class SeatMapUiTest {
         val map = RoomSeatMap(RoomProfile.DEFAULT, 1, 2,
             listOf(MapSeat("G001A",0,0),MapSeat("G001B",0,1)), "2026-10-21")
         compose.setContent { MaterialTheme { SeatMapCard(map,selected.value) { selected.value=it } } }
-        compose.onNodeWithText("G001A").performClick()
+        compose.onNodeWithText("尚未选择座位，请在座位图中点击添加。").assertIsDisplayed()
+        compose.onNodeWithTag("seat-0-0").performClick()
         compose.runOnIdle { assertEquals(listOf("G001A"),selected.value) }
-        compose.onNodeWithText("G001B").performClick()
+        compose.onNodeWithTag("seat-0-1").performClick()
         compose.runOnIdle { assertEquals(listOf("G001A","G001B"),selected.value) }
-        compose.onNodeWithText("G001A").performClick()
+        compose.onNodeWithTag("seat-0-0").performClick()
         compose.runOnIdle { assertEquals(listOf("G001B"),selected.value) }
+        compose.onNodeWithText("尚未选择座位，请在座位图中点击添加。").assertDoesNotExist()
     }
     @Test fun ambiguityIsVisiblyDisabledAndEmptyMapDoesNotGuess() {
         val map = RoomSeatMap(RoomProfile.DEFAULT,1,2,
             listOf(MapSeat("G001A",0,0),MapSeat("G001A",0,1)),"2026-10-21")
         compose.setContent { MaterialTheme { SeatMapCard(map,emptyList()) { fail("Ambiguous selection") } } }
-        compose.onAllNodesWithText("⚠\nG001A")[0].assertIsNotEnabled()
-        compose.onAllNodesWithText("⚠\nG001A")[1].assertIsNotEnabled()
+        compose.onNodeWithTag("seat-0-0").assertIsNotEnabled()
+        compose.onNodeWithTag("seat-0-1").assertIsNotEnabled()
+        compose.onNodeWithText("尚未选择座位，请在座位图中点击添加。").assertIsDisplayed()
     }
 }
-

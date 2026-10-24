@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -43,16 +44,16 @@ class RoomSettingsUiTest {
                 }, {})
             }
         } }
-        compose.onNodeWithText("浏览楼层：一楼 ▾").performScrollTo().performClick()
+        compose.onNodeWithTag("floor-selector").performScrollTo().performClick()
         compose.onNodeWithText("二楼").performClick()
         assertEquals(0, selectedCount)
         assertEquals(RoomProfile.DEFAULT, selected.value)
-        compose.onNodeWithText("选择这一层的阅览室 ▾").performScrollTo().performClick()
+        compose.onNodeWithTag("room-selector").performScrollTo().performClick()
         compose.onNodeWithText("二楼测试阅览室").performClick()
         assertEquals(1, selectedCount)
         assertEquals(room2, selected.value)
-        compose.onNodeWithText("当前预约：二楼 · 二楼测试阅览室").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("预约方式：填写开始和结束时间").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("二楼 · 二楼测试阅览室").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("自选起止时间").performScrollTo().assertIsDisplayed()
     }
 
     @Test fun syncingIsExplicitAndDoesNotSilentlySelectAnotherRoom() {
@@ -64,10 +65,9 @@ class RoomSettingsUiTest {
                     { selectedCount++ }, { syncCount++ })
             }
         } }
-        compose.onNodeWithText("预约方式：选择该房间的固定时段（共 7 个）").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("时段来源：缓存，尚未按使用日期核对；学校未开放或同步失败时保留缓存，预约时仍精确核对学校网页。")
-            .performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("从学校同步阅览室").performScrollTo().performClick()
+        compose.onNodeWithText("固定时段 · 7 个").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("时间表待核对").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("sync-rooms").performScrollTo().performClick()
         assertEquals(1, syncCount)
         assertEquals(0, selectedCount)
     }
