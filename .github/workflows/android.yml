@@ -52,8 +52,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum app/build/outputs/apk/debug/app-debug.apk
-          if gh release view v0.17.5 >/dev/null 2>&1; then
-            gh release upload v0.17.5 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v0.18.0 >/dev/null 2>&1; then
+            gh release upload v0.18.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v0.17.5 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.17.5 · 直接预约结果弹窗' --notes '直接预约的最终反馈以应用内弹窗显示，保留学校原因和房间座位信息，长内容可滚动。通过本次请求编号关联结果，不弹旧任务或定时任务，不把选座/提交/追加中的进度当作成功。参数错误和启动失败也弹窗说明；超时、服务中断或结果不明提示核对学校记录。关闭弹窗不会重新预约，详细步骤继续保留记录页。保留本地各房间时间表，不恢复自动同步。离线与Android单元/界面测试验证，未提交真实预约。'
+            gh release create v0.18.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.18.0 · Material 3 界面改版' --notes '预约页按任务摘要、登录与准备、房间座位、日期时段和操作区重新组织，任务状态和下次启动时间只显示一次。房间座位、日期时段、直接与定时预约、权限页、记录页和底部导航统一为 Material 3 组件，新增独立深色配色与系统字体缩放适配；运行中只显示可用的停止或取消操作。仅调整前端界面，预约、调度、登录和本地存储逻辑未变。Node 与 Android 测试通过，未提交真实预约。'
           fi
