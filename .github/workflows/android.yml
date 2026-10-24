@@ -1,23 +1,64 @@
-name: Build Android APK
+name: Android CI and Release
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: '发布到 Gitee 和 GitHub（仅限 v* tag）'
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  apk:
+  build:
     runs-on: ubuntu-latest
+    outputs:
+      is_publish: ${{ steps.context.outputs.is_publish }}
+      needs_signing: ${{ steps.context.outputs.needs_signing }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine build context
+        id: context
+        shell: bash
+        run: |
+          set -euo pipefail
+          is_tag=false
+          is_publish=false
+          needs_signing=false
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            [[ "${GITHUB_REF_NAME}" == v* ]] || { echo "Only v* tags are release tags"; exit 1; }
+            is_tag=true
+            is_publish=true
+            needs_signing=true
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            needs_signing=true
+            if [[ "${{ inputs.publish }}" == "true" ]]; then is_publish=true; fi
+          fi
+          echo "is_tag=$is_tag" >> "$GITHUB_OUTPUT"
+          echo "is_publish=$is_publish" >> "$GITHUB_OUTPUT"
+          echo "needs_signing=$needs_signing" >> "$GITHUB_OUTPUT"
+      - name: Refuse publish outside a tag
+        if: steps.context.outputs.is_publish == 'true'
+        shell: bash
+        run: |
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "publish=true requires a v* tag ref"; exit 1; }
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-      - name: Verify booking confirmation flow
+      - name: Node tests
         run: |
           npm ci --ignore-scripts
           npm test
@@ -25,15 +66,73 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Install Android SDK
+      - name: Install Android SDK packages
         run: |
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' | sort -V | tail -1)
           "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build installable APK
-        run: gradle --no-daemon testDebugUnitTest assembleDebug
+      - name: Check release tag
+        if: steps.context.outputs.needs_signing == 'true' && github.ref_type == 'tag'
+        run: node scripts/version.mjs --check-tag "$GITHUB_REF_NAME"
+      - name: Build unsigned release on main
+        if: steps.context.outputs.needs_signing != 'true'
+        run: gradle --no-daemon testDebugUnitTest assembleRelease
+      - name: Require signing secrets
+        if: steps.context.outputs.needs_signing == 'true'
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required secret: $name"; exit 1; }
+          done
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - name: Build signed release
+        if: steps.context.outputs.needs_signing == 'true'
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle --no-daemon testDebugUnitTest assembleRelease
+      - name: Verify APK signing and identity
+        if: steps.context.outputs.needs_signing == 'true'
+        shell: bash
+        env:
+          RELEASE_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -maxdepth 1 -name 'app-release.apk' -print -quit)
+          [[ -n "$APK" ]] || { echo "Signed release APK not found"; exit 1; }
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs "$APK" | tee "$RUNNER_TEMP/apksigner.txt"
+          CERT=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt" | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          [[ -n "$CERT" ]] || { echo "Cannot read signer certificate"; exit 1; }
+          [[ -n "${RELEASE_CERT_SHA256:-}" ]] || { echo "Missing repository variable RELEASE_CERT_SHA256"; exit 1; }
+          EXPECTED=$(printf '%s' "$RELEASE_CERT_SHA256" | tr -d ':' | tr 'A-F' 'a-f')
+          [[ "$CERT" == "$EXPECTED" ]] || { echo "Signer certificate mismatch"; exit 1; }
+          VERSION_CODE=$(node scripts/version.mjs --get versionCode)
+          VERSION_NAME=$(node scripts/version.mjs --get versionName)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)
+          BADGING=$("$AAPT" dump badging "$APK")
+          PKG=$(printf '%s\n' "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)
+          ACTUAL_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/^package:.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)
+          ACTUAL_NAME=$(printf '%s\n' "$BADGING" | sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" | head -1)
+          [[ "$PKG" == "cn.edu.cppu.libraryautobooker" ]] || { echo "Unexpected package: $PKG"; exit 1; }
+          [[ "$ACTUAL_CODE" == "$VERSION_CODE" ]] || { echo "versionCode mismatch: $ACTUAL_CODE != $VERSION_CODE"; exit 1; }
+          [[ "$ACTUAL_NAME" == "$VERSION_NAME" ]] || { echo "versionName mismatch: $ACTUAL_NAME != $VERSION_NAME"; exit 1; }
+      - name: Prepare distribution manifest
+        if: steps.context.outputs.needs_signing == 'true'
+        shell: bash
+        run: |
+          APK=$(find app/build/outputs/apk/release -maxdepth 1 -name 'app-release.apk' -print -quit)
+          node scripts/prepare-dist.mjs --apk "$APK" --out dist --strict
       - name: Preserve Android test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,16 +143,71 @@ jobs:
             app/build/test-results/testDebugUnitTest
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
+        if: steps.context.outputs.needs_signing == 'true'
         with:
-          name: library-auto-booker-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish APK to GitHub Release
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: needs.build.outputs.is_publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate tag and version
+        run: |
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Publishing requires a v* tag"; exit 1; }
+          node scripts/version.mjs --check-tag "$GITHUB_REF_NAME"
+          node scripts/version.mjs --require-gitee
+      - name: Create GitHub draft release
+        id: github_draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum app/build/outputs/apk/debug/app-debug.apk
-          if gh release view v0.18.0 >/dev/null 2>&1; then
-            gh release upload v0.18.0 app/build/outputs/apk/debug/app-debug.apk --clobber
-          else
-            gh release create v0.18.0 app/build/outputs/apk/debug/app-debug.apk --title '图书馆自动预约 v0.18.0 · Material 3 界面改版' --notes '预约页按任务摘要、登录与准备、房间座位、日期时段和操作区重新组织，任务状态和下次启动时间只显示一次。房间座位、日期时段、直接与定时预约、权限页、记录页和底部导航统一为 Material 3 组件，新增独立深色配色与系统字体缩放适配；运行中只显示可用的停止或取消操作。仅调整前端界面，预约、调度、登录和本地存储逻辑未变。Node 与 Android 测试通过，未提交真实预约。'
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to modify it"
+            exit 1
+          fi
+          APK=$(find dist -maxdepth 1 -name '*.apk' -print -quit)
+          [[ -n "$APK" ]] || { echo "APK missing from dist"; exit 1; }
+          gh release create "$TAG" "$APK" dist/update.json dist/sha256sums.txt \
+            --draft --verify-tag \
+            --title "图书馆自动预约 $TAG" \
+            --notes-file dist/release-notes.md
+          echo "created=true" >> "$GITHUB_OUTPUT"
+      - name: Publish Gitee release
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: node scripts/publish-gitee.mjs release --dist dist --tag "$GITHUB_REF_NAME"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+      - name: Update Gitee raw manifest
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: node scripts/publish-gitee.mjs manifest --dist dist
+      - name: Verify public release
+        run: node scripts/verify-release.mjs --dist dist
+      - name: Delete draft release after failure
+        if: failure() && steps.github_draft.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
+            gh release delete "$GITHUB_REF_NAME" --yes
           fi
