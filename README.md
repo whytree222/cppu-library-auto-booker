@@ -98,10 +98,21 @@ GitHub Actions 使用 JDK 17、SDK 35、Gradle 8.9。推送 `main` 只运行测�
 
 发布链路使用同一份 `version.properties`、同一个签名 APK、同一份 `update.json` 和 SHA-256，同步创建 Gitee 与 GitHub Release。Gitee 只保存 Release 和客户端读取的 `update.json`，不镜像源码。
 
+首次发布前，在一台可信电脑上生成固定发布密钥并离线备份（只需一次，不能提交到仓库）：
+
+```bash
+keytool -genkeypair -v -keystore cppu-release.jks -alias cppu-library \
+  -keyalg RSA -keysize 4096 -validity 10000
+base64 -w0 cppu-release.jks > cppu-release.jks.base64
+keytool -list -v -keystore cppu-release.jks -alias cppu-library
+```
+
+把 `.jks.base64` 的内容、keystore 密码、别名 `cppu-library` 和密钥密码分别填入对应的 GitHub Secrets；`keytool` 输出中的 SHA-256 填入 `RELEASE_CERT_SHA256`（Windows 可用 PowerShell：`[Convert]::ToBase64String([IO.File]::ReadAllBytes('cppu-release.jks'))`）。密钥或密码丢失后，已安装用户无法覆盖升级，只能卸载重装。
+
 1. 修改 `version.properties`（`versionCode`、`versionName`、`minSupportedVersionCode`），并新增 `release-notes/<version>.md`。
 2. 运行 Node 与 Android 测试：`npm ci && npm test`、`gradle testDebugUnitTest`。
 3. 确认 GitHub Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`、`GITEE_TOKEN`；Repository Variable：`RELEASE_CERT_SHA256`。`GITEE_TOKEN` 需要 `projects` 权限，且不得写入代码、日志或 `distribution.properties`。
-4. 确认公开 Gitee 仓库 `cppu-library-auto-booker-release` 的 `main` 分支存在，把 Gitee 用户名填入 `distribution.properties` 的 `giteeOwner`，运行 `npm run release:qr` 生成 `docs/download-qr.png`，并把发布页链接和二维码补回上方“安装与升级”。
+4. 确认公开 Gitee 仓库 `cppu-library-auto-booker-release` 的 `main` 分支存在，并创建勾选 `projects` 权限的私人令牌；把 Gitee 用户名填入 `distribution.properties` 的 `giteeOwner`，运行 `npm run release:qr` 生成 `docs/download-qr.png`，并把发布页链接和二维码补回上方“安装与升级”。
 5. 手动运行 GitHub Actions，保持 `publish=false`，检查签名、版本号、`dist/update.json`、`dist/sha256sums.txt`。
 6. 确认无误后推送 tag：`git tag v0.19.0 && git push origin v0.19.0`。工作流只在 tag 等于 `version.properties` 的版本时发布；版本冲突会失败，不覆盖历史 Release。
 7. 发布后检查 Gitee/GitHub 两个发布页、两个 manifest 和两个 APK 的大小/SHA-256 一致，并在真机完成安装和预约回归。
