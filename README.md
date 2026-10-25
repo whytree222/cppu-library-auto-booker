@@ -112,7 +112,7 @@ keytool -list -v -keystore cppu-release.jks -alias cppu-library
 1. 修改 `version.properties`（`versionCode`、`versionName`、`minSupportedVersionCode`），并新增 `release-notes/<version>.md`。
 2. 运行 Node 与 Android 测试：`npm ci && npm test`、`gradle testDebugUnitTest`。
 3. 确认 GitHub Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`、`GITEE_TOKEN`；Repository Variable：`RELEASE_CERT_SHA256`。`GITEE_TOKEN` 需要 `projects` 权限，且不得写入代码、日志或 `distribution.properties`。
-4. 确认公开 Gitee 仓库 `cppu-library-auto-booker-release` 的 `main` 分支存在，并创建勾选 `projects` 权限的私人令牌；把 Gitee 用户名填入 `distribution.properties` 的 `giteeOwner`，运行 `npm run release:qr` 生成 `docs/download-qr.png`，并把发布页链接和二维码补回上方“安装与升级”。
+4. 确认公开 Gitee 仓库 `cppu-library-auto-booker-release` 的默认分支为 `main` 且至少有一个提交（空仓库可先提交一个临时空文件建立分支）；创建勾选 `projects` 权限的私人令牌；把 Gitee 用户名填入 `distribution.properties` 的 `giteeOwner`，运行 `npm run release:qr` 生成 `docs/download-qr.png`，并把发布页链接和二维码补回上方“安装与升级”。
 5. 手动运行 GitHub Actions，保持 `publish=false`，检查签名、版本号、`dist/update.json`、`dist/sha256sums.txt`。
 6. 确认无误后推送 tag：`git tag v0.19.0 && git push origin v0.19.0`。工作流只在 tag 等于 `version.properties` 的版本时发布；版本冲突会失败，不覆盖历史 Release。
 7. 发布后检查 Gitee/GitHub 两个发布页、两个 manifest 和两个 APK 的大小/SHA-256 一致，并在真机完成安装和预约回归。
