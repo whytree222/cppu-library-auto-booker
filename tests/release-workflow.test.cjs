@@ -28,8 +28,24 @@ test('main pushes test and build but never publish', () => {
 test('release version comes from the shared version source', () => {
   assert.match(workflow, /node scripts\/version\.mjs --check-tag/);
   assert.match(workflow, /node scripts\/version\.mjs --get versionCode/);
+  assert.match(workflow, /node scripts\/version\.mjs --require-gitee/);
   assert.match(workflow, /node scripts\/prepare-dist\.mjs/);
   assert.match(workflow, /node scripts\/publish-gitee\.mjs release/);
   assert.match(workflow, /node scripts\/publish-gitee\.mjs manifest/);
   assert.match(workflow, /node scripts\/verify-release\.mjs/);
+});
+
+test('release publishes Gitee first, promotes GitHub, then updates the manifest last', () => {
+  const gitee = workflow.indexOf('Publish Gitee release');
+  const github = workflow.indexOf('Publish GitHub release');
+  const manifest = workflow.indexOf('Update Gitee raw manifest');
+  const verify = workflow.indexOf('Verify public release');
+  assert.ok(gitee > 0 && github > gitee && manifest > github && verify > manifest);
+  assert.match(workflow, /Release \$TAG already exists; refusing to modify it/);
+  assert.match(workflow, /gh release delete "\$GITHUB_REF_NAME" --yes/);
+  assert.match(workflow, /isDraft/);
+  assert.equal(
+    (workflow.match(/GITEE_TOKEN: \$\{\{ secrets\.GITEE_TOKEN \}\}/g) || []).length,
+    2
+  );
 });

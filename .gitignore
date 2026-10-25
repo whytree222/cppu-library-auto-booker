@@ -11,3 +11,7 @@ node_modules/
 /.ocr-cache/
 /.ocr-private/
 app/src/main/assets/ocr/charsets.json
+*.jks
+*.keystore
+*.keystore.base64
+dist/

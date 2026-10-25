@@ -15,6 +15,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +44,10 @@ import cn.edu.cppu.libraryautobooker.data.RoomCatalogStore
 import cn.edu.cppu.libraryautobooker.data.RoomProfile
 import cn.edu.cppu.libraryautobooker.data.SeatMapCatalog
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
+import cn.edu.cppu.libraryautobooker.update.UpdateInstallLaunch
+import cn.edu.cppu.libraryautobooker.update.UpdatePolicy
+import cn.edu.cppu.libraryautobooker.update.UpdateState
+import cn.edu.cppu.libraryautobooker.update.UpdateViewModel
 import androidx.core.app.NotificationManagerCompat
 import cn.edu.cppu.libraryautobooker.booking.FixedBookingPlan
 import cn.edu.cppu.libraryautobooker.booking.ImmediateBookingPlan
@@ -51,6 +57,7 @@ import java.time.LocalDate
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
+    private val updateViewModel: UpdateViewModel by viewModels()
     private var refreshVersion by mutableStateOf(0)
     private var loginEntryVisible by mutableStateOf(true)
     private var managingLogin by mutableStateOf(false)
@@ -146,8 +153,9 @@ class MainActivity : ComponentActivity() {
                     if (loginEntryVisible) cancelSessionChecks()
                     else if (foreground) uiHandler.post(sessionProbe)
                 }
+                val oemProfile = remember { OemProfiles.current() }
                 var showPermissionSetup by rememberSaveable { mutableStateOf(!setupPrefs.getBoolean("shown", false)) }
-                if (showPermissionSetup && !loginEntryVisible) PermissionSetup {
+                if (showPermissionSetup && !loginEntryVisible) PermissionSetup(profile = oemProfile) {
                     setupPrefs.edit().putBoolean("shown", true).apply()
                     showPermissionSetup = false
                     refreshVersion++
@@ -174,6 +182,38 @@ class MainActivity : ComponentActivity() {
                 val taskDetail = remember(refreshVersion) { runtime.prefs.getString("task_detail", "尚未安排任务").orEmpty() }
                 val taskState = remember(refreshVersion) { runtime.prefs.getString("task_state", "").orEmpty() }
                 val running = BookingService.running || taskState in setOf("RUNNING", "TRIGGERED")
+                val updateState by updateViewModel.state.collectAsState()
+                val updatePendingTimes = remember(refreshVersion) { store.load().pendingTimes() }
+                val updateSafe = UpdatePolicy.isSafe(
+                    serviceRunning = BookingService.running,
+                    taskState = taskState,
+                    pendingTimes = updatePendingTimes,
+                    now = System.currentTimeMillis(),
+                    loginVisible = loginEntryVisible,
+                    permissionSetupVisible = showPermissionSetup
+                )
+                var updatePromptVisible by rememberSaveable { mutableStateOf(false) }
+                LaunchedEffect(refreshVersion, updateSafe) {
+                    updateViewModel.onResume()
+                    if (updateSafe) updateViewModel.maybeAutoCheck(true)
+                }
+                LaunchedEffect(updateSafe) {
+                    if (!updateSafe) {
+                        if (updateState is UpdateState.Checking) updateViewModel.cancelCheck()
+                        if (updateState is UpdateState.Downloading) updateViewModel.cancelDownload()
+                        updatePromptVisible = false
+                    }
+                }
+                LaunchedEffect(updateState, updateSafe) {
+                    val current = updateState
+                    if (updateSafe && current is UpdateState.Available && !current.deferred) {
+                        updatePromptVisible = true
+                    } else if (current is UpdateState.Idle || current is UpdateState.Checking ||
+                        current is UpdateState.UpToDate ||
+                        (current is UpdateState.Available && current.deferred)) {
+                        updatePromptVisible = false
+                    }
+                }
                 val history = remember(refreshVersion) { runtime.history() }
                 var watchedManualId by rememberSaveable { mutableStateOf<String?>(null) }
                 var feedbackTitle by rememberSaveable { mutableStateOf<String?>(null) }
@@ -227,6 +267,45 @@ class MainActivity : ComponentActivity() {
                 val notificationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { refreshVersion++ }
+                var pendingInstallAfterPermission by remember { mutableStateOf(false) }
+                val installActionRef = remember { InstallActionRef() }
+                val installPermission = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartActivityForResult()
+                ) {
+                    updateViewModel.onResume()
+                    if (pendingInstallAfterPermission) {
+                        pendingInstallAfterPermission = false
+                        if (updateViewModel.state.value is UpdateState.Ready) {
+                            installActionRef.action?.invoke()
+                        } else {
+                            permissionStatus = "如果已完成安装，请重新打开应用使用新版本"
+                        }
+                    }
+                }
+                val attemptInstall: () -> Unit = {
+                    if (updateSafe) {
+                        when (val result = updateViewModel.installNow()) {
+                            UpdateInstallLaunch.Started ->
+                                permissionStatus = "已打开系统安装器，请确认覆盖安装"
+                            UpdateInstallLaunch.PermissionRequired -> {
+                                pendingInstallAfterPermission = true
+                                runCatching { installPermission.launch(updateViewModel.installSettingsIntent()) }
+                                    .onFailure {
+                                        pendingInstallAfterPermission = false
+                                        runCatching { startActivity(updateViewModel.appDetailsIntent()) }
+                                        permissionStatus = "请在本应用的“安装未知应用”权限中允许后重试"
+                                    }
+                            }
+                            is UpdateInstallLaunch.Failed -> permissionStatus = result.message
+                        }
+                    }
+                }
+                installActionRef.action = attemptInstall
+                val openUpdatePage: () -> Unit = {
+                    if (!updateViewModel.openPage()) {
+                        permissionStatus = "未配置发布页，请稍后重试或联系维护者"
+                    }
+                }
                 val selectRoom: (RoomProfile) -> Unit = { room ->
                     val currentRoom = config.room
                     val sameIdentity = room.id == currentRoom.id && room.name == currentRoom.name &&
@@ -494,10 +573,46 @@ class MainActivity : ComponentActivity() {
                                     .onSuccess { permissionStatus = "60 秒后测试后台唤醒，请锁屏等待；不会预约，也不改变正式任务" }
                                     .onFailure { permissionStatus = it.message ?: "安排测试失败，请检查系统权限" }
                             }
+                        },
+                        profile = oemProfile,
+                        footer = {
+                            if (updateViewModel.configured) {
+                                UpdateCard(
+                                    state = updateState,
+                                    currentVersion = BuildConfig.VERSION_NAME,
+                                    safe = updateSafe,
+                                    onCheck = { if (updateSafe) updateViewModel.checkNow() },
+                                    onDownload = { if (updateSafe) updateViewModel.download() },
+                                    onCancelDownload = { updateViewModel.cancelDownload() },
+                                    onInstall = attemptInstall,
+                                    onOpenPage = openUpdatePage
+                                )
+                            }
                         }
                     )
                 }, history = { RunHistoryPage(history) })
+                if (updatePromptVisible) {
+                    UpdateDialog(
+                        state = updateState,
+                        currentVersion = BuildConfig.VERSION_NAME,
+                        currentVersionCode = BuildConfig.VERSION_CODE,
+                        safe = updateSafe,
+                        onDismiss = {
+                            if (updateState is UpdateState.Available) updateViewModel.defer()
+                            updatePromptVisible = false
+                        },
+                        onDownload = { if (updateSafe) updateViewModel.download() },
+                        onCancelDownload = { updateViewModel.cancelDownload() },
+                        onInstall = attemptInstall,
+                        onRetry = { updateViewModel.retry() },
+                        onOpenPage = openUpdatePage
+                    )
+                }
             }
         }
     }
+}
+
+private class InstallActionRef {
+    var action: (() -> Unit)? = null
 }

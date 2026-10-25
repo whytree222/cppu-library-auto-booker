@@ -53,7 +53,9 @@ fun PermissionsPage(
     onBatterySettings: () -> Unit,
     onPermissionGuide: () -> Unit,
     onWakeTest: () -> Unit,
-    modifier: Modifier = Modifier
+    profile: OemProfile = OemProfiles.current(),
+    modifier: Modifier = Modifier,
+    footer: @Composable () -> Unit = {}
 ) {
     var advanced by remember { mutableStateOf(false) }
     Column(
@@ -62,7 +64,7 @@ fun PermissionsPage(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("权限设置", style = MaterialTheme.typography.headlineSmall)
-        Text("定时预约依赖精确闹钟和通知；后台限制因厂商而异，返回应用后会自动刷新状态。",
+        Text("定时预约依赖精确闹钟和通知；后台限制因厂商而异，已按本机品牌显示设置路径，返回应用后会自动刷新状态。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (message.isNotBlank()) {
@@ -100,7 +102,9 @@ fun PermissionsPage(
             )
         }
         AppCard(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-            SectionHeader("后台运行建议", "系统可能限制后台，应用无法替你确认厂商开关",
+            SectionHeader("后台运行建议",
+                if (profile.family == OemFamily.GENERIC) "未识别品牌，以下为通用设置步骤"
+                else "当前设备：${profile.displayName}",
                 modifier = Modifier.padding(bottom = 6.dp))
             PermissionRow(
                 icon = Icons.Filled.Settings,
@@ -119,9 +123,9 @@ fun PermissionsPage(
                 tone = StatusTone.Neutral,
                 action = "打开应用设置",
                 tag = "permission-autostart",
-                onAction = onAppSettings,
-                detail = "小米等机型请在系统设置中核对自启动和“无限制”省电策略。"
+                onAction = onAppSettings
             )
+            OemGuidance(profile)
         }
         AppCard(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -158,6 +162,32 @@ fun PermissionsPage(
                     Text("重新查看权限引导")
                 }
             }
+        }
+        footer()
+    }
+}
+
+@Composable
+private fun OemGuidance(profile: OemProfile) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().testTag("oem-guidance"),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("后台设置步骤", style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface)
+            profile.steps.forEachIndexed { index, step ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${index + 1}.", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary)
+                    Text(step, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Text("页面名称会随系统版本变化；完成设置后返回应用刷新状态。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

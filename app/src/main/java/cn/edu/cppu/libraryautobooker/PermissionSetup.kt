@@ -21,7 +21,10 @@ import cn.edu.cppu.libraryautobooker.booking.BookingScheduler
 
 /** Explain each permission before opening the corresponding system prompt. */
 @Composable
-fun PermissionSetup(onDone: () -> Unit) {
+fun PermissionSetup(
+    profile: OemProfile = OemProfiles.current(),
+    onDone: () -> Unit
+) {
     val context = LocalContext.current
     var step by rememberSaveable { mutableIntStateOf(0) }
     val settings = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { step++ }
@@ -41,7 +44,7 @@ fun PermissionSetup(onDone: () -> Unit) {
     val detail = when (step) {
         0 -> "允许通知后，预约成功、失败和后台测试结果会及时提醒你。也可以稍后在“记录”页面查看预约任务结果。"
         1 -> "定时预约需要系统的“闹钟和提醒”权限。是否打开设置允许本应用使用精确闹钟？"
-        else -> "锁屏定时预约还可能受到省电限制。是否打开系统应用设置？小米手机请检查自启动，并将本应用的省电策略设为无限制。不同手机的设置名称可能不同。"
+        else -> "锁屏定时预约还可能受到省电限制。当前设备为 ${profile.displayName}；${profile.summary}。不同系统版本的名称可能不同，是否打开应用设置继续？"
     }
     AlertDialog(
         onDismissRequest = onDone,

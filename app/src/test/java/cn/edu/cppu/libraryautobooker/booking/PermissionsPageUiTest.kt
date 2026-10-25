@@ -1,6 +1,7 @@
 package cn.edu.cppu.libraryautobooker.booking
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -10,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import cn.edu.cppu.libraryautobooker.OemProfiles
 import cn.edu.cppu.libraryautobooker.PermissionsPage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -47,6 +49,24 @@ class PermissionsPageUiTest {
         compose.onNodeWithText("保存并安排任务").assertDoesNotExist()
         compose.onNodeWithText("最近运行记录").assertDoesNotExist()
         compose.onNodeWithText("登录状态").assertDoesNotExist()
+    }
+
+    @Test fun detectedBrandShowsItsOwnBackgroundSetupSteps() {
+        compose.setContent {
+            MaterialTheme {
+                PermissionsPage(false, true, false, "尚未进行后台唤醒测试",
+                    onExactAlarm = {}, onNotifications = {}, onAppSettings = {},
+                    onBatterySettings = {}, onPermissionGuide = {}, onWakeTest = {},
+                    profile = OemProfiles.xiaomi)
+            }
+        }
+        compose.onNodeWithText("当前设备：小米 / Redmi · HyperOS / MIUI")
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("oem-guidance").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("后台设置步骤")
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("开启“自启动”，将省电策略设为“无限制”")
+            .performScrollTo().assertIsDisplayed()
     }
 
     @Test fun eachExplicitActionUsesItsOwnCallbackAndTestFeedbackIsShown() {
@@ -99,5 +119,19 @@ class PermissionsPageUiTest {
         compose.onAllNodesWithText("已允许").assertCountEquals(2)
         compose.onNodeWithText("已开启").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("需手动确认").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun footerSlotRendersAfterTheExistingPermissionContent() {
+        compose.setContent {
+            MaterialTheme {
+                PermissionsPage(true, true, true, "尚未进行后台唤醒测试",
+                    onExactAlarm = {}, onNotifications = {}, onAppSettings = {},
+                    onBatterySettings = {}, onPermissionGuide = {}, onWakeTest = {}) {
+                    Text("更新卡片占位")
+                }
+            }
+        }
+        compose.onNodeWithText("更新卡片占位").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("权限设置").performScrollTo().assertIsDisplayed()
     }
 }
