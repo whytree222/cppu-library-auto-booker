@@ -6,13 +6,17 @@
 
 ## 安装与升级
 
-支持 Android 8.0 及以上。GitHub 同版本同步发布；Gitee 作为国内推荐下载，只用于发布安装包和更新信息，源码与说明仍以本 GitHub 仓库为准。Gitee 发布仓库配置完成后，维护者会补充发布页链接和安装二维码。
+支持 Android 8.0 及以上。GitHub 同版本同步发布；Gitee 作为国内推荐下载，只用于发布安装包和更新信息，源码与说明仍以本 GitHub 仓库为准。
 
-- **Gitee 最新发布页（国内推荐）**：发布仓库配置完成后由维护者公布链接和二维码。
+- **Gitee 最新发布页（国内推荐）**：[whytree/cppu-library-auto-booker-release/releases/latest](https://gitee.com/whytree/cppu-library-auto-booker-release/releases/latest)
 - **GitHub 最新发布（备用）**：[whytree222/cppu-library-auto-booker/releases/latest](https://github.com/whytree222/cppu-library-auto-booker/releases/latest)
 - 微信内置浏览器会拦截 APK 下载：请点右上角“…”→“在浏览器打开”。
 - 首次安装需要在系统设置中允许“安装未知应用”；安装后请在“权限”页检查精确闹钟、通知、电池优化和厂商自启动限制。
 - 发布页和 `update.json` 会提供 SHA-256，可自行核对下载文件；应用内下载也会自动校验。
+
+<img src="docs/download-qr.png" alt="Gitee 最新发布页二维码" width="220">
+
+扫码打开 Gitee 最新发布页。
 
 **从 v0.18.0 升级到 v0.19.0 必须先卸载旧版再安装。** v0.18.0 由 CI 的临时调试密钥签名，无法用新的固定发布签名覆盖安装。卸载会清除本机的图书馆账号密文、任务、设置、记录和系统权限；学校系统中的预约记录不受影响。从 v0.19.0 起使用固定发布签名，后续版本可直接覆盖升级并保留本机数据。
 
@@ -112,7 +116,7 @@ keytool -list -v -keystore cppu-release.jks -alias cppu-library
 1. 修改 `version.properties`（`versionCode`、`versionName`、`minSupportedVersionCode`），并新增 `release-notes/<version>.md`。
 2. 运行 Node 与 Android 测试：`npm ci && npm test`、`gradle testDebugUnitTest`。
 3. 确认 GitHub Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`、`GITEE_TOKEN`；Repository Variable：`RELEASE_CERT_SHA256`。`GITEE_TOKEN` 需要 `projects` 权限，且不得写入代码、日志或 `distribution.properties`。
-4. 确认公开 Gitee 仓库 `cppu-library-auto-booker-release` 的默认分支为 `main` 且至少有一个提交（空仓库可先提交一个临时空文件建立分支）；创建勾选 `projects` 权限的私人令牌；把 Gitee 用户名填入 `distribution.properties` 的 `giteeOwner`，运行 `npm run release:qr` 生成 `docs/download-qr.png`，并把发布页链接和二维码补回上方“安装与升级”。
+4. 确认公开 Gitee 仓库 `whytree/cppu-library-auto-booker-release` 的默认分支为 `main` 且至少有一个提交（空仓库先在网页新建一个文件建立 `main`）；创建勾选 `projects` 权限的私人令牌并填入 `GITEE_TOKEN`。仓库地址变化时修改 `distribution.properties` 的 `giteeOwner`，运行 `npm run release:qr` 重新生成二维码，并更新上方“安装与升级”的链接和图片。
 5. 手动运行 GitHub Actions，保持 `publish=false`，检查签名、版本号、`dist/update.json`、`dist/sha256sums.txt`。
 6. 确认无误后推送 tag：`git tag v0.19.0 && git push origin v0.19.0`。工作流只在 tag 等于 `version.properties` 的版本时发布；版本冲突会失败，不覆盖历史 Release。
 7. 发布后检查 Gitee/GitHub 两个发布页、两个 manifest 和两个 APK 的大小/SHA-256 一致，并在真机完成安装和预约回归。
