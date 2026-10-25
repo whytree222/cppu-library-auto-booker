@@ -6,17 +6,29 @@
 
 ## 安装与升级
 
-支持 Android 8.0 及以上。GitHub 同版本同步发布；Gitee 作为国内推荐下载，只用于发布安装包和更新信息，源码与说明仍以本 GitHub 仓库为准。
+支持 Android 8.0 及以上。下面的固定链接始终指向最新版 APK，不随版本变化；Gitee 为国内推荐下载，GitHub 作为备用。源码与说明仍以本 GitHub 仓库为准。
 
-- **Gitee 最新发布页（国内推荐）**：[whytree/cppu-library-auto-booker-release/releases/latest](https://gitee.com/whytree/cppu-library-auto-booker-release/releases/latest)
-- **GitHub 最新发布（备用）**：[whytree222/cppu-library-auto-booker/releases/latest](https://github.com/whytree222/cppu-library-auto-booker/releases/latest)
-- 微信内置浏览器会拦截 APK 下载：请点右上角“…”→“在浏览器打开”。
-- 首次安装需要在系统设置中允许“安装未知应用”；安装后请在“权限”页检查精确闹钟、通知、电池优化和厂商自启动限制。
-- 发布页和 `update.json` 会提供 SHA-256，可自行核对下载文件；应用内下载也会自动校验。
+**直接下载**
 
-<img src="docs/download-qr.png" alt="Gitee 最新发布页二维码" width="220">
+- **Gitee（国内推荐）**：[下载 library-auto-booker.apk](https://gitee.com/whytree/cppu-library-auto-booker-release/releases/download/latest/library-auto-booker.apk)
+- **GitHub（备用）**：[下载 library-auto-booker.apk](https://github.com/whytree222/cppu-library-auto-booker/releases/latest/download/library-auto-booker.apk)
 
-扫码打开 Gitee 最新发布页。
+<img src="docs/download-qr.png" alt="Gitee 固定 APK 下载二维码" width="220"> <img src="docs/download-qr-github.png" alt="GitHub 固定 APK 下载二维码" width="220">
+
+左侧扫码从 Gitee 下载，右侧扫码从 GitHub 下载。
+
+**安装步骤**
+
+1. 用手机系统浏览器打开上面的链接或扫码；微信内请点右上角“…”→“在浏览器打开”。
+2. 下载文件名为 `library-auto-booker.apk` 的安装包。
+3. 点击安装；首次安装需要在系统设置中允许“安装未知应用”。安装后请在“权限”页检查精确闹钟、通知、电池优化和厂商自启动限制。
+
+**注意**
+
+- 只下载 `.apk` 安装包。发布页中的 `Source code (zip/tar.gz)` 是源码压缩包，不能安装。
+- 如果浏览器把文件保存为 `.apk.zip`，删除文件名末尾的 `.zip` 后再安装，不要解压。Gitee 返回的文件类型可能触发此行为，GitHub 备用链接通常不会。
+- 固定文件名 `library-auto-booker.apk` 与发布页中的版本化文件（例如 `library-auto-booker-0.19.0.apk`）内容完全相同，SHA-256 相同；`sha256sums.txt` 仍以版本化文件名为准。
+- 版本说明与校验值见 [Gitee 发布页](https://gitee.com/whytree/cppu-library-auto-booker-release/releases/latest) 或 [GitHub Release](https://github.com/whytree222/cppu-library-auto-booker/releases/latest)。发布页用于查看说明，其中的源码包不是安装包。
 
 **从 v0.18.0 升级到 v0.19.0 必须先卸载旧版再安装。** v0.18.0 由 CI 的临时调试密钥签名，无法用新的固定发布签名覆盖安装。卸载会清除本机的图书馆账号密文、任务、设置、记录和系统权限；学校系统中的预约记录不受影响。从 v0.19.0 起使用固定发布签名，后续版本可直接覆盖升级并保留本机数据。
 
@@ -30,7 +42,7 @@
 2. 点击“下载更新”后，应用从 Gitee 下载并自动校验大小、SHA-256、包名、版本号和签名证书；Gitee 不可用时切换 GitHub 同版本文件。任一校验不符都会删除文件并拒绝安装。
 3. 下载完成后交给 Android 系统安装器，由用户确认覆盖安装；如果尚未允许安装未知应用，会先打开系统授权页。应用无法绕过系统确认，也不承诺静默安装。
 4. 更新永不打断预约：预约服务运行中、任务处于运行/触发状态、15 分钟内有待执行任务、停留在登录页或首次权限引导时，不检查、不下载、不安装；预约结束后恢复。
-5. 更新检查只读取版本信息，不采集预约内容、账号或座位数据。更新失败时可以重试，或打开 Gitee/GitHub 发布页手动下载。
+5. 更新检查只读取版本信息，不采集预约内容、账号或座位数据。更新失败时可以重试，或使用上方固定链接手动下载（应用内更新仍使用版本化 APK 地址和签名校验，不依赖固定文件名）。
 
 从 v0.19.0 起，后续版本才能通过应用内更新覆盖安装。更新只在打开应用时检查，不做后台常驻或推送，避免被厂商省电策略杀掉。
 
@@ -92,9 +104,9 @@
 
 ## 验证与构建
 
-网页回归使用 Node.js 的模拟 DOM，不访问学校系统。包括报刊阅览区 2026-10-24 实际时间差异、分日期同步、未选变化、所选变化仍停止及隐藏旧勾选防护。Android 单元和 Compose 测试覆盖刷新目标、跨日失效、45 秒超时、退出取消、精确时间保留及规则变化、直接与定时入口分离、手动快照不覆盖定时计划、两种日期基准、固定 00:58 策略、一次性消耗、旧配置迁移、直连登录状态、权限页、记录页、地图，以及更新清单校验、重定向白名单、下载哈希、签名校验、预约安全闸门和更新界面各状态。Node 测试额外覆盖版本/发布配置、`update.json` 生成、Gitee 发布幂等和公开下载校验。
+网页回归使用 Node.js 的模拟 DOM，不访问学校系统。包括报刊阅览区 2026-10-24 实际时间差异、分日期同步、未选变化、所选变化仍停止及隐藏旧勾选防护。Android 单元和 Compose 测试覆盖刷新目标、跨日失效、45 秒超时、退出取消、精确时间保留及规则变化、直接与定时入口分离、手动快照不覆盖定时计划、两种日期基准、固定 00:58 策略、一次性消耗、旧配置迁移、直连登录状态、权限页、记录页、地图，以及更新清单校验、重定向白名单、下载哈希、签名校验、预约安全闸门和更新界面各状态。Node 测试额外覆盖版本/发布配置、`update.json` 生成、Gitee 发布幂等、固定文件名别名上传与下载校验、双二维码以及公开下载校验。
 
-GitHub Actions 使用 JDK 17、SDK 35、Gradle 8.9。推送 `main` 只运行测试和未签名 release 构建，不创建或修改任何 Release；只有手动推送 `v*` tag 或带 `publish=true` 的手动运行才使用固定发布密钥签名并同步发布 Gitee 与 GitHub。
+GitHub Actions 使用 JDK 17、SDK 35、Gradle 8.9。推送 `main` 只运行测试和未签名 release 构建，不创建或修改任何 Release；只有手动推送 `v*` tag 或带 `publish=true` 的手动运行才使用固定发布密钥签名并同步发布 Gitee 与 GitHub。发布时会在两个平台各上传一份内容相同的固定文件名 `library-auto-booker.apk`，并在 GitHub Release 转为公开前先校验 Gitee 固定链接。
 
 测试通过不代表手机锁屏网络、系统安装器或学校当前业务规则一定允许预约。请核对应用中的明确结果与学校“我的预约”记录。
 
@@ -116,9 +128,9 @@ keytool -list -v -keystore cppu-release.jks -alias cppu-library
 1. 修改 `version.properties`（`versionCode`、`versionName`、`minSupportedVersionCode`），并新增 `release-notes/<version>.md`。
 2. 运行 Node 与 Android 测试：`npm ci && npm test`、`gradle testDebugUnitTest`。
 3. 确认 GitHub Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`、`GITEE_TOKEN`；Repository Variable：`RELEASE_CERT_SHA256`。`GITEE_TOKEN` 需要 `projects` 权限，且不得写入代码、日志或 `distribution.properties`。
-4. 确认公开 Gitee 仓库 `whytree/cppu-library-auto-booker-release` 的默认分支为 `master` 且至少有一个提交（空仓库先在网页新建一个文件建立 `master`）；创建勾选 `projects` 权限的私人令牌并填入 `GITEE_TOKEN`。仓库地址或分支变化时修改 `distribution.properties` 的 `giteeOwner`/`giteeBranch`，运行 `npm run release:qr` 重新生成二维码，并更新上方“安装与升级”的链接和图片。
+4. 确认公开 Gitee 仓库 `whytree/cppu-library-auto-booker-release` 的默认分支为 `master` 且至少有一个提交（空仓库先在网页新建一个文件建立 `master`）；创建勾选 `projects` 权限的私人令牌并填入 `GITEE_TOKEN`。仓库地址或分支变化时修改 `distribution.properties` 的 `giteeOwner`/`giteeBranch`，运行 `npm run release:qr` 重新生成 `docs/download-qr.png`（Gitee）和 `docs/download-qr-github.png`（GitHub），并更新上方“安装与升级”的链接和图片。固定下载链接不随版本变化，正常发版不需要重新生成二维码。
 5. 手动运行 GitHub Actions，保持 `publish=false`，检查签名、版本号、`dist/update.json`、`dist/sha256sums.txt`。
 6. 确认无误后推送 tag：`git tag v0.19.0 && git push origin v0.19.0`。工作流只在 tag 等于 `version.properties` 的版本时发布；版本冲突会失败，不覆盖历史 Release。
-7. 发布后检查 Gitee/GitHub 两个发布页、两个 manifest 和两个 APK 的大小/SHA-256 一致，并在真机完成安装和预约回归。
+7. 发布后检查两个固定下载链接、两个发布页、两个 manifest 和两个 APK 的大小/SHA-256 一致，并在真机完成安装和预约回归。固定链接返回的 `library-auto-booker.apk` 应与版本化 APK 字节相同。若某个已有 Release 缺少固定别名，手动运行 `Backfill fixed download alias` 工作流并填入对应 tag；它只新增固定别名并校验哈希，不创建、修改或删除 Release，也不能覆盖已有资产。
 
 发布密钥必须离线备份。丢失密钥后无法继续覆盖升级，只能让用户卸载重装；keystore、密码和 token 不能提交到仓库。`distribution.properties` 只放公开信息。CI 发布失败时只会删除本次新建的 GitHub 草稿 Release，不修改或删除历史 Release 和 tag。

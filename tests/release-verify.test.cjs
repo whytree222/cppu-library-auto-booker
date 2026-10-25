@@ -162,6 +162,44 @@ test('waitForDownload retries a missing fixed link and rejects a persistent mism
   assert.ok(wrongAttempts >= 1);
 });
 
+test('fixed download verification modes read the published manifest', async (t) => {
+  const { verifyDownloadAliases, verifyDownloadUrl } =
+    await import('../scripts/verify-release.mjs');
+  const { root, expected } = await prepare(t);
+  const manifestFile = path.join(root, 'dist', 'update.json');
+  const fetchImpl = async () => new Response(APK_BYTES, {
+    status: 200,
+    headers: { 'Content-Length': String(APK_BYTES.length) }
+  });
+
+  const all = await verifyDownloadAliases({
+    root, manifestFile, fetchImpl, timeoutMs: 1000, intervalMs: 10
+  });
+  assert.equal(all.versionCode, 50);
+  assert.equal(all.sha256, expected.sha256);
+  assert.equal(all.downloads.length, 2);
+  assert.deepEqual(all.downloads.map((entry) => entry.size),
+    [APK_BYTES.length, APK_BYTES.length]);
+
+  const one = await verifyDownloadUrl({
+    root,
+    manifestFile,
+    url: 'https://gitee.com/tester/cppu-library-auto-booker-release/releases/download/latest/library-auto-booker.apk',
+    fetchImpl,
+    timeoutMs: 1000,
+    intervalMs: 10
+  });
+  assert.equal(one.sha256, expected.sha256);
+  assert.equal(one.size, APK_BYTES.length);
+
+  await assert.rejects(
+    () => verifyDownloadUrl({
+      root, manifestFile, url: 'http://example.com/library-auto-booker.apk'
+    }),
+    /must use HTTPS/
+  );
+});
+
 test('verifyRelease fetches both manifests, both APK URLs and both fixed links', async (t) => {
   const { verifyRelease } = await import('../scripts/verify-release.mjs');
   const { root, expected } = await prepare(t);
