@@ -48,7 +48,7 @@ function readNotes(root, config) {
   return notes;
 }
 
-function inspectApk(file) {
+export function inspectApk(file) {
   const stat = fs.statSync(file, { throwIfNoEntry: false });
   if (!stat?.isFile()) throw new Error(`APK not found: ${file}`);
   if (stat.size <= 0 || stat.size > MAX_APK_BYTES) {
@@ -77,10 +77,14 @@ export function releaseNotesWithDownloads(notes, config, sha256) {
     '',
     '## 下载',
     '',
-    `- Gitee（国内推荐）：${config.giteeReleaseUrl || '尚未配置'}`,
-    `- GitHub（备用）：${config.githubReleaseUrl}`,
+    `- Gitee 直接下载（国内推荐）：${config.giteeDownloadUrl || '尚未配置'}`,
+    `- GitHub 直接下载（备用）：${config.githubDownloadUrl}`,
+    `- 版本说明：${config.pageUrl}`,
     '',
-    '支持 Android 8.0 及以上。请在系统浏览器中打开下载页；微信内请点右上角“在浏览器打开”。',
+    `固定文件名 \`${config.downloadAliasName}\` 与 \`${config.apkName}\` 内容完全相同，SHA-256 相同。`,
+    '只下载 `.apk` 安装包；发布页中的 `Source code (zip/tar.gz)` 是源码压缩包，不能安装。',
+    '若浏览器把文件保存为 `.apk.zip`，删除文件名末尾的 `.zip` 后再安装，不要解压。',
+    '支持 Android 8.0 及以上。请用系统浏览器打开；微信内请点右上角“在浏览器打开”。',
     '首次安装需要允许“安装未知应用”。下载后可用 SHA-256 核对文件完整性。',
     '',
     `SHA-256：\`${sha256}\``

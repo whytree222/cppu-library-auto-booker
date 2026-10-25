@@ -171,25 +171,37 @@ async function setup(t) {
   return { root, config, client, state, requests };
 }
 
-test('Gitee release creates a release and uploads APK, manifest and checksums', async (t) => {
+test('Gitee release creates a release and uploads APK, alias, manifest and checksums', async (t) => {
   const { publishRelease } = await import('../scripts/publish-gitee.mjs');
   const { root, config, client, state, requests } = await setup(t);
 
   const result = await publishRelease({ root, tag: 'v0.19.0', config, client });
   assert.equal(result.reused, false);
   assert.equal(result.url, config.giteeTagUrl);
-  assert.deepEqual(result.uploaded.sort(),
-    ['library-auto-booker-0.19.0.apk', 'sha256sums.txt', 'update.json']);
+  assert.deepEqual(result.uploaded.sort(), [
+    'library-auto-booker-0.19.0.apk',
+    'library-auto-booker.apk',
+    'sha256sums.txt',
+    'update.json'
+  ]);
   assert.equal(state.release.body, fs.readFileSync(path.join(root, 'dist', 'release-notes.md'), 'utf8'));
-  assert.deepEqual(state.assets.map((asset) => asset.name).sort(),
-    ['library-auto-booker-0.19.0.apk', 'sha256sums.txt', 'update.json']);
+  assert.deepEqual(state.assets.map((asset) => asset.name).sort(), [
+    'library-auto-booker-0.19.0.apk',
+    'library-auto-booker.apk',
+    'sha256sums.txt',
+    'update.json'
+  ]);
   for (const asset of state.assets) {
     assert.deepEqual(Object.keys(asset).sort(), ['browser_download_url', 'name']);
-    assert.deepEqual(state.files.get(asset.name),
-      fs.readFileSync(path.join(root, 'dist', asset.name)));
+    const name = asset.name === 'library-auto-booker.apk'
+      ? 'library-auto-booker-0.19.0.apk'
+      : asset.name;
+    assert.deepEqual(state.files.get(asset.name), fs.readFileSync(path.join(root, 'dist', name)));
   }
+  assert.deepEqual(state.files.get('library-auto-booker.apk'),
+    state.files.get('library-auto-booker-0.19.0.apk'));
   const downloads = requests.filter((request) => request.path.startsWith('/files/'));
-  assert.equal(downloads.length, 3);
+  assert.equal(downloads.length, 4);
   for (const request of downloads) {
     assert.equal(request.headers.authorization, undefined);
   }
@@ -212,17 +224,21 @@ test('re-running the same version reuses the release and skips identical assets'
   const second = await publishRelease({ root, tag: 'v0.19.0', config, client });
   assert.equal(second.reused, true);
   assert.equal(second.uploaded.length, 0);
-  assert.deepEqual(second.skipped.sort(),
-    ['library-auto-booker-0.19.0.apk', 'sha256sums.txt', 'update.json']);
+  assert.deepEqual(second.skipped.sort(), [
+    'library-auto-booker-0.19.0.apk',
+    'library-auto-booker.apk',
+    'sha256sums.txt',
+    'update.json'
+  ]);
   assert.equal(
     requests.filter((request) => request.path.endsWith('/attach_files')).length,
     attachCount
   );
   assert.equal(
     requests.filter((request) => request.path.startsWith('/files/')).length,
-    downloadCount + 3
+    downloadCount + 4
   );
-  assert.equal(state.assets.length, 3);
+  assert.equal(state.assets.length, 4);
 });
 
 test('Gitee release refuses to overwrite a different asset or different notes', async (t) => {
@@ -259,6 +275,83 @@ test('Gitee release refuses to reuse an asset it cannot verify', async (t) => {
     () => publishRelease({ root, tag: 'v0.19.0', config, client }),
     /Cannot verify existing Gitee asset/
   );
+});
+
+test('publishGiteeAlias refuses to create a release that does not exist', async (t) => {
+  const { publishGiteeAlias } = await import('../scripts/publish-gitee.mjs');
+  const { root, config, client, requests } = await setup(t);
+
+  await assert.rejects(
+    () => publishGiteeAlias({ root, tag: 'v0.19.0', apk: 'fake.apk', config, client }),
+    /does not exist/
+  );
+  assert.equal(
+    requests.filter((request) => request.method === 'POST' &&
+      request.path.endsWith('/releases')).length,
+    0
+  );
+});
+
+test('publishGiteeAlias uploads the fixed name and skips identical content', async (t) => {
+  const { publishRelease, publishGiteeAlias } = await import('../scripts/publish-gitee.mjs');
+  const { root, config, client, state, requests } = await setup(t);
+  await publishRelease({ root, tag: 'v0.19.0', config, client });
+
+  // Remove only the alias so the additive backfill path is exercised.
+  state.assets = state.assets.filter((asset) => asset.name !== config.downloadAliasName);
+  state.files.delete(config.downloadAliasName);
+
+  const first = await publishGiteeAlias({
+    root, tag: 'v0.19.0', apk: 'fake.apk', config, client
+  });
+  assert.equal(first.release.id, 42);
+  assert.deepEqual(first.uploaded, [config.downloadAliasName]);
+  assert.deepEqual(first.skipped, []);
+  assert.deepEqual(state.files.get(config.downloadAliasName), APK_BYTES);
+
+  const downloadCount = requests.filter((request) => request.path.startsWith('/files/')).length;
+  const second = await publishGiteeAlias({
+    root, tag: 'v0.19.0', apk: 'fake.apk', config, client
+  });
+  assert.deepEqual(second.uploaded, []);
+  assert.deepEqual(second.skipped, [config.downloadAliasName]);
+  assert.equal(
+    requests.filter((request) => request.path.startsWith('/files/')).length,
+    downloadCount + 1
+  );
+});
+
+test('publishGiteeAlias rejects different content and mismatched hashes before network', async (t) => {
+  const { publishRelease, publishGiteeAlias } = await import('../scripts/publish-gitee.mjs');
+  const { root, config, client, state, requests } = await setup(t);
+  await publishRelease({ root, tag: 'v0.19.0', config, client });
+
+  const original = state.files.get(config.downloadAliasName);
+  const tampered = Buffer.from(original);
+  tampered[0] ^= 0xff;
+  state.files.set(config.downloadAliasName, tampered);
+  await assert.rejects(
+    () => publishGiteeAlias({ root, tag: 'v0.19.0', apk: 'fake.apk', config, client }),
+    /different content/
+  );
+  state.files.set(config.downloadAliasName, original);
+
+  const before = requests.length;
+  await assert.rejects(
+    () => publishGiteeAlias({
+      root, tag: 'v0.19.0', apk: 'fake.apk', sha256: '0'.repeat(64), config
+    }),
+    /SHA-256/
+  );
+  await assert.rejects(
+    () => publishGiteeAlias({ root, tag: 'v0.19.0', apk: 'fake.apk', size: 1, config }),
+    /size/
+  );
+  await assert.rejects(
+    () => publishGiteeAlias({ root, tag: 'latest', apk: 'fake.apk', config }),
+    /tag like v1\.2\.3/
+  );
+  assert.equal(requests.length, before);
 });
 
 test('manifest publishing treats Gitee empty array as missing, then is idempotent', async (t) => {

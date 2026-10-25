@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import {
   MAX_APK_BYTES,
+  inspectApk,
   readPreparedDistribution,
   sha256File
 } from './prepare-dist.mjs';
@@ -368,12 +369,65 @@ export async function publishRelease({
   const activeClient = client ?? new GiteeClient();
 
   const { release, reused } = await ensureRelease(activeClient, config, notes);
-  const result = await publishAssets(activeClient, config, release, prepared.files);
+  const files = [
+    { name: config.apkName, path: prepared.apkPath },
+    { name: config.downloadAliasName, path: prepared.apkPath },
+    ...prepared.files.filter((file) => file.name !== config.apkName)
+  ];
+  const result = await publishAssets(activeClient, config, release, files);
   return {
     release,
     reused,
     ...result,
     url: config.giteeTagUrl
+  };
+}
+
+export async function publishGiteeAlias({
+  root = process.cwd(),
+  tag,
+  apk,
+  sha256,
+  size,
+  client,
+  config = requireGitee(root)
+} = {}) {
+  if (!tag || !/^v\d+\.\d+\.\d+$/.test(tag)) {
+    throw new Error('A release tag like v1.2.3 is required');
+  }
+  if (!apk) throw new Error('--apk is required');
+  const apkPath = path.resolve(root, apk);
+  const actualSize = inspectApk(apkPath);
+  if (size !== undefined && size !== null) {
+    const expectedSize = Number(size);
+    if (!Number.isInteger(expectedSize) || expectedSize <= 0) {
+      throw new Error('--size must be a positive integer');
+    }
+    if (actualSize !== expectedSize) {
+      throw new Error(`APK size ${actualSize} does not match expected ${expectedSize}`);
+    }
+  }
+  if (sha256 !== undefined && sha256 !== null) {
+    const expectedSha = String(sha256).toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(expectedSha)) {
+      throw new Error('--sha256 must be 64 hexadecimal characters');
+    }
+    const actualSha = sha256File(apkPath);
+    if (actualSha !== expectedSha) {
+      throw new Error(`APK SHA-256 ${actualSha} does not match expected ${expectedSha}`);
+    }
+  }
+
+  const activeClient = client ?? new GiteeClient();
+  const release = await getReleaseByTag(activeClient, config, tag);
+  if (!release) throw new Error(`Gitee release ${tag} does not exist`);
+  const result = await publishAssets(activeClient, config, release, [
+    { name: config.downloadAliasName, path: apkPath }
+  ]);
+  return {
+    release,
+    ...result,
+    url: `${config.giteeBase}/releases/tag/${tag}`
   };
 }
 
@@ -390,13 +444,14 @@ export async function publishGiteeManifest({
 
 function parseArgs(argv) {
   const command = argv.shift();
-  if (command !== 'release' && command !== 'manifest') {
-    throw new Error('Expected command: release or manifest');
+  if (!['release', 'manifest', 'alias'].includes(command)) {
+    throw new Error('Expected command: release, manifest or alias');
   }
   const options = { command, dist: 'dist', tag: process.env.GITHUB_REF_NAME };
   while (argv.length) {
     const arg = argv.shift();
-    if (arg === '--dist' || arg === '--tag') {
+    if (arg === '--dist' || arg === '--tag' || arg === '--apk' ||
+        arg === '--sha256' || arg === '--size') {
       const value = argv.shift();
       if (!value) throw new Error(`${arg} requires a value`);
       options[arg.slice(2)] = value;
@@ -420,11 +475,21 @@ if (isMain()) {
       console.log(`Gitee release ${result.reused ? 'reused' : 'created'}: ${result.url}`);
       console.log(`  uploaded: ${result.uploaded.join(', ') || 'none'}`);
       console.log(`  already present: ${result.skipped.join(', ') || 'none'}`);
-    } else {
+    } else if (options.command === 'manifest') {
       const result = await publishGiteeManifest({ dist: options.dist });
       console.log(result.unchanged
         ? 'Gitee update.json is already up to date'
         : 'Gitee update.json updated');
+    } else {
+      const result = await publishGiteeAlias({
+        tag: options.tag,
+        apk: options.apk,
+        sha256: options.sha256,
+        size: options.size
+      });
+      console.log(`Gitee alias for ${options.tag}: ${result.url}`);
+      console.log(`  uploaded: ${result.uploaded.join(', ') || 'none'}`);
+      console.log(`  already present: ${result.skipped.join(', ') || 'none'}`);
     }
   } catch (error) {
     const token = process.env.GITEE_TOKEN;

@@ -183,9 +183,14 @@ jobs:
             echo "Release $TAG already exists; refusing to modify it"
             exit 1
           fi
-          APK=$(find dist -maxdepth 1 -name '*.apk' -print -quit)
-          [[ -n "$APK" ]] || { echo "APK missing from dist"; exit 1; }
-          gh release create "$TAG" "$APK" dist/update.json dist/sha256sums.txt \
+          APK_NAME=$(node scripts/version.mjs --get apkName)
+          ALIAS_NAME=$(node scripts/version.mjs --get downloadAliasName)
+          APK="dist/$APK_NAME"
+          ALIAS="$RUNNER_TEMP/$ALIAS_NAME"
+          [[ -f "$APK" ]] || { echo "APK missing from dist"; exit 1; }
+          cp "$APK" "$ALIAS"
+          cmp "$APK" "$ALIAS"
+          gh release create "$TAG" "$APK" "$ALIAS" dist/update.json dist/sha256sums.txt \
             --draft --verify-tag \
             --title "图书馆自动预约 $TAG" \
             --notes-file dist/release-notes.md
@@ -194,6 +199,10 @@ jobs:
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: node scripts/publish-gitee.mjs release --dist dist --tag "$GITHUB_REF_NAME"
+      - name: Verify Gitee fixed download
+        run: |
+          URL=$(node scripts/version.mjs --get giteeDownloadUrl)
+          node scripts/verify-release.mjs --manifest dist/update.json --download-url "$URL"
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

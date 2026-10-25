@@ -4,27 +4,49 @@ import { pathToFileURL } from 'node:url';
 import QRCode from 'qrcode';
 import { requireGitee } from './version.mjs';
 
+const QR_OPTIONS = {
+  type: 'png',
+  margin: 2,
+  errorCorrectionLevel: 'M',
+  color: { dark: '#111111', light: '#FFFFFF' }
+};
+
+function githubOutput(out) {
+  const target = path.parse(out);
+  return path.join(target.dir, `${target.name}-github${target.ext || '.png'}`);
+}
+
+async function writeQr(target, url, size) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  await QRCode.toFile(target, url, { ...QR_OPTIONS, width: size });
+  const stat = fs.statSync(target);
+  if (!stat.size) throw new Error('QR image is empty');
+  return stat.size;
+}
+
 export async function makeDownloadQr({
   root = process.cwd(),
   out = 'docs/download-qr.png',
+  githubOut,
   size = 1024
 } = {}) {
   const config = requireGitee(root);
   if (!Number.isInteger(size) || size < 256 || size > 2048) {
     throw new Error('QR size must be an integer between 256 and 2048');
   }
-  const target = path.resolve(root, out);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  await QRCode.toFile(target, config.giteeReleaseUrl, {
-    type: 'png',
-    width: size,
-    margin: 2,
-    errorCorrectionLevel: 'M',
-    color: { dark: '#111111', light: '#FFFFFF' }
-  });
-  const stat = fs.statSync(target);
-  if (!stat.size) throw new Error('QR image is empty');
-  return { target, url: config.giteeReleaseUrl, size: stat.size };
+  const primaryTarget = path.resolve(root, out);
+  const fallbackTarget = path.resolve(root, githubOut ?? githubOutput(out));
+  if (primaryTarget === fallbackTarget) throw new Error('QR output paths must differ');
+
+  const codes = [];
+  for (const [label, target, url] of [
+    ['gitee', primaryTarget, config.giteeDownloadUrl],
+    ['github', fallbackTarget, config.githubDownloadUrl]
+  ]) {
+    const bytes = await writeQr(target, url, size);
+    codes.push({ label, target, url, size: bytes });
+  }
+  return { codes };
 }
 
 function parseArgs(argv) {
@@ -53,8 +75,10 @@ function isMain() {
 if (isMain()) {
   try {
     const result = await makeDownloadQr(parseArgs(process.argv.slice(2)));
-    console.log(`QR for ${result.url}`);
-    console.log(`  saved: ${result.target} (${result.size} bytes)`);
+    for (const code of result.codes) {
+      console.log(`QR (${code.label}) for ${code.url}`);
+      console.log(`  saved: ${code.target} (${code.size} bytes)`);
+    }
   } catch (error) {
     console.error(`make-qr: ${error.message}`);
     process.exit(2);

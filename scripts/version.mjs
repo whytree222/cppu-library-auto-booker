@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 export const VERSION_FILE = 'version.properties';
 export const DISTRIBUTION_FILE = 'distribution.properties';
+export const DOWNLOAD_ALIAS_NAME = 'library-auto-booker.apk';
 
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
@@ -99,17 +100,25 @@ export function releaseConfig(root = process.cwd()) {
   const giteeManifestUrl = giteeBase
     ? `${giteeBase}/raw/${distribution.giteeBranch}/update.json`
     : '';
+  const downloadAliasName = DOWNLOAD_ALIAS_NAME;
+  // Gitee and GitHub expose different stable-asset paths.
+  const giteeDownloadUrl = giteeBase
+    ? `${giteeBase}/releases/download/latest/${downloadAliasName}`
+    : '';
   const githubReleaseUrl = `${githubBase}/releases/latest`;
   const githubTagUrl = `${githubBase}/releases/tag/${version.tag}`;
   const githubApkUrl = `${githubBase}/releases/download/${version.tag}/${version.apkName}`;
   const githubManifestUrl = `${githubBase}/releases/latest/download/update.json`;
+  const githubDownloadUrl = `${githubBase}/releases/latest/download/${downloadAliasName}`;
   const pageUrl = giteeTagUrl || githubTagUrl;
   for (const [name, value] of Object.entries({
     giteeManifestUrl,
     githubManifestUrl,
     pageUrl,
     giteeApkUrl,
-    githubApkUrl
+    githubApkUrl,
+    giteeDownloadUrl,
+    githubDownloadUrl
   })) {
     if (value) assertHttpsUrl(value, name);
   }
@@ -121,10 +130,14 @@ export function releaseConfig(root = process.cwd()) {
     giteeTagUrl,
     giteeApkUrl,
     giteeManifestUrl,
+    downloadAliasName,
+    giteeDownloadUrl,
     githubReleaseUrl,
     githubTagUrl,
     githubApkUrl,
     githubManifestUrl,
+    githubDownloadUrl,
+    downloadUrls: [giteeDownloadUrl, githubDownloadUrl].filter(Boolean),
     manifestUrl: giteeManifestUrl,
     fallbackManifestUrl: githubManifestUrl,
     pageUrl,
@@ -149,10 +162,10 @@ if (isMain()) {
   try {
     const args = process.argv.slice(2);
     if (args[0] === '--get') {
-      const version = readVersion();
+      const config = releaseConfig();
       const key = args[1];
-      if (!Object.hasOwn(version, key)) throw new Error(`unknown version key: ${key}`);
-      process.stdout.write(`${version[key]}\n`);
+      if (!Object.hasOwn(config, key)) throw new Error(`unknown version key: ${key}`);
+      process.stdout.write(`${config[key]}\n`);
     } else if (args[0] === '--check-tag') {
       const version = readVersion();
       const tag = args[1];

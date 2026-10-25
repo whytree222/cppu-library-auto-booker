@@ -112,13 +112,63 @@ test('APK download is hashed and size checked while streaming', async (t) => {
   );
 });
 
-test('verifyRelease fetches both manifests and both APK URLs', async (t) => {
+test('waitForDownload retries a missing fixed link and rejects a persistent mismatch', async (t) => {
+  const { waitForDownload } = await import('../scripts/verify-release.mjs');
+  const { expected } = await prepare(t);
+
+  let attempts = 0;
+  const { server, baseUrl } = await localServer((request, response) => {
+    attempts += 1;
+    if (attempts === 1) {
+      response.writeHead(404);
+      response.end('not ready');
+      return;
+    }
+    response.writeHead(200, { 'Content-Length': String(APK_BYTES.length) });
+    response.end(APK_BYTES);
+  });
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
+
+  const hash = await waitForDownload(`${baseUrl}/library-auto-booker.apk`, expected,
+    { timeoutMs: 3000, intervalMs: 20 });
+  assert.equal(hash, expected.sha256);
+  assert.equal(attempts, 2);
+
+  const wrong = Buffer.from(APK_BYTES);
+  wrong[wrong.length - 1] ^= 0xff;
+  let wrongAttempts = 0;
+  const wrongServer = await localServer((request, response) => {
+    wrongAttempts += 1;
+    response.writeHead(200, { 'Content-Length': String(wrong.length) });
+    response.end(wrong);
+  });
+  t.after(() => new Promise((resolve) => {
+    wrongServer.server.closeAllConnections();
+    wrongServer.server.close(resolve);
+  }));
+
+  await assert.rejects(
+    () => waitForDownload(`${wrongServer.baseUrl}/library-auto-booker.apk`, expected,
+      { timeoutMs: 150, intervalMs: 20 }),
+    (error) => {
+      assert.match(error.message, /Timed out waiting/);
+      assert.match(error.message, /SHA-256 mismatch/);
+      return true;
+    }
+  );
+  assert.ok(wrongAttempts >= 1);
+});
+
+test('verifyRelease fetches both manifests, both APK URLs and both fixed links', async (t) => {
   const { verifyRelease } = await import('../scripts/verify-release.mjs');
   const { root, expected } = await prepare(t);
   const urls = [];
   const fetchImpl = async (rawUrl) => {
     const url = new URL(rawUrl);
-    urls.push(url.toString());
+    urls.push(`${url.origin}${url.pathname}`);
     if (url.pathname.endsWith('/update.json')) {
       return new Response(JSON.stringify(expected), {
         status: 200,
@@ -139,6 +189,13 @@ test('verifyRelease fetches both manifests and both APK URLs', async (t) => {
   assert.equal(result.hashes.length, 2);
   assert.deepEqual(new Set(result.hashes.map((entry) => entry.sha256)),
     new Set([expected.sha256]));
+  const fixed = [
+    'https://gitee.com/tester/cppu-library-auto-booker-release/releases/download/latest/library-auto-booker.apk',
+    'https://github.com/whytree222/cppu-library-auto-booker/releases/latest/download/library-auto-booker.apk'
+  ];
+  assert.equal(result.downloads.length, 2);
+  assert.deepEqual(result.downloads.map((entry) => entry.url), fixed);
+  for (const url of fixed) assert.ok(urls.includes(url));
   assert.ok(urls.some((url) => url.includes('gitee.com/tester/')));
   assert.ok(urls.some((url) => url.includes('github.com/whytree222/')));
 });

@@ -38,8 +38,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          APK_NAME=$(node scripts/version.mjs --get apkName)
           gh release download "$TAG" --repo "${{ github.repository }}" \
-            --pattern '*.apk' --pattern 'update.json' --pattern 'sha256sums.txt' \
+            --pattern "$APK_NAME" --pattern 'update.json' --pattern 'sha256sums.txt' \
             --dir dist
           node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('dist/update.json','utf8'));fs.writeFileSync('dist/release-notes.md',m.notes)"
       - name: Update Gitee raw manifest

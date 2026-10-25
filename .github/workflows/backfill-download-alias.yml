@@ -1,0 +1,96 @@
+name: Backfill fixed download alias
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已发布的 v* tag，例如 v0.19.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: backfill-download-alias
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate release tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid tag: $TAG"; exit 1; }
+          node scripts/version.mjs --require-gitee
+      - name: Download release manifest and APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+            --pattern 'update.json' --dir dist
+          APK_NAME=$(node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('dist/update.json','utf8'));const u=new URL(m.apkUrls[0]);process.stdout.write(decodeURIComponent(u.pathname.split('/').pop()))")
+          [[ -n "$APK_NAME" ]] || { echo "Cannot determine the released APK name"; exit 1; }
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+            --pattern "$APK_NAME" --dir dist
+          EXPECTED_SHA=$(node -e "const fs=require('fs');process.stdout.write(JSON.parse(fs.readFileSync('dist/update.json','utf8')).sha256)")
+          EXPECTED_SIZE=$(node -e "const fs=require('fs');process.stdout.write(String(JSON.parse(fs.readFileSync('dist/update.json','utf8')).size))")
+          ACTUAL_SHA=$(sha256sum "dist/$APK_NAME" | awk '{print $1}')
+          ACTUAL_SIZE=$(stat -c %s "dist/$APK_NAME")
+          [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || { echo "APK SHA-256 does not match update.json"; exit 1; }
+          [[ "$ACTUAL_SIZE" == "$EXPECTED_SIZE" ]] || { echo "APK size does not match update.json"; exit 1; }
+          {
+            echo "APK_NAME=$APK_NAME"
+            echo "EXPECTED_SHA=$EXPECTED_SHA"
+            echo "EXPECTED_SIZE=$EXPECTED_SIZE"
+          } >> "$GITHUB_ENV"
+      - name: Create the fixed alias
+        run: |
+          set -euo pipefail
+          ALIAS_NAME=$(node scripts/version.mjs --get downloadAliasName)
+          ALIAS="$RUNNER_TEMP/$ALIAS_NAME"
+          cp "dist/$APK_NAME" "$ALIAS"
+          cmp "dist/$APK_NAME" "$ALIAS"
+          {
+            echo "ALIAS=$ALIAS"
+            echo "ALIAS_NAME=$ALIAS_NAME"
+          } >> "$GITHUB_ENV"
+      - name: Add the alias to GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null
+          if gh release view "$TAG" --repo "${{ github.repository }}" \
+              --json assets --jq '.assets[].name' | grep -Fxq "$ALIAS_NAME"; then
+            mkdir -p "$RUNNER_TEMP/existing"
+            gh release download "$TAG" --repo "${{ github.repository }}" \
+              --pattern "$ALIAS_NAME" --dir "$RUNNER_TEMP/existing"
+            cmp "$ALIAS" "$RUNNER_TEMP/existing/$ALIAS_NAME" || {
+              echo "Existing GitHub alias differs; refusing to overwrite it"
+              exit 1
+            }
+            echo "GitHub alias already present with identical content"
+          else
+            gh release upload "$TAG" "$ALIAS" --repo "${{ github.repository }}"
+          fi
+      - name: Add the alias to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          node scripts/publish-gitee.mjs alias --tag "$TAG" --apk "$ALIAS" \
+            --sha256 "$EXPECTED_SHA" --size "$EXPECTED_SIZE"
+      - name: Verify fixed download links
+        run: node scripts/verify-release.mjs --manifest dist/update.json --downloads-only

@@ -66,8 +66,15 @@ test('prepare-dist creates a manifest that matches the Android parser contract',
     `${sha}  library-auto-booker-0.19.0.apk\n`);
 
   const notes = fs.readFileSync(path.join(result.outDir, 'release-notes.md'), 'utf8');
-  assert.match(notes, /Gitee（国内推荐）：https:\/\/gitee\.com\/tester\/cppu-library-auto-booker-release/);
-  assert.match(notes, /GitHub（备用）：https:\/\/github\.com\/whytree222\/cppu-library-auto-booker\/releases\/latest/);
+  assert.match(notes,
+    /Gitee 直接下载（国内推荐）：https:\/\/gitee\.com\/tester\/cppu-library-auto-booker-release\/releases\/download\/latest\/library-auto-booker\.apk/);
+  assert.match(notes,
+    /GitHub 直接下载（备用）：https:\/\/github\.com\/whytree222\/cppu-library-auto-booker\/releases\/latest\/download\/library-auto-booker\.apk/);
+  assert.match(notes, /版本说明：https:\/\/gitee\.com\/tester\/cppu-library-auto-booker-release\/releases\/tag\/v0\.19\.0/);
+  assert.match(notes,
+    /固定文件名 `library-auto-booker\.apk` 与 `library-auto-booker-0\.19\.0\.apk` 内容完全相同，SHA-256 相同/);
+  assert.match(notes, /`Source code \(zip\/tar\.gz\)` 是源码压缩包，不能安装/);
+  assert.match(notes, /保存为 `\.apk\.zip`，删除文件名末尾的 `\.zip` 后再安装，不要解压/);
   assert.match(notes, new RegExp(`SHA-256：\`${sha}\``));
   assert.match(notes, /Android 8\.0 及以上/);
   assert.match(notes, /微信内请点右上角/);
@@ -80,6 +87,7 @@ test('prepare-dist creates a manifest that matches the Android parser contract',
 
 test('strict releases reject an empty giteeOwner but relaxed builds stay usable', async (t) => {
   const { prepareDistribution } = await import('../scripts/prepare-dist.mjs');
+  const { releaseConfig } = await import('../scripts/version.mjs');
   const root = makeRepo(t, { giteeOwner: '' });
   const options = { root, apk: 'fake.apk', publishedAt: '2026-10-25T00:00:00Z' };
   assert.throws(() => prepareDistribution({ ...options, strict: true }), /giteeOwner is empty/);
@@ -89,6 +97,10 @@ test('strict releases reject an empty giteeOwner but relaxed builds stay usable'
     ['https://github.com/whytree222/cppu-library-auto-booker/releases/download/v0.19.0/library-auto-booker-0.19.0.apk']);
   assert.equal(relaxed.manifest.pageUrl,
     'https://github.com/whytree222/cppu-library-auto-booker/releases/tag/v0.19.0');
+
+  const config = releaseConfig(root);
+  assert.equal(config.giteeDownloadUrl, '');
+  assert.deepEqual(config.downloadUrls, [config.githubDownloadUrl]);
 });
 
 test('prepare-dist rejects missing notes, oversized notes and non-APK inputs', async (t) => {
@@ -145,6 +157,14 @@ test('version and distribution files are validated before any publish', async (t
   assert.equal(config.fallbackManifestUrl,
     'https://github.com/whytree222/cppu-library-auto-booker/releases/latest/download/update.json');
   assert.deepEqual(config.apkUrls, [config.giteeApkUrl, config.githubApkUrl]);
+  assert.equal(config.downloadAliasName, 'library-auto-booker.apk');
+  assert.equal(config.giteeDownloadUrl,
+    'https://gitee.com/tester/cppu-library-auto-booker-release/releases/download/latest/library-auto-booker.apk');
+  assert.equal(config.githubDownloadUrl,
+    'https://github.com/whytree222/cppu-library-auto-booker/releases/latest/download/library-auto-booker.apk');
+  assert.deepEqual(config.downloadUrls, [config.giteeDownloadUrl, config.githubDownloadUrl]);
+  assert.ok(!config.apkUrls.includes(config.giteeDownloadUrl));
+  assert.ok(!config.apkUrls.includes(config.githubDownloadUrl));
 
   fs.writeFileSync(path.join(root, 'version.properties'),
     'versionCode=50\nversionName=0.19\nminSupportedVersionCode=50\n');
@@ -156,12 +176,24 @@ test('version and distribution files are validated before any publish', async (t
   assert.throws(() => readDistribution(root), /invalid giteeOwner/);
 });
 
-test('QR code points at the Gitee latest release page and is a real PNG', async (t) => {
+test('QR codes point at both fixed APK URLs and are real PNGs', async (t) => {
   const { makeDownloadQr } = await import('../scripts/make-qr.mjs');
   const root = makeRepo(t);
   const result = await makeDownloadQr({ root, out: 'docs/test-qr.png', size: 256 });
-  assert.equal(result.url, 'https://gitee.com/tester/cppu-library-auto-booker-release/releases/latest');
-  const bytes = fs.readFileSync(result.target);
-  assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-  assert.ok(result.size > 100);
+  assert.equal(result.codes.length, 2);
+  const [gitee, github] = result.codes;
+  assert.equal(gitee.label, 'gitee');
+  assert.equal(gitee.url,
+    'https://gitee.com/tester/cppu-library-auto-booker-release/releases/download/latest/library-auto-booker.apk');
+  assert.equal(path.basename(gitee.target), 'test-qr.png');
+  assert.equal(github.label, 'github');
+  assert.equal(github.url,
+    'https://github.com/whytree222/cppu-library-auto-booker/releases/latest/download/library-auto-booker.apk');
+  assert.equal(path.basename(github.target), 'test-qr-github.png');
+
+  for (const code of result.codes) {
+    const bytes = fs.readFileSync(code.target);
+    assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.ok(code.size > 100);
+  }
 });
