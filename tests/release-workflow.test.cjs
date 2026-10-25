@@ -35,6 +35,11 @@ test('release version comes from the shared version source', () => {
   assert.match(workflow, /node scripts\/verify-release\.mjs/);
 });
 
+test('release accepts either apksigner certificate label', () => {
+  assert.doesNotMatch(workflow, /\^Signer #1 certificate SHA-256 digest:/);
+  assert.match(workflow, /\.\*certificate SHA-256 digest:/);
+});
+
 test('release publishes Gitee first, promotes GitHub, then updates the manifest last', () => {
   const gitee = workflow.indexOf('Publish Gitee release');
   const github = workflow.indexOf('Publish GitHub release');

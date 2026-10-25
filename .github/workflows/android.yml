@@ -112,7 +112,8 @@ jobs:
           [[ -n "$APK" ]] || { echo "Signed release APK not found"; exit 1; }
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$APKSIGNER" verify --print-certs "$APK" | tee "$RUNNER_TEMP/apksigner.txt"
-          CERT=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt" | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          # Newer build-tools label the entry "V2 Signer" instead of "Signer #1".
+          CERT=$(sed -n 's/.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/apksigner.txt" | head -1 | tr -d ':\r' | tr 'A-F' 'a-f')
           [[ -n "$CERT" ]] || { echo "Cannot read signer certificate"; exit 1; }
           [[ -n "${RELEASE_CERT_SHA256:-}" ]] || { echo "Missing repository variable RELEASE_CERT_SHA256"; exit 1; }
           EXPECTED=$(printf '%s' "$RELEASE_CERT_SHA256" | tr -d ':' | tr 'A-F' 'a-f')
