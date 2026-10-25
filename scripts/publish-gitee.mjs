@@ -302,10 +302,12 @@ export async function publishAssets(client, config, release, files, fetchOptions
 }
 
 async function getManifestContent(client, config) {
-  return client.request(
+  const existing = await client.request(
     `${client.repoRoute(config)}/contents/update.json?ref=${encodeURIComponent(config.giteeBranch)}`,
     { allow404: true, retries: 2 }
   );
+  // Gitee answers with an empty array instead of 404 when the path is absent.
+  return Array.isArray(existing) ? null : existing;
 }
 
 function manifestMatches(existing, content) {

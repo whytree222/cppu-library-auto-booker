@@ -107,7 +107,8 @@ function startServer(state) {
         return send(201, asset);
       }
       if (request.method === 'GET' && url.pathname === `${prefix}/contents/update.json`) {
-        if (!state.manifest) return send(404, { message: 'Not Found' });
+        // Gitee returns an empty array rather than 404 for a missing path.
+        if (!state.manifest) return send(200, []);
         return send(200, {
           type: 'file',
           content: state.manifest.toString('base64'),
@@ -260,7 +261,7 @@ test('Gitee release refuses to reuse an asset it cannot verify', async (t) => {
   );
 });
 
-test('manifest publishing creates the file, then is idempotent', async (t) => {
+test('manifest publishing treats Gitee empty array as missing, then is idempotent', async (t) => {
   const { publishGiteeManifest } = await import('../scripts/publish-gitee.mjs');
   const { root, config, client, state, requests } = await setup(t);
 

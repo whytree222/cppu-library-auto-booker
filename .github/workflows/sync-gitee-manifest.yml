@@ -1,0 +1,50 @@
+name: Sync Gitee update manifest
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已发布的 v* tag，例如 v0.19.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee-manifest
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate release tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid tag: $TAG"; exit 1; }
+          node scripts/version.mjs --check-tag "$TAG"
+          node scripts/version.mjs --require-gitee
+      - name: Download released assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+            --pattern '*.apk' --pattern 'update.json' --pattern 'sha256sums.txt' \
+            --dir dist
+          node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('dist/update.json','utf8'));fs.writeFileSync('dist/release-notes.md',m.notes)"
+      - name: Update Gitee raw manifest
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: node scripts/publish-gitee.mjs manifest --dist dist
+      - name: Verify public release
+        run: node scripts/verify-release.mjs --dist dist

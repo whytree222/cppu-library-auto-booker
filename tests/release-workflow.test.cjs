@@ -7,6 +7,19 @@ const workflow = fs.readFileSync(
   path.join(__dirname, '..', '.github', 'workflows', 'android.yml'),
   'utf8'
 );
+const syncWorkflow = fs.readFileSync(
+  path.join(__dirname, '..', '.github', 'workflows', 'sync-gitee-manifest.yml'),
+  'utf8'
+);
+
+test('manifest sync workflow is manual-only and never republishes assets', () => {
+  assert.match(syncWorkflow, /on:\s*\n\s*workflow_dispatch:/);
+  assert.doesNotMatch(syncWorkflow, /^\s{2}(push|pull_request):/m);
+  assert.doesNotMatch(syncWorkflow, /gh release (create|edit|upload|delete)/);
+  assert.match(syncWorkflow, /GITEE_TOKEN: \$\{\{ secrets\.GITEE_TOKEN \}\}/);
+  assert.match(syncWorkflow, /node scripts\/publish-gitee\.mjs manifest/);
+  assert.match(syncWorkflow, /node scripts\/verify-release\.mjs/);
+});
 
 test('release workflow refuses to overwrite existing releases', () => {
   assert.doesNotMatch(workflow, /--clobber/);
