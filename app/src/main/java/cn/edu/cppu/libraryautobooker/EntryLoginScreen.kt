@@ -66,6 +66,8 @@ fun EntryLoginScreen(
     var busy by remember { mutableStateOf(true) }
     var validSession by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf("正在检查登录状态…") }
+    var detailIsError by remember { mutableStateOf(false) }
+    var fieldError by remember { mutableStateOf(false) }
     var active by remember { mutableStateOf(true) }
     val lifecycle = (context as? LifecycleOwner)?.lifecycle
     var foreground by remember { mutableStateOf(lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) ?: true) }
@@ -73,6 +75,13 @@ fun EntryLoginScreen(
     var checkAttempt by remember { mutableStateOf(0) }
     val pausedSinceCheck = remember { booleanArrayOf(false) }
     val preferredSessionCheck = remember { UiSessionRequest() }
+    fun clearInputError() {
+        fieldError = false
+        if (detailIsError) {
+            detail = ""
+            detailIsError = false
+        }
+    }
     fun cancelSessionChecks() { preferredSessionCheck.cancel() }
     fun checkSession(onResult: (String, Long) -> Unit) {
         if (!active || !foreground) return
@@ -116,6 +125,8 @@ fun EntryLoginScreen(
         if (!active || !foreground) return
         busy = false
         validSession = state == "valid"
+        detailIsError = false
+        fieldError = false
         if (validSession && autoEnterValid) {
             onAuthenticated()
             return
@@ -131,6 +142,8 @@ fun EntryLoginScreen(
         if (!foreground) return@LaunchedEffect
         busy = true
         detail = "正在检查登录状态…"
+        detailIsError = false
+        fieldError = false
         checkSession { state, ticket ->
             if (active && state == "expired" && store.enabled && !store.paused) {
                 detail = "登录已过期，正在自动重新登录…"
@@ -138,6 +151,8 @@ fun EntryLoginScreen(
                     if (active && foreground && preferredSessionCheck.isCurrent(ticket)) {
                         busy = false
                         validSession = valid
+                        detailIsError = !valid
+                        fieldError = false
                         detail = if (valid) "自动重新登录成功，可以继续进入应用" else message
                         if (valid && autoEnterValid) onAuthenticated()
                         else gateOnly = false
@@ -150,6 +165,8 @@ fun EntryLoginScreen(
         if (result.resultCode == Activity.RESULT_OK) {
             validSession = true
             busy = false
+            detailIsError = false
+            fieldError = false
             detail = "学校网页登录成功，可以继续；自动重新登录需在此填写账号密码"
             if (autoEnterValid) onAuthenticated()
         } else {
@@ -193,12 +210,20 @@ fun EntryLoginScreen(
             Text("登录", style = MaterialTheme.typography.headlineSmall)
             Text("连接校园网络后登录", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedTextField(username, { username = it }, label = { Text("学校账号") },
-                singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(password, { password = it }, label = { Text("密码") },
-                singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
+            OutlinedTextField(username, { username = it; clearInputError() }, label = { Text("学校账号") },
+                singleLine = true, enabled = !busy, isError = fieldError,
+                modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(password, { password = it; clearInputError() }, label = { Text("密码") },
+                singleLine = true, enabled = !busy, isError = fieldError,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = { Text("默认密码是学号", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+            Text(detail, color = when {
+                detailIsError -> MaterialTheme.colorScheme.error
+                validSession -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            })
             Row(
                 Modifier.fillMaxWidth().toggleable(autoRelogin, enabled = !busy, role = Role.Checkbox) {
                     autoRelogin = it
@@ -211,15 +236,14 @@ fun EntryLoginScreen(
             }
             Text(if (autoRelogin) "勾选后登录成功，将在本机加密保存账号密码。"
                 else "不保存账号密码；登录过期后需要手动登录。", style = MaterialTheme.typography.bodySmall)
-            Text(detail, color = if (validSession) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick = {
                 val error = LoginInput.error(username, password)
-                if (error != null) { detail = error; return@Button }
-                if (AutoLogin.running) { detail = "已有登录正在进行，请稍后重试"; return@Button }
+                if (error != null) { detail = error; detailIsError = true; fieldError = true; return@Button }
+                if (AutoLogin.running) { detail = "已有登录正在进行，请稍后重试"; detailIsError = false; fieldError = false; return@Button }
                 // Opt-out removes previously saved credentials as well as not storing new ones.
                 if (!autoRelogin) {
                     runCatching { store.clear(); store.setPreference(false) }.onFailure {
-                        detail = "无法删除已保存的登录信息，请重试"; return@Button
+                        detail = "无法删除已保存的登录信息，请重试"; detailIsError = true; fieldError = false; return@Button
                     }
                 }
                 val submittedUser = username
@@ -231,6 +255,8 @@ fun EntryLoginScreen(
                 busy = true
                 validSession = false
                 detail = "正在登录并向学校验证…"
+                detailIsError = false
+                fieldError = false
                 val ticket = preferredSessionCheck.begin()
                 AutoLogin.loginWithCredentials(app, submittedUser, submittedPassword) { ok, message ->
                     // This explicit login may verify after the app is backgrounded. Honor its
@@ -242,10 +268,14 @@ fun EntryLoginScreen(
                             busy = false
                             validSession = ok
                             detail = message
+                            detailIsError = !ok
                             if (ok) {
                                 password = ""
                                 if (persistence.isSuccess) onAuthenticated()
-                                else detail = "已登录，但加密保存失败；可取消勾选后继续，本次不会自动重新登录"
+                                else {
+                                    detail = "已登录，但加密保存失败；可取消勾选后继续，本次不会自动重新登录"
+                                    detailIsError = true
+                                }
                             }
                         }
                     }
@@ -257,7 +287,7 @@ fun EntryLoginScreen(
                     // The checkbox applies to a credentials login, not to an account we cannot identify.
                     if (!autoRelogin) {
                         runCatching { store.clear(); store.setPreference(false) }.onFailure {
-                            detail = "无法删除已保存的信息，请重试"; return@Button
+                            detail = "无法删除已保存的信息，请重试"; detailIsError = true; fieldError = false; return@Button
                         }
                     }
                     busy = true
@@ -270,6 +300,7 @@ fun EntryLoginScreen(
             }
             TextButton(onClick = {
                 password = ""
+                clearInputError()
                 // A school-web login may switch accounts; old saved credentials cannot be assumed to match.
                 store.setEnabled(false)
                 store.setPreference(autoRelogin)
@@ -277,8 +308,9 @@ fun EntryLoginScreen(
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("使用学校网页登录") }
             if (store.configured) TextButton(onClick = {
                 runCatching { store.clear(); store.setPreference(autoRelogin) }.onSuccess {
-                    username = ""; password = ""; detail = "已删除保存的账号密码，当前网页会话不受影响"
-                }.onFailure { detail = "删除失败，请重试" }
+                    username = ""; password = ""; detailIsError = false; fieldError = false
+                    detail = "已删除保存的账号密码，当前网页会话不受影响"
+                }.onFailure { detail = "删除失败，请重试"; detailIsError = true; fieldError = false }
             }, enabled = !busy) { Text("删除已保存的账号密码") }
             LoginStatusCard(rememberLoginStatuses(), onCheck = {
                 SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}

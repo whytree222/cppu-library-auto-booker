@@ -18,6 +18,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import cn.edu.cppu.libraryautobooker.EntryLoginScreen
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
 import androidx.lifecycle.Lifecycle
@@ -47,6 +48,15 @@ class EntryLoginUiTest {
         assertFalse(CredentialStore(RuntimeEnvironment.getApplication()).preferredAutoLogin)
         compose.onNodeWithText("最近运行记录").assertDoesNotExist()
         compose.onNodeWithText("每天放号时间").assertDoesNotExist()
+    }
+
+    @Test fun passwordHintSaysDefaultIsStudentIdAndInputErrorClearsOnEdit() {
+        compose.setContent { MaterialTheme { EntryLoginScreen(sessionCheck = { _, callback -> callback("expired") }) {} } }
+        compose.onNodeWithText("默认密码是学号").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("登录并进入应用").performScrollTo().performClick()
+        compose.onNodeWithText("请填写账号和密码").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("密码").performScrollTo().performTextInput("secret")
+        compose.onNodeWithText("请填写账号和密码").assertDoesNotExist()
     }
 
     @Test fun verifiedExistingSessionCanContinueWithoutEnteringPassword() {
