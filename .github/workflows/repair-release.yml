@@ -1,0 +1,126 @@
+name: Repair release from verified artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing v* tag whose signed build succeeded'
+        required: true
+      run_id:
+        description: 'Actions run id that contains the release-dist artifact'
+        required: true
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate tag, version and source run
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" == v* ]] || { echo "Tag must start with v"; exit 1; }
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run_id must be numeric"; exit 1; }
+          git rev-parse "refs/tags/$TAG" >/dev/null
+          node scripts/version.mjs --check-tag "$TAG"
+          node scripts/version.mjs --require-gitee
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify artifact identity and integrity
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          RELEASE_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e "import('./scripts/prepare-dist.mjs').then(({readPreparedDistribution}) => { readPreparedDistribution({dist:'dist'}); console.log('dist manifest and APK hash verified'); })"
+          APK_NAME=$(node scripts/version.mjs --get apkName)
+          APK="dist/$APK_NAME"
+          [[ -f "$APK" ]] || { echo "APK missing from dist"; exit 1; }
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' | sort -V | tail -1)
+          "$SDKMANAGER" 'build-tools;35.0.0' >/dev/null
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs "$APK" | tee "$RUNNER_TEMP/apksigner.txt"
+          CERT=$(sed -n 's/.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/apksigner.txt" | head -1 | tr -d ':\r' | tr 'A-F' 'a-f')
+          [[ -n "$CERT" ]] || { echo "Cannot read signer certificate"; exit 1; }
+          [[ -n "${RELEASE_CERT_SHA256:-}" ]] || { echo "Missing repository variable RELEASE_CERT_SHA256"; exit 1; }
+          EXPECTED=$(printf '%s' "$RELEASE_CERT_SHA256" | tr -d ':' | tr 'A-F' 'a-f')
+          [[ "$CERT" == "$EXPECTED" ]] || { echo "Signer certificate mismatch"; exit 1; }
+          VERSION_CODE=$(node scripts/version.mjs --get versionCode)
+          VERSION_NAME=$(node scripts/version.mjs --get versionName)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)
+          BADGING=$("$AAPT" dump badging "$APK")
+          PKG=$(printf '%s\n' "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)
+          ACTUAL_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/^package:.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)
+          ACTUAL_NAME=$(printf '%s\n' "$BADGING" | sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" | head -1)
+          [[ "$PKG" == "cn.edu.cppu.libraryautobooker" ]] || { echo "Unexpected package: $PKG"; exit 1; }
+          [[ "$ACTUAL_CODE" == "$VERSION_CODE" ]] || { echo "versionCode mismatch: $ACTUAL_CODE != $VERSION_CODE"; exit 1; }
+          [[ "$ACTUAL_NAME" == "$VERSION_NAME" ]] || { echo "versionName mismatch: $ACTUAL_NAME != $VERSION_NAME"; exit 1; }
+      - name: Create GitHub draft release
+        id: github_draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to modify it"
+            exit 1
+          fi
+          APK_NAME=$(node scripts/version.mjs --get apkName)
+          ALIAS_NAME=$(node scripts/version.mjs --get downloadAliasName)
+          APK="dist/$APK_NAME"
+          ALIAS="$RUNNER_TEMP/$ALIAS_NAME"
+          [[ -f "$APK" ]] || { echo "APK missing from dist"; exit 1; }
+          cp "$APK" "$ALIAS"
+          cmp "$APK" "$ALIAS"
+          gh release create "$TAG" "$APK" "$ALIAS" dist/update.json dist/sha256sums.txt \
+            --draft --verify-tag \
+            --title "图书馆自动预约 $TAG" \
+            --notes-file dist/release-notes.md
+          echo "created=true" >> "$GITHUB_OUTPUT"
+      - name: Publish Gitee release
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: node scripts/publish-gitee.mjs release --dist dist --tag "$TAG"
+      - name: Verify Gitee fixed download
+        run: |
+          URL=$(node scripts/version.mjs --get giteeDownloadUrl)
+          node scripts/verify-release.mjs --manifest dist/update.json --download-url "$URL"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release edit "$TAG" --draft=false --latest
+      - name: Update Gitee raw manifest
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: node scripts/publish-gitee.mjs manifest --dist dist
+      - name: Verify public release
+        run: node scripts/verify-release.mjs --dist dist
+      - name: Delete draft release after failure
+        if: failure() && steps.github_draft.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
+            gh release delete "$TAG" --yes
+          fi

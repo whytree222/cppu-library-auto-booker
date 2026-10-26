@@ -196,7 +196,8 @@ async function uploadAsset(client, config, releaseId, file) {
   form.append('file', new Blob([fs.readFileSync(file.path)]), file.name);
   return client.request(
     `${client.repoRoute(config)}/releases/${encodeURIComponent(releaseId)}/attach_files`,
-    { method: 'POST', form, retries: 0, timeoutMs: 180_000 }
+    // OCR-enabled APKs are ~51 MB; CI-to-Gitee uploads regularly exceed 3 minutes.
+    { method: 'POST', form, retries: 0, timeoutMs: 600_000 }
   );
 }
 
@@ -204,7 +205,7 @@ async function uploadAsset(client, config, releaseId, file) {
 // recognise an already published file is to download it and hash it.
 async function downloadAssetDigest(url, {
   fetchImpl = globalThis.fetch,
-  timeoutMs = 180_000,
+  timeoutMs = 600_000,
   attempts = 1
 } = {}) {
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {

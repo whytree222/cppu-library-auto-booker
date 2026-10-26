@@ -177,7 +177,7 @@ npm test
 
 截至 2026-10-26 的 v0.20.0 发布基线：
 
-- Node：**438 个测试全部通过**；
+- Node：**440 个测试全部通过**；
 - Android JVM + Robolectric：**311 个测试全部通过**。
 
 v0.19.1 发布时的基线是 Node 302、Android 184。数量会随功能增长，不是固定目标；判断标准是“全绿 + 覆盖了本次改动”。
@@ -281,6 +281,7 @@ v0.19.1 发布时的基线是 Node 302、Android 184。数量会随功能增长�
 | `.github/workflows/android.yml` | 测试、签名构建、Gitee/GitHub 发布 | 不要把版本号硬编码进 workflow |
 | `.github/workflows/sync-gitee-manifest.yml` | 手动修复 Gitee raw manifest | 只同步 manifest，不创建/修改 Release |
 | `.github/workflows/backfill-download-alias.yml` | 手动补固定别名 | 只增不改；已存在且内容相同才复用 |
+| `.github/workflows/repair-release.yml` | 发布失败后复用已签名产物修复发布 | 只能手动触发；校验 tag、版本、签名和 dist 哈希；不重新构建、不移动 tag、不覆盖已有不同内容 |
 | `version.properties` | 版本唯一真相源 | `versionCode` 必须递增；tag 必须匹配 |
 | `distribution.properties` | 公开分发配置 | 只放公开信息；不放 token/密码 |
 | `release-notes/<version>.md` | 每个版本的发布说明 | 最多 8000 字符；不含密钥/账号/内部路径 |
@@ -561,6 +562,7 @@ Repository Variable：
 - **Gitee 已发布，GitHub 未公开**：检查 Gitee 固定链接和资产；Gitee 发布脚本是幂等的，只接受内容相同的已有资产，不会覆盖不同内容。
 - **manifest 过期或缺失**：手动运行 `Sync Gitee update manifest`，输入对应 `v*` tag；它只下载已发布资产并更新 Gitee raw manifest，不创建/修改 Release。
 - **固定别名缺失**：手动运行 `Backfill fixed download alias`，输入对应 tag；它只新增固定别名并校验哈希，不创建、修改或删除 Release，也不能覆盖已有不同内容的资产。
+- **Gitee 附件上传超时/发布任务在构建成功后失败**：手动运行 `Repair release from verified artifact`，输入对应 tag 和包含 `release-dist` 的 run id；它复用已签名产物并重新走发布，不重新构建、不移动 tag。发布脚本对 51 MB APK 的上传/校验超时是 10 分钟。
 - **GitHub Release 已存在但需要修复**：工作流会拒绝修改已有 Release。不要用 `--clobber` 或手动删除历史 Release；由维护者决定是否发布新版本。
 
 ### 8.4 客户端更新失败
