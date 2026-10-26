@@ -10,6 +10,7 @@
   },
   "devDependencies": {
     "jsdom": "26.1.0",
-    "qrcode": "1.5.4"
+    "qrcode": "1.5.4",
+    "undici": "^6.21.0"
   }
 }

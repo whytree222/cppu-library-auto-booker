@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
+import { Agent, fetch as undiciFetch } from 'undici';
 import {
   MAX_APK_BYTES,
   inspectApk,
@@ -13,6 +14,14 @@ import { requireGitee } from './version.mjs';
 
 export const DEFAULT_API_BASE = 'https://gitee.com/api/v5';
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+// Gitee uploads of the ~51 MB OCR-enabled APK take several minutes; node fetch
+// defaults to a 300-second header/body timeout that cuts the transfer off.
+const ASSET_TIMEOUT_MS = 900_000;
+const giteeDispatcher = new Agent({
+  connectTimeout: 30_000,
+  headersTimeout: ASSET_TIMEOUT_MS,
+  bodyTimeout: ASSET_TIMEOUT_MS
+});
 
 export class GiteeError extends Error {
   constructor(message, { status = 0 } = {}) {
@@ -40,7 +49,8 @@ export class GiteeClient {
   constructor({
     baseUrl = process.env.GITEE_API_BASE || DEFAULT_API_BASE,
     token = process.env.GITEE_TOKEN,
-    fetchImpl = globalThis.fetch,
+    fetchImpl = undiciFetch,
+    dispatcher = giteeDispatcher,
     timeoutMs = 30_000
   } = {}) {
     if (!token) throw new Error('Missing GITEE_TOKEN');
@@ -48,6 +58,7 @@ export class GiteeClient {
     this.baseUrl = String(baseUrl).replace(/\/+$/, '');
     this.token = token;
     this.fetchImpl = fetchImpl;
+    this.dispatcher = dispatcher;
     this.timeoutMs = timeoutMs;
   }
 
@@ -83,6 +94,7 @@ export class GiteeClient {
           method,
           headers,
           body,
+          dispatcher: this.dispatcher,
           signal: AbortSignal.timeout(timeoutMs)
         });
       } catch (error) {
@@ -197,15 +209,16 @@ async function uploadAsset(client, config, releaseId, file) {
   return client.request(
     `${client.repoRoute(config)}/releases/${encodeURIComponent(releaseId)}/attach_files`,
     // OCR-enabled APKs are ~51 MB; CI-to-Gitee uploads regularly exceed 3 minutes.
-    { method: 'POST', form, retries: 0, timeoutMs: 600_000 }
+    { method: 'POST', form, retries: 0, timeoutMs: ASSET_TIMEOUT_MS }
   );
 }
 
 // Gitee release assets expose no size or checksum, so the only reliable way to
 // recognise an already published file is to download it and hash it.
 async function downloadAssetDigest(url, {
-  fetchImpl = globalThis.fetch,
-  timeoutMs = 600_000,
+  fetchImpl = undiciFetch,
+  dispatcher = giteeDispatcher,
+  timeoutMs = ASSET_TIMEOUT_MS,
   attempts = 1
 } = {}) {
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
@@ -220,6 +233,7 @@ async function downloadAssetDigest(url, {
           'User-Agent': 'cppu-library-auto-booker-release'
         },
         redirect: 'follow',
+        dispatcher,
         signal: AbortSignal.timeout(timeoutMs)
       });
       if (!response.ok) throw new Error(`download failed with HTTP ${response.status}`);
