@@ -14,9 +14,9 @@ import { requireGitee } from './version.mjs';
 
 export const DEFAULT_API_BASE = 'https://gitee.com/api/v5';
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
-// Gitee uploads of the ~51 MB OCR-enabled APK take several minutes; node fetch
-// defaults to a 300-second header/body timeout that cuts the transfer off.
-const ASSET_TIMEOUT_MS = 900_000;
+// Gitee uploads of the ~51 MB OCR-enabled APK can take 15+ minutes from CI;
+// both the AbortSignal and node fetch header/body timers must outlast it.
+const ASSET_TIMEOUT_MS = 3_600_000;
 const giteeDispatcher = new Agent({
   connectTimeout: 30_000,
   headersTimeout: ASSET_TIMEOUT_MS,

@@ -562,7 +562,7 @@ Repository Variable：
 - **Gitee 已发布，GitHub 未公开**：检查 Gitee 固定链接和资产；Gitee 发布脚本是幂等的，只接受内容相同的已有资产，不会覆盖不同内容。
 - **manifest 过期或缺失**：手动运行 `Sync Gitee update manifest`，输入对应 `v*` tag；它只下载已发布资产并更新 Gitee raw manifest，不创建/修改 Release。
 - **固定别名缺失**：手动运行 `Backfill fixed download alias`，输入对应 tag；它只新增固定别名并校验哈希，不创建、修改或删除 Release，也不能覆盖已有不同内容的资产。
-- **Gitee 附件上传超时/发布任务在构建成功后失败**：手动运行 `Repair release from verified artifact`，输入对应 tag 和包含 `release-dist` 的 run id；它复用已签名产物并重新走发布，不重新构建、不移动 tag。发布脚本使用 15 分钟的 Gitee 上传/校验超时，绕过 Node fetch 默认 300 秒限制。
+- **Gitee 附件上传超时/发布任务在构建成功后失败**：手动运行 `Repair release from verified artifact`，输入对应 tag 和包含 `release-dist` 的 run id；它复用已签名产物并重新走发布，不重新构建、不移动 tag。发布脚本使用 1 小时的 Gitee 大文件上传/校验超时，绕过 Node fetch 默认 300 秒限制；51 MB APK 从 CI 上传到 Gitee 实测约 13 分钟。
 - **GitHub Release 已存在但需要修复**：工作流会拒绝修改已有 Release。不要用 `--clobber` 或手动删除历史 Release；由维护者决定是否发布新版本。
 
 ### 8.4 客户端更新失败
