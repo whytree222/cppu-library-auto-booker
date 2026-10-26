@@ -116,6 +116,24 @@ test('native activation refuses unsupported viewport, nonfinite rectangles, hidd
   });
 });
 
+test('a blocked measurement keeps the one-shot guard armed so late input cannot submit behind recovery',()=>{
+  useActivation(f=>{
+    f.api.prepare(f.credentials);assert.equal(f.api.prepareActivation().kind,'activation-ready');
+    f.w.visualViewport.scale=1.5;
+    assert.equal(f.api.activationPoint().detailCode,'viewport-ambiguous');
+    // Geometry failed, but the guard was armed before measuring: a late click after the
+    // window closes is vetoed instead of submitting while native code probes recovery.
+    const now=f.w.Date.now();f.w.Date.now=()=>now+2100;
+    f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    assert.equal(f.state.validations,0);assert.equal(f.state.proxyClicks,0);
+    assert.equal(f.state.posted,0);
+    assert.equal(f.api.activationOutcome().reason,'window-closed');
+    // The untouched form may still be submitted once through the school's handler.
+    assert.equal(f.api.schoolHandlerSubmit().kind,'submitted');
+    assert.equal(f.state.posted,1);
+  });
+});
+
 test('native activation capture guard blocks changed fields, changed CAPTCHA, wrong target or changed action before original handlers',()=>{
   for(const mutate of [
     f=>{f.pass.value='manual';f.pass.dispatchEvent(new f.w.Event('input',{bubbles:true}));},

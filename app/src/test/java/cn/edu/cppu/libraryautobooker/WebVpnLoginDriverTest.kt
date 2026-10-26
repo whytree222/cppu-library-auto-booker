@@ -431,12 +431,11 @@ class WebVpnLoginDriverTest {
         }
     }
 
-    @Test fun invalidOrChangedActivationTargetNeverDispatchesInputOrPausesThePassword() {
+    @Test fun unrecoverableActivationTargetNeverDispatchesInputOrPausesThePassword() {
         val points = listOf(
             """{"kind":"blocked"}""",
-            """{"kind":"ready","x":"NaN","y":1000,"viewportWidth":1080,"viewportHeight":1920}""",
-            """{"kind":"ready","x":540,"y":1000,"viewportWidth":0,"viewportHeight":1920}""",
-            """{"kind":"ready","x":1080,"y":1000,"viewportWidth":1080,"viewportHeight":1920}"""
+            """{"kind":"blocked","detailCode":"button-changed"}""",
+            """{"kind":"stopped"}"""
         )
         for (point in points) Fixture().use { f ->
             f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
@@ -449,6 +448,56 @@ class WebVpnLoginDriverTest {
             assertFalse(f.sso.paused); assertFalse(f.library.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
             assertTrue(f.probes.isEmpty()); assertEquals(1, f.view.activationCount())
+            assertFalse(f.view.calls.any { it.script.contains("?.schoolHandlerSubmit()") })
+        }
+    }
+
+    @Test fun measurementFailureUsesTheSchoolHandlerOnceWithoutNativeInputOrPause() {
+        val points = listOf(
+            """{"kind":"blocked","detailCode":"viewport-ambiguous"}""",
+            """{"kind":"blocked","detailCode":"button-obscured"}""",
+            """{"kind":"blocked","detailCode":"button-not-visible"}""",
+            """{"kind":"blocked","detailCode":"button-not-interactive"}""",
+            """{"kind":"ready","x":"NaN","y":1000,"viewportWidth":1080,"viewportHeight":1920}""",
+            """{"kind":"ready","x":540,"y":1000,"viewportWidth":0,"viewportHeight":1920}""",
+            """{"kind":"ready","x":1080,"y":1000,"viewportWidth":1080,"viewportHeight":1920}"""
+        )
+        for (point in points) Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerActivationPoint(point)
+            assertTrue(f.view.touches.isEmpty())
+            assertTrue(f.statuses.last().contains("未发送登录触控"))
+            f.answerProbe("vpn_login_required", "expired")
+            f.answerSchoolHandler("submitted", "school-handler-submit-observed")
+            assertEquals(1, f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
+            assertTrue(f.statuses.any { it.contains("学校自身校验处理器") })
+            assertTrue(f.results.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertFalse(f.sso.paused); assertFalse(f.library.paused)
+            assertTrue(f.view.touches.isEmpty())
+            assertTrue(f.view.navigations.isEmpty())
+        }
+    }
+
+    @Test fun measurementFailureWhoseHandlerIsUnavailableStopsWithoutPausingThePassword() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerActivationPoint("""{"kind":"blocked","detailCode":"button-obscured"}""")
+            f.answerProbe("vpn_login_required", "expired")
+            f.answerSchoolHandler("blocked", "school-handler-unavailable")
+            f.answerRetire("blocked")
+            assertEquals(1, f.results.size)
+            assertTrue(f.results.single().detail.contains("不能确认未提交"))
+            assertFalse(f.sso.paused); assertFalse(f.library.paused)
+            assertTrue(f.view.touches.isEmpty())
+            assertTrue(f.view.navigations.isEmpty())
+            assertEquals(1, f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
         }
     }
 
@@ -479,7 +528,7 @@ class WebVpnLoginDriverTest {
         }
     }
 
-    @Test fun zeroSizedWebViewStopsBeforeDispatchingAnyInput() {
+    @Test fun zeroSizedWebViewUsesTheSchoolHandlerWithoutNativeInputOrPause() {
         Fixture().use { f ->
             f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
             f.view.answerFirst({ it.startsWith("JSON.stringify(window.SchoolSsoAutoLogin?.prepareActivation()") },
@@ -487,8 +536,16 @@ class WebVpnLoginDriverTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
             f.view.right = 0; f.view.bottom = 0
             f.answerActivationPoint()
-            assertTrue(f.view.touches.isEmpty()); assertFalse(f.sso.paused)
-            assertEquals(1, f.results.size)
+            assertTrue(f.view.touches.isEmpty())
+            assertTrue(f.statuses.last().contains("invalid-point"))
+            f.answerProbe("vpn_login_required", "expired")
+            f.answerSchoolHandler("submitted", "school-handler-submit-observed")
+            assertEquals(1, f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
+            assertFalse(f.sso.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertTrue(f.view.touches.isEmpty())
         }
     }
 

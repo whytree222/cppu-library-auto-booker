@@ -336,6 +336,9 @@
     const info=binding.info;
     if (info.form!==activation.info.form || info.button!==activation.info.button || !visible(info.button))
       return result('blocked','button-changed');
+    // Arm before geometry checks: a blocked measurement leaves native code deciding
+    // whether the school handler may submit, and this document must stay guarded.
+    if (!activation.armed) armGuards(info, activation);
     const width=window.innerWidth, height=window.innerHeight, viewport=window.visualViewport;
     if (![width,height].every(n=>Number.isFinite(n)&&n>0&&n<100000) ||
         (viewport && (!Number.isFinite(viewport.scale) || Math.abs(viewport.scale-1)>0.01 ||
@@ -357,7 +360,6 @@
       if(hit===info.button||info.button.contains(hit)){point={x,y};break;}
     }
     if(!point)return result('blocked','button-obscured');
-    if (!activation.armed) armGuards(info, activation);
     return {...result('ready','original-button-point'),x:point.x,y:point.y,viewportWidth:width,viewportHeight:height};
   }
   function activationOutcome() {

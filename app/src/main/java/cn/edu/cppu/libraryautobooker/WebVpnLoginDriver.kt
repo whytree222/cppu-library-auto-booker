@@ -354,12 +354,30 @@ class WebVpnLoginDriver internal constructor(
                 val y = point.optDouble("y", Double.NaN)
                 val width = point.optDouble("viewportWidth", Double.NaN)
                 val height = point.optDouble("viewportHeight", Double.NaN)
-                if (point.optString("kind") != "ready" || !activationCurrent(id, call, url) ||
-                    !x.isFinite() || !y.isFinite() || !width.isFinite() || !height.isFinite() ||
-                    width <= 0.0 || height <= 0.0 || x <= 0.0 || y <= 0.0 || x >= width || y >= height ||
-                    view.width <= 0 || view.height <= 0) {
+                if (!activationCurrent(id, call, url)) {
                     ssoSubmitted = false
-                    fail("原登录按钮定位或当前表单校验未通过，未发送登录触控；请核对页面", "vpn_login_required", "expired", pause = null)
+                    fail("登录页面或账号设置在触控前发生变化，未触发学校登录按钮", "vpn_login_required", "expired", pause = null)
+                    return@evaluate
+                }
+                val ready = point.optString("kind") == "ready"
+                val usable = x.isFinite() && y.isFinite() && width.isFinite() && height.isFinite() &&
+                    width > 0.0 && height > 0.0 && x > 0.0 && y > 0.0 && x < width && y < height &&
+                    view.width > 0 && view.height > 0
+                if (!ready || !usable) {
+                    val detail = if (ready) "invalid-point" else point.optString("detailCode")
+                    if (ready || detail in measurementBlockCodes) {
+                        // No touch exists yet, so this run provably sent no submission.
+                        // A local measurement failure must not end the login while the
+                        // school's own handler can still submit this untouched document.
+                        onStatus("未能定位可安全点击的学校登录按钮（$detail），未发送登录触控；正在只读核对登录状态…")
+                        checkBeforePageRecovery(id, call, url, detail,
+                            JSONObject().put("kind", "activation-observed")
+                                .put("detailCode", "activation-blocked").put("reason", "measure-$detail"))
+                    } else {
+                        ssoSubmitted = false
+                        fail("原登录按钮定位或当前表单校验未通过（${detail.ifEmpty { "unknown" }}），未发送登录触控；请核对页面",
+                            "vpn_login_required", "expired", pause = null)
+                    }
                     return@evaluate
                 }
                 if (loginTapAttempts >= 3) {
@@ -443,12 +461,20 @@ class WebVpnLoginDriver internal constructor(
      * that appeared over the previous point no longer hides it), then fall back to the
      * school's own inline handler plus a standard submitter. Both are used at most once
      * per submission round, on the same document, and only for verdicts that prove no
-     * click and no submission ever reached the school.
+     * click and no submission ever reached the school. A measurement-only failure has
+     * no gesture at all, so it skips the re-arm and goes straight to the handler.
      */
     private fun retryActivationLocally(id: Long, call: Long, url: String, failureCode: String, outcome: JSONObject, result: SessionChecker.Result) {
         if (!activationCurrent(id, call, url)) return
         val verdict = outcome.optString("detailCode")
         val reason = outcome.optString("reason")
+        if (verdict == "activation-blocked" && reason.startsWith("measure-")) {
+            // The point was never measured and no gesture was dispatched. Re-measuring
+            // the same viewport would fail again, so the school's own handler is the one
+            // safe way to submit this untouched document.
+            schoolHandlerFallback(id, call, url, failureCode, result, provenUnsent = true)
+            return
+        }
         val provenMiss = verdict == "activation-unobserved" ||
             (verdict == "activation-blocked" && reason in setOf("point-miss", "click-off-target"))
         if (!provenMiss) {
@@ -480,16 +506,20 @@ class WebVpnLoginDriver internal constructor(
     /**
      * The last-resort engine. It still runs the school's own validator/RSA through the
      * button's original inline handler, so it is not a re-implementation of the school
-     * login; it is only used when the native gesture provably produced no event at all.
+     * login; it is only used when the native gesture provably produced no event at all,
+     * or when the button could not be measured and no gesture was dispatched.
      */
-    private fun schoolHandlerFallback(id: Long, call: Long, url: String, failureCode: String, result: SessionChecker.Result) {
+    private fun schoolHandlerFallback(id: Long, call: Long, url: String, failureCode: String,
+        result: SessionChecker.Result, provenUnsent: Boolean = false) {
         if (!activationCurrent(id, call, url)) return
         if (ssoFallbackCall == call) {
-            restartUnsubmittedPage(id, call, url, failureCode, result)
+            restartUnsubmittedPage(id, call, url, failureCode, result, pauseWhenUnprovable = !provenUnsent)
             return
         }
         ssoFallbackCall = call
-        onStatus("原生触控未触发学校按钮，正在改用学校自身校验处理器提交一次（不代表成功）…")
+        onStatus(if (provenUnsent)
+            "未能定位学校原登录按钮，未发送登录触控；正在改用学校自身校验处理器提交一次（不代表成功）…"
+        else "原生触控未触发学校按钮，正在改用学校自身校验处理器提交一次（不代表成功）…")
         evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.schoolHandlerSubmit() || {kind:'stopped'})", id) { answer ->
             if (!activationCurrent(id, call, url)) return@evaluate
             when (answer.optString("kind")) {
@@ -497,25 +527,39 @@ class WebVpnLoginDriver internal constructor(
                     onStatus("已改用学校自身校验处理器提交统一认证，正在等待学校确认登录（不代表成功）")
                     verifyLater(id, Kind.SSO, call)
                 }
-                "blocked" -> when (answer.optString("detailCode")) {
+                "blocked" -> when (val code = answer.optString("detailCode")) {
                     // Nothing was sent by any of these, so the document is still an
                     // unsubmitted one and the conservative restart path may continue.
                     "school-handler-unavailable", "browser-validation-rejected", "school-validation-rejected" ->
-                        restartUnsubmittedPage(id, call, url, failureCode, result)
-                    else -> fail("未能安全改用学校自身处理器提交（${answer.optString("detailCode")}）；已停止，不重复提交，请核对学校页面",
+                        restartUnsubmittedPage(id, call, url, failureCode, result, pauseWhenUnprovable = !provenUnsent)
+                    "activation-may-have-submitted" -> fail("未能安全改用学校自身处理器提交（$code）；已停止，不重复提交，请核对学校页面",
+                        "vpn_login_required", "expired", Kind.SSO)
+                    else -> {
+                        // No touch was dispatched, so a handler refusal never implicates the
+                        // saved password.
+                        fail("未能安全改用学校自身处理器提交（$code）；${if (provenUnsent) "未发送登录触控，未判定账号错误" else "已停止，不重复提交"}，请核对学校页面",
+                            "vpn_login_required", "expired", if (provenUnsent) null else Kind.SSO)
+                    }
+                }
+                "waiting", "manual" -> {
+                    if (provenUnsent)
+                        fail("未能安全改用学校自身处理器提交（${answer.optString("detailCode")}）；未发送登录触控，未判定账号错误，请核对学校页面",
+                            "vpn_login_required", "expired", pause = null)
+                    else fail("学校自身处理器提交结果不明；已停止，不重复提交，请核对学校页面",
                         "vpn_login_required", "expired", Kind.SSO)
                 }
-                else -> fail("学校自身处理器提交结果不明；已停止，不重复提交，请核对学校页面", "vpn_login_required", "expired", Kind.SSO)
             }
         }
     }
 
-    private fun restartUnsubmittedPage(id: Long, call: Long, url: String, failureCode: String, result: SessionChecker.Result) {
+    private fun restartUnsubmittedPage(id: Long, call: Long, url: String, failureCode: String,
+        result: SessionChecker.Result, pauseWhenUnprovable: Boolean = true) {
         if (!activationCurrent(id, call, url)) return
         evaluate("JSON.stringify(window.SchoolSsoAutoLogin?.abandonUnsubmittedActivation() || {kind:'blocked'})", id) { guard ->
             if (!activationCurrent(id, call, url)) return@evaluate
             if (guard.optString("kind") != "ready") {
-                fail("页面已有事件、手动操作、验证码变化或学校反馈，不能确认未提交；已停止重新开始（$failureCode）", result.state, result.vpnAuthState, Kind.SSO)
+                fail("页面已有事件、手动操作、验证码变化或学校反馈，不能确认未提交；已停止重新开始（$failureCode）",
+                    result.state, result.vpnAuthState, if (pauseWhenUnprovable) Kind.SSO else null)
                 return@evaluate
             }
             // Proven no submission and the old DOM is now closed to late input.
@@ -683,6 +727,11 @@ class WebVpnLoginDriver internal constructor(
     }
 
     companion object {
+        // Local localization failures prove that no touch was dispatched. They are
+        // handled by the school's own handler instead of a hard stop.
+        private val measurementBlockCodes = setOf(
+            "viewport-ambiguous", "button-obscured", "button-not-visible", "button-not-interactive")
+
         fun isPortal(url: String?): Boolean = runCatching {
             val uri = java.net.URI(url ?: return@runCatching false)
             uri.scheme == "https" && uri.host == "webvpn.cppu.edu.cn" && uri.userInfo == null && uri.port in listOf(-1,443) &&
