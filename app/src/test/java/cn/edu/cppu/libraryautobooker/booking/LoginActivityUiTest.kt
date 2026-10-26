@@ -30,7 +30,21 @@ class LoginActivityUiTest {
         assertEquals(LibraryRoute.DIRECT.url("/login"), loadedUrl(webvpn = false))
     }
 
-    @Test fun webVpnLoginLoadsOnlyTheProxiedLibraryPage() {
-        assertEquals(LibraryRoute.WEBVPN.url("/login"), loadedUrl(webvpn = true))
+    @Test fun webVpnLoginUsesNativeFormWithoutCreatingTheSchoolWebView() {
+        val oldSession = cn.edu.cppu.libraryautobooker.WebVpnNativeForm.sessionFactory
+        val oldWorker = cn.edu.cppu.libraryautobooker.WebVpnNativeForm.workerFactory
+        cn.edu.cppu.libraryautobooker.WebVpnNativeForm.sessionFactory = { cn.edu.cppu.libraryautobooker.network.NativeLoginFixture().client }
+        cn.edu.cppu.libraryautobooker.WebVpnNativeForm.workerFactory = { java.util.concurrent.Executor { it.run() } }
+        val controller = Robolectric.buildActivity(LoginActivity::class.java,
+            Intent(RuntimeEnvironment.getApplication(), LoginActivity::class.java).putExtra("webvpn", true)).setup()
+        try {
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            val field = LoginActivity::class.java.getDeclaredField("webView").apply { isAccessible = true }
+            assertNull(field.get(controller.get()))
+        } finally {
+            controller.pause().stop().destroy()
+            cn.edu.cppu.libraryautobooker.WebVpnNativeForm.sessionFactory = oldSession
+            cn.edu.cppu.libraryautobooker.WebVpnNativeForm.workerFactory = oldWorker
+        }
     }
 }

@@ -115,10 +115,19 @@ object SessionChecker {
                 return Result("vpn_login_required", "学校要求重新进行统一认证，可使用独立保存的 WebVPN 账号恢复", vpnAuthState = "expired")
             if (uri?.scheme == "https" && uri.userInfo == null &&
                 uri.host == "webvpn.cppu.edu.cn" && uri.path.orEmpty().trimEnd('/') == "/login")
-                return Result("vpn_login_required", "WebVPN 要求重新统一认证，请打开网页登录完成认证（可本机识别验证码）", vpnAuthState = "expired")
+                return Result("vpn_login_required", "WebVPN 要求重新统一认证，请打开应用内登录并手动输入验证码", vpnAuthState = "expired")
             return Result("unknown", "WebVPN 返回未识别的跳转，无法确认两层登录状态")
         }
         if (route == LibraryRoute.WEBVPN && code == 200) {
+            // The WebVPN proxy answers proxied requests without a WebVPN session with its
+            // own JSON envelope, not the library's ReturnValue response. This is not a
+            // malformed school reply: it means the outer VPN login must be renewed.
+            val vpnSessionEnded = runCatching {
+                val json = JSONObject(body)
+                !json.has("ReturnValue") && json.opt("success") == false && json.optString("url") == "/login"
+            }.getOrDefault(false)
+            if (vpnSessionEnded)
+                return Result("vpn_login_required", "WebVPN 会话已结束，需要重新完成统一认证", vpnAuthState = "expired")
             // A login HTML page is not successful authentication just because HTTP is 200.
             if (Regex("<form[^>]+id=[\"']fromuser[\"']", RegexOption.IGNORE_CASE).containsMatchIn(body) &&
                 Regex("<input[^>]+id=[\"']passwd[\"']", RegexOption.IGNORE_CASE).containsMatchIn(body))

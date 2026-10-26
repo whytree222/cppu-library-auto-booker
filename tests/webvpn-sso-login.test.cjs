@@ -45,8 +45,8 @@ function feedback(f, text, id = 'msg1', parent = f.w.document.body) {
   parent.appendChild(node); return node;
 }
 
-function useActivation(fn) {
-  use({proxy:true,remember:true}, f=>{
+function useActivation(fn, options={proxy:true,remember:true}) {
+  use(options, f=>{
     const {w,state}=f, button=w.document.querySelector('#passbutton'), form=w.document.querySelector('#fm1');
     // Exact public WebVPN-rewritten attribute; its click handler remains the owner
     // of proxy processing and the school's original validation/RSA.
@@ -210,7 +210,7 @@ test('manual submit before the reserved click takes over and blocks the later na
 // Second fixture: the reserved native gesture is skipped entirely, so the button's own
 // handler and a working standard submitter exist. Used only for the fallback engine.
 function useHandlerActivation(fn, options = {}) {
-  use({proxy:true,remember:true}, f=>{
+  use({proxy:true,remember:true,...options}, f=>{
     const {w,state}=f, button=w.document.querySelector('#passbutton'), form=w.document.querySelector('#fm1');
     button.setAttribute('onclick', options.rewritten
       ? 'var vpn_return;eval(vpn_rewrite_js((function () { return checkPassLogin(); }).toString().slice(14, -2), 2));return vpn_return;'
@@ -298,6 +298,30 @@ test('school-handler fallback needs the school own handler, valid constraints an
     assert.equal(f.state.requests,0);assert.equal(f.state.posted,0);
   },{validationDenied:true});
 });
+
+test('school-handler fallback restores the exact proxied submit target after school validation strips it',()=>useHandlerActivation(f=>{
+  Object.defineProperty(f.form,'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
+  f.api.prepare(f.credentials);
+  assert.equal(f.button.getAttribute('formaction'),`https://webvpn.cppu.edu.cn${prefix}/tpass/login`);
+  assert.equal(f.api.prepareActivation().kind,'activation-ready');
+  f.api.activationPoint();
+  const validate=f.w.checkPassLogin;
+  f.w.checkPassLogin=()=>{const ok=validate();f.button.removeAttribute('formaction');return ok;};
+  const result=f.api.schoolHandlerSubmit();
+  assert.equal(result.kind,'submitted');
+  assert.equal(f.button.getAttribute('formaction'),`https://webvpn.cppu.edu.cn${prefix}/tpass/login`);
+  assert.equal(f.state.validations,1);assert.equal(f.state.requests,1);assert.equal(f.state.posted,1);
+},{action:'/tpass/login'}));
+
+test('school-handler fallback never submits to a submitter target retargeted during school validation',()=>useHandlerActivation(f=>{
+  Object.defineProperty(f.form,'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
+  f.api.prepare(f.credentials);f.api.prepareActivation();f.api.activationPoint();
+  const validate=f.w.checkPassLogin;
+  f.w.checkPassLogin=()=>{const ok=validate();f.button.setAttribute('formaction','https://attacker.example/tpass/login');return ok;};
+  const result=f.api.schoolHandlerSubmit();
+  assert.equal(result.kind,'blocked');assert.equal(result.detailCode,'form-changed-before-submit');
+  assert.equal(f.state.requests,0);assert.equal(f.state.posted,0);
+},{action:'/tpass/login'}));
 
 test('a reserved gesture that provably missed the button may be re-armed, while every other closure stays closed',()=>{
   useActivation(f=>{
@@ -621,13 +645,37 @@ test('school root-relative action is normalized before either credential is writ
   assert.equal(action.search,'?execution=fixture-execution');
   assert.equal(f.api.submit().kind,'submitted'); assert.equal(f.state.posted,1); assert.equal(f.state.encrypted,true);
 }));
-test('root-relative action attribute supports the WebVPN original upstream getter without changing it',()=>use({proxy:true,action:'/tpass/login'},f=>{
-  const form=f.w.document.querySelector('form');
-  Object.defineProperty(form,'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
+test('root-relative action keeps the WebVPN original getter while the submitter binds the proxied target',()=>useActivation(f=>{
+  Object.defineProperty(f.form,'action',{get:()=> 'https://sso.cppu.edu.cn/tpass/login'});
   assert.equal(f.api.prepare(f.credentials).kind,'prepared');
-  assert.equal(form.getAttribute('action'),'/tpass/login');
-  assert.equal(f.api.submit().kind,'submitted'); assert.equal(f.state.posted,1);
-}));
+  // wengine rewrites the form action to root-relative (the portal would receive a plain
+  // submit), so the original submitter carries the exact proxied SSO target instead.
+  assert.equal(f.form.getAttribute('action'),'/tpass/login');
+  assert.equal(f.button.getAttribute('formaction'),`https://webvpn.cppu.edu.cn${prefix}/tpass/login`);
+  assert.equal(f.api.prepareActivation().kind,'activation-ready');
+  assert.equal(f.api.activationPoint().kind,'ready');
+  let submitter=null;
+  f.form.addEventListener('submit',e=>{submitter=e.submitter||null;});
+  f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.equal(submitter,f.button);
+  assert.equal(submitter.getAttribute('formaction'),`https://webvpn.cppu.edu.cn${prefix}/tpass/login`);
+  assert.equal(f.state.validations,1);assert.equal(f.state.posted,1);
+},{proxy:true,remember:true,action:'/tpass/login'}));
+test('native capture guard blocks a removed or retargeted submitter before the school handler runs',()=>{
+  for(const mutate of [
+    f=>f.button.removeAttribute('formaction'),
+    f=>f.button.setAttribute('formaction','https://attacker.example/tpass/login'),
+    f=>f.button.setAttribute('formnovalidate','')
+  ])useActivation(f=>{
+    f.api.prepare(f.credentials);assert.equal(f.api.prepareActivation().kind,'activation-ready');
+    f.api.activationPoint();mutate(f);
+    f.button.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    assert.equal(f.state.posted,0);assert.equal(f.state.validations,0);
+    const outcome=f.api.activationOutcome();
+    assert.equal(outcome.detailCode,'activation-blocked');
+    assert.match(outcome.reason,/^binding-/);
+  });
+});
 test('root-relative compatibility does not permit foreign targets or explicit VPN portal forms',()=>{
   for(const getter of ['https://attacker.example/tpass/login','http://sso.cppu.edu.cn/tpass/login']) use({proxy:true,action:'/tpass/login'},f=>{
     Object.defineProperty(f.w.document.querySelector('form'),'action',{get:()=>getter});

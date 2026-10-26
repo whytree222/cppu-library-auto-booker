@@ -44,7 +44,7 @@ class EntryLoginUiTest {
         compose.onNodeWithText("学校账号").assertIsDisplayed()
         compose.onNodeWithText("密码").assertIsDisplayed()
         compose.onNodeWithText("登录并进入应用").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("WebVPN 网页登录（夜间/校外备用）").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("WebVPN 应用内登录（夜间/校外备用）").performScrollTo().assertIsDisplayed()
         compose.onNode(hasText("自动重新登录") and hasClickAction()).performScrollTo().assertIsOn().performClick().assertIsOff()
         assertFalse(CredentialStore(RuntimeEnvironment.getApplication()).preferredAutoLogin)
         compose.onNodeWithText("最近运行记录").assertDoesNotExist()
@@ -82,8 +82,8 @@ class EntryLoginUiTest {
         compose.setContent { MaterialTheme { EntryLoginScreen(sessionCheck = { _, callback ->
             callback("vpn_login_required")
         }) {} } }
-        compose.onNodeWithText("WebVPN 需要完成学校网页登录；可使用 WebVPN 登录").assertIsDisplayed()
-        compose.onNodeWithText("WebVPN 网页登录").assertIsDisplayed()
+        compose.onNodeWithText("WebVPN 统一认证已过期，请在应用内登录并输入验证码").assertIsDisplayed()
+        compose.onNodeWithText("WebVPN 应用内登录").assertIsDisplayed()
         compose.onNodeWithText("学校账号").assertDoesNotExist()
     }
 

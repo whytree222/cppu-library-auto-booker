@@ -71,7 +71,8 @@ class WebVpnAccountsActivity : ComponentActivity() {
                         },
                         onEnabled = { kind, enabled ->
                             WebVpnCredentialStore(this, kind).setEnabled(enabled)
-                            message = if (enabled) "已允许使用这个账号自动登录。" else "已关闭这个账号的自动登录。"
+                            message = if (kind == Kind.SSO) "已更新统一认证账号填入设置；验证码仍需在应用内手动输入。"
+                                else if (enabled) "已允许使用这个账号自动登录图书馆。" else "已关闭图书馆账号的自动登录。"
                             revision++
                         },
                         onResume = { kind ->
@@ -129,15 +130,15 @@ internal fun WebVpnAccountsScreen(
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()
         .verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("WebVPN 自动登录账号", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("WebVPN 账号设置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("学校统一认证和图书馆是两层登录，请分别设置。不会从校园网直连账号中自动复制密码。")
-        Text("只有你明确保存并开启后，应用才会使用该账号正常登录。账号和密码仅在本机加密保存；验证码在本机识别，不上传第三方。",
+        Text("只有你明确保存并开启后，应用才会使用这套账号。账号和密码仅在本机加密保存；统一认证验证码由你在应用内手动输入，不再自动识别。",
             style = MaterialTheme.typography.bodySmall)
         WebVpnAccountCard(Kind.SSO, sso, onSave, onEnabled, onResume, onClear)
         WebVpnAccountCard(Kind.LIBRARY, library, onSave, onEnabled, onResume, onClear)
         if (message.isNotEmpty()) Text(message, fontWeight = FontWeight.SemiBold)
         Button(onClick = onVerify, modifier = Modifier.fillMaxWidth()) { Text("打开 WebVPN 验证两层登录") }
-        Text("先完成学校统一认证，再登录代理内的图书馆。若学校要求短信等额外验证或识别失败，请在网页手动完成。",
+        Text("先在应用内完成学校统一认证，再登录图书馆。如学校增加短信等额外验证，应用会停止并明确提示。",
             style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("返回应用") }
     }
@@ -184,7 +185,8 @@ private fun WebVpnAccountCard(
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = consent, onCheckedChange = { consent = it })
-                Text("我确认使用本人账号，并允许应用保存及自动登录${label}；不用于盈利或攻击。",
+                Text(if (isSso) "我允许本机加密记住统一认证账号密码，用于应用内登录；验证码仍手动输入。"
+                    else "我允许本机加密记住图书馆账号密码，并用于图书馆自动登录。",
                     style = MaterialTheme.typography.bodySmall)
             }
             Button(onClick = {
@@ -194,13 +196,13 @@ private fun WebVpnAccountCard(
                 }
             }, enabled = consent && WebVpnCredentialStore.inputError(username, password) == null,
                 modifier = Modifier.fillMaxWidth()) {
-                Text("保存并开启${label}自动登录")
+                Text(if (isSso) "保存并开启统一认证账号填入" else "保存并开启图书馆自动登录")
             }
             if (state.configured) {
                 Row(verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Switch(checked = state.enabled, onCheckedChange = { onEnabled(kind, it) })
-                    Text("允许${label}自动登录")
+                    Text(if (isSso) "允许填入统一认证账号密码" else "允许图书馆自动登录")
                 }
                 if (state.enabled && state.paused) OutlinedButton(onClick = { onResume(kind) }) {
                     Text("允许${label}重新尝试")

@@ -101,6 +101,16 @@ class WebVpnLoginDriverTest {
             probes.removeFirst().invoke(SessionChecker.Result(state, "Synthetic school result", networkFailure = networkFailure, vpnAuthState = auth))
         }
 
+        fun exhaustUnconfirmedSsoChecks() {
+            answerProbe("vpn_login_required", "expired")
+            assertTrue(results.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+            answerProbe("vpn_login_required", "expired")
+            assertTrue(results.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+            answerProbe("vpn_login_required", "expired")
+        }
+
         fun answerRetire(kind: String = "ready") {
             view.answerFirst({ it.contains("?.abandonUnsubmittedActivation()") }, """{"kind":"$kind"}""")
         }
@@ -353,12 +363,174 @@ class WebVpnLoginDriverTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
             assertEquals(1, f.probes.size)
             assertTrue(f.results.isEmpty())
-            f.answerProbe("vpn_login_required", "expired")
+            f.exhaustUnconfirmedSsoChecks()
             assertEquals(1, f.results.size)
-            assertTrue(f.results.single().detail.contains("不重复提交"))
-            assertTrue(f.sso.paused)
+            // An unverifiable read-only probe says nothing about the submitted
+            // credentials, so the saved SSO account must not be paused.
+            assertTrue(f.results.single().detail.contains("未重发"))
+            assertTrue(f.results.single().detail.contains("未判定账号错误"))
+            assertFalse(f.sso.paused)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
             assertEquals(1, f.view.activationCount())
+        }
+    }
+
+    @Test fun slowSchoolHandlerFallbackRetiresBothOlderWatchdogs() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerActivationPoint("""{"kind":"blocked","detailCode":"button-obscured"}""")
+            f.answerProbe("vpn_login_required", "expired")
+            // The fallback JS callback takes eleven seconds. Neither the original
+            // pre-touch timer nor the fallback's lost-callback timer may fire early.
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+            f.answerSchoolHandler("submitted", "school-handler-submit-observed")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertTrue(f.probes.isEmpty()); assertTrue(f.results.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+            assertEquals(1, f.probes.size)
+            f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertEquals(1, f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
+            assertTrue(f.view.touches.isEmpty())
+        }
+    }
+
+    @Test fun lostFallbackCallbackStillHasOneReadOnlyWatchdogAndNeverAnotherSubmission() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptcha()
+            f.view.answerFirst({ it.contains("?.prepareActivation()") }, """{"kind":"activation-ready"}""")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            f.answerActivationPoint("""{"kind":"blocked","detailCode":"button-obscured"}""")
+            f.answerProbe("vpn_login_required", "expired")
+            // Deliberately leave schoolHandlerSubmit's callback unanswered.
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(11_900))
+            assertTrue(f.probes.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            assertEquals(1, f.probes.size)
+            f.answerProbe("valid", "valid")
+            f.answerSchoolHandler("submitted", "school-handler-submit-observed")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+            assertEquals(1, f.results.size); assertTrue(f.probes.isEmpty())
+            assertEquals(1, f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
+        }
+    }
+
+    @Test fun delayedSchoolSessionCanBecomeValidOnReadOnlyRecheckWithoutAnotherSsoSubmit() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("vpn_login_required", "expired")
+            assertTrue(f.results.isEmpty()); assertFalse(f.sso.paused)
+            assertTrue(f.statuses.last().contains("仅检查登录状态"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2_999))
+            assertTrue(f.probes.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+            f.answerProbe("expired", "valid")
+            assertEquals(listOf(LIBRARY_LOGIN), f.view.navigations)
+            f.finish(LIBRARY_LOGIN); f.answerProbe("expired", "valid"); f.submitLibrary()
+            f.finish(LibraryRoute.WEBVPN.url("/selectreadingroom")); f.answerProbe("valid", "valid")
+            assertEquals("valid", f.results.single().state)
+            assertEquals(1, f.view.activationCount()); assertEquals(2, f.view.touches.size)
+            assertFalse(f.view.calls.any { it.script.contains("?.schoolHandlerSubmit()") })
+            assertEquals(1, f.view.calls.count { it.script.contains(LIBRARY_PASSWORD) })
+        }
+    }
+
+    @Test fun transientProbeFailuresStopAfterThreeReadOnlyChecksWithoutPausingCredentials() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("unknown", null, networkFailure = true)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+            f.answerProbe("unknown", null)
+            assertTrue(f.results.isEmpty())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+            f.answerProbe("vpn_login_required", "expired")
+            assertTrue(f.results.single().detail.contains("未重发"))
+            assertFalse(f.sso.paused); assertFalse(f.library.paused)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(30))
+            assertEquals(1, f.results.size); assertTrue(f.probes.isEmpty())
+            assertEquals(1, f.view.activationCount()); assertEquals(2, f.view.touches.size)
+            assertTrue(f.view.navigations.isEmpty())
+        }
+    }
+
+    @Test fun ssoVerificationRetryIsDiscardedOnPauseNavigationOrClose() {
+        repeat(3) { cause -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("vpn_login_required", "expired")
+            when (cause) {
+                0 -> f.driver.onPause()
+                1 -> { f.view.address = LIBRARY_LOGIN; f.driver.onPageStarted(LIBRARY_LOGIN) }
+                else -> f.driver.close()
+            }
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+            assertTrue(f.probes.isEmpty()); assertTrue(f.results.isEmpty())
+            assertEquals(1, f.view.activationCount()); assertEquals(2, f.view.touches.size)
+            assertFalse(f.sso.verified)
+        } }
+    }
+
+    @Test fun staleSsoProbeCannotMarkAnotherDocumentOrResumedEpochAsAuthenticated() {
+        repeat(3) { cause -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            val pending = f.probes.removeFirst()
+            when (cause) {
+                0 -> f.driver.onPause()
+                1 -> { f.view.address = LIBRARY_LOGIN; f.driver.onPageStarted(LIBRARY_LOGIN) }
+                else -> f.driver.close()
+            }
+            pending(SessionChecker.Result("valid", "Synthetic delayed result", vpnAuthState = "valid"))
+            assertTrue(f.results.isEmpty()); assertFalse(f.sso.verified)
+            assertTrue(f.view.navigations.isEmpty())
+        } }
+    }
+
+    @Test fun readonlySsoRechecksRespectTheOriginalNinetySecondDeadline() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(84))
+            f.answerProbe("vpn_login_required", "expired")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+            f.answerProbe("vpn_login_required", "expired")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+            assertTrue(f.results.single().detail.contains("90 秒"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+            assertTrue(f.probes.isEmpty()); assertEquals(1, f.results.size)
+            assertEquals(1, f.view.activationCount()); assertTrue(f.view.navigations.isEmpty())
+        }
+    }
+
+    @Test fun changedAccountOrOcrSettingStopsPendingReadOnlyRechecksWithoutSubmittingAgain() {
+        repeat(3) { change -> Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.answerProbe("vpn_login_required", "expired")
+            when (change) {
+                0 -> f.sso.save("new-synthetic-account", "new-synthetic-password")
+                1 -> f.sso.setEnabled(false)
+                else -> f.driver.setOcrEnabled(false)
+            }
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+            assertTrue(f.results.single().detail.contains("设置已改变"))
+            assertTrue(f.probes.isEmpty()); assertFalse(f.sso.paused)
+            assertEquals(1, f.view.activationCount()); assertEquals(2, f.view.touches.size)
+        } }
+    }
+
+    @Test fun accountChangeDuringSsoProbeCannotVerifyTheNewAccountOrContinueLogin() {
+        Fixture().use { f ->
+            f.start(SSO_PROXY_URL); f.prepareSso(); f.completeCaptchaAndSubmitSso()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
+            f.sso.save("new-synthetic-account", "new-synthetic-password")
+            f.answerProbe("expired", "valid")
+            assertTrue(f.results.single().detail.contains("设置已改变"))
+            assertFalse(f.sso.verified); assertFalse(f.sso.paused)
+            assertTrue(f.view.navigations.isEmpty()); assertEquals(1, f.view.activationCount())
         }
     }
 
@@ -673,7 +845,7 @@ class WebVpnLoginDriverTest {
             f.answerSchoolHandler("submitted","school-handler-click-unconfirmed")
             assertEquals(1,f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
-            f.answerProbe("vpn_login_required","expired")
+            f.exhaustUnconfirmedSsoChecks()
             assertEquals("vpn_login_required",f.results.single().state)
             assertEquals(1,f.view.calls.count { it.script.contains("?.schoolHandlerSubmit()") })
         }
@@ -937,8 +1109,9 @@ class WebVpnLoginDriverTest {
             f.driver.onPageFinished(SSO_PROXY_URL)
             assertFalse(f.view.calls.any { it.script.contains("const r = h?.outcome()") })
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(12))
-            f.answerProbe("vpn_login_required", "expired")
-            assertTrue(f.sso.paused); assertTrue(f.view.navigations.isEmpty())
+            f.exhaustUnconfirmedSsoChecks()
+            assertFalse(f.sso.paused); assertTrue(f.view.navigations.isEmpty())
+            assertTrue(f.results.single().detail.contains("未判定账号错误"))
             assertEquals(1, f.view.activationCount())
         }
     }
@@ -1000,8 +1173,9 @@ class WebVpnLoginDriverTest {
             assertTrue(f.probes.isEmpty()); assertTrue(f.results.isEmpty())
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1500))
             assertEquals(1, f.probes.size)
-            f.answerProbe("vpn_login_required", "expired")
-            assertTrue(f.sso.paused); assertEquals(2, f.view.activationCount())
+            f.exhaustUnconfirmedSsoChecks()
+            assertFalse(f.sso.paused); assertEquals(2, f.view.activationCount())
+            assertTrue(f.results.single().detail.contains("未重发"))
         }
     }
 

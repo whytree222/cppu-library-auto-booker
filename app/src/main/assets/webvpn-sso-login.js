@@ -56,16 +56,43 @@
         !['text','email','tel'].includes(user[0].type) || user[0].disabled || password[0].disabled ||
         user[0].readOnly || password[0].readOnly || button[0].disabled ||
         typeof window.checkPassLogin !== 'function') return null;
-    if (button[0].form !== form || button[0].type !== 'submit' ||
-        !['INPUT','BUTTON'].includes(button[0].tagName) ||
-        ['formaction','formmethod','formtarget','formnovalidate'].some(name=>button[0].hasAttribute(name))) return null;
     const canonical = rawUrl => {
       const url=new URL(rawUrl,location.href);
       const path=url.origin==='https://webvpn.cppu.edu.cn'?url.pathname.slice(proxy.length):url.pathname;
       return 'https://sso.cppu.edu.cn'+path+url.search;
     };
+    // The WebVPN proxy strips its own path prefix from the form action at runtime, so the
+    // live DOM action is root-relative and a plain submit would hit the portal instead of
+    // the proxied SSO endpoint. Bind the original submitter to the exact verified proxy
+    // path; a submitter override is accepted only when it already names that same target.
+    const upstream = new URL(canonical(attribute.href));
+    const submitAction = prefix ? page.origin + prefix + upstream.pathname + upstream.search : null;
+    const formAction = button[0].getAttribute('formaction');
+    if (button[0].form !== form || button[0].type !== 'submit' ||
+        !['INPUT','BUTTON'].includes(button[0].tagName) ||
+        ['formmethod','formtarget','formnovalidate','formenctype'].some(name=>button[0].hasAttribute(name))) return null;
+    if (formAction !== null) {
+      if (!prefix) return null;
+      let target; try { target = new URL(formAction, location.href); } catch (_) { return null; }
+      if (target.href !== submitAction) return null;
+    }
     return {form, user: user[0], password: password[0], button: button[0], captcha: captcha[0],
-      href: page.href, action: canonical(action.href), attribute: canonical(attribute.href)};
+      href: page.href, action: canonical(action.href), attribute: canonical(attribute.href), submitAction};
+  }
+  function submitTargetIntact(info) {
+    if (!info) return false;
+    if (!info.submitAction) return !info.button.hasAttribute('formaction');
+    const raw = info.button.getAttribute('formaction');
+    if (raw === null) return false;
+    try { return new URL(raw, location.href).href === info.submitAction; }
+    catch (_) { return false; }
+  }
+  function bindSubmitAction(info) {
+    if (!info) return false;
+    if (!info.submitAction) return !info.button.hasAttribute('formaction');
+    if (info.button.getAttribute('formaction') !== null) return submitTargetIntact(info);
+    info.button.setAttribute('formaction', info.submitAction);
+    return submitTargetIntact(info);
   }
   function visible(element) {
     if (!element.isConnected || !Array.from(element.getClientRects()).some(r=>r.width>0&&r.height>0)) return false;
@@ -118,7 +145,8 @@
     try {
       const info = context(false);
       if (!info || guard.document !== document || info.form !== guard.form || info.href !== guard.href ||
-          info.action !== guard.action || info.attribute !== guard.attribute || info.user !== guard.user ||
+          info.action !== guard.action || info.attribute !== guard.attribute ||
+          info.submitAction !== guard.submitAction || info.user !== guard.user ||
           info.password !== guard.password || info.captcha !== guard.captcha || info.button !== guard.button)
         return result('unknown', 'restart-document-changed');
       if (outcome().kind !== 'captcha-rejected') return result('unknown', 'restart-feedback-changed');
@@ -133,7 +161,8 @@
       if (!info || outcome().kind !== 'captcha-rejected') return result('unknown', 'restart-not-rejected');
       const guard = restartInteraction;
       if (!guard || guard.form !== info.form || guard.document !== document || guard.href !== info.href ||
-          guard.action !== info.action || guard.attribute !== info.attribute || guard.user !== info.user ||
+          guard.action !== info.action || guard.attribute !== info.attribute ||
+          guard.submitAction !== info.submitAction || guard.user !== info.user ||
           guard.password !== info.password || guard.captcha !== info.captcha || guard.button !== info.button)
         return result('unknown', 'restart-document-changed');
       if (guard.touched) return result('manual', 'restart-user-interaction');
@@ -186,6 +215,7 @@
       if (edited || own.form !== info.form || own.href !== info.href || own.action !== info.action ||
           own.attribute !== info.attribute || own.user !== info.user || own.password !== info.password ||
           info.user.value !== own.username || info.password.value !== own.secret) return result('manual','user-edited');
+      if (!bindSubmitAction(info)) return result('stopped','submit-target-changed');
       const remember=setRememberMe(credentials?.rememberMe===true);
       return {...result('prepared','own-fields'),rememberCode:remember.detailCode};
     }
@@ -193,6 +223,7 @@
         !credentials.username || !credentials.password || /[\r\n\u0000]/.test(credentials.username+credentials.password))
       return result('stopped','invalid-credentials');
     if (info.user.value || info.password.value) return result('manual','occupied-fields');
+    if (!bindSubmitAction(info)) return result('stopped','submit-target-changed');
     watch(info);
     own={...info, username:credentials.username, secret:credentials.password};
     writing=true;
@@ -209,6 +240,7 @@
         info.button !== own.button || info.href !== own.href || info.action !== own.action || info.attribute !== own.attribute ||
         info.user.value !== own.username || info.password.value !== own.secret)
       return {error:result('manual','user-edited')};
+    if (!submitTargetIntact(info)) return {error:result('blocked','submit-target-changed')};
     const state=window.LibraryCaptchaOcr?.snapshot();
     if (!state || state.kind !== 'filled' || state.detailCode !== 'own-fill-current' || !/^\d{4}$/.test(info.captcha.value))
       return {error:result('waiting','captcha-not-current')};
@@ -310,6 +342,7 @@
       if(!target||target.form!==info.form||target.button!==info.button||target.user!==info.user||
           target.password!==info.password||target.captcha!==info.captcha||target.href!==info.href||
           target.action!==info.action||target.attribute!==info.attribute||
+          target.submitAction!==info.submitAction||!submitTargetIntact(target)||
           (event.submitter&&event.submitter!==info.button)){
         current.blocked=true;current.reason='submission-target-changed';
         event.preventDefault();event.stopImmediatePropagation();return;
@@ -418,6 +451,10 @@
     activation.reason = 'school-submit-authorized'; activation.schoolSubmit = true; activation.fallbackUsed = true;
     armGuards(info, activation);
     try {
+      if (!bindSubmitAction(info)) {
+        activation.blocked = true; activation.reason = 'submit-target-changed';
+        return result('blocked', 'submit-target-changed');
+      }
       if (!direct) {
         info.button.click();
         return result('submitted', activation.submitObserved
@@ -433,9 +470,13 @@
       if (!after || after.form !== info.form || after.button !== info.button || after.user !== info.user ||
           after.password !== info.password || after.captcha !== info.captcha || after.href !== info.href ||
           after.action !== info.action || after.attribute !== info.attribute ||
-          after.user.value !== own.username) {
+          after.submitAction !== info.submitAction || after.user.value !== own.username) {
         activation.blocked = true; activation.reason = 'form-changed-before-submit';
         return result('blocked', 'form-changed-before-submit');
+      }
+      if (!bindSubmitAction(after)) {
+        activation.blocked = true; activation.reason = 'submit-target-changed';
+        return result('blocked', 'submit-target-changed');
       }
       if (own) { own.secret = ''; own.username = ''; }
       info.form.requestSubmit(info.button);
@@ -479,6 +520,7 @@
     if (edited || info.form !== own.form || info.user !== own.user || info.password !== own.password ||
         info.button !== own.button || info.href !== own.href || info.action !== own.action || info.attribute !== own.attribute ||
         info.user.value !== own.username || info.password.value !== own.secret) return result('manual','user-edited');
+    if (!bindSubmitAction(info)) return result('stopped','submit-target-changed');
     const state=window.LibraryCaptchaOcr?.snapshot();
     if (!state || state.kind !== 'filled' || state.detailCode !== 'own-fill-current' || !/^\d{4}$/.test(info.captcha.value))
       return result('waiting','captcha-not-current');
@@ -501,8 +543,10 @@
       const current=context();
       if (!current || current.form!==info.form || current.button!==info.button || current.user!==info.user ||
           current.password!==info.password || current.href!==info.href || current.action!==info.action ||
-          current.attribute!==info.attribute || current.user.value!==own.username)
+          current.attribute!==info.attribute || current.submitAction!==info.submitAction ||
+          current.user.value!==own.username)
         return record(result('blocked','form-changed-before-submit'));
+      if (!bindSubmitAction(current)) return record(result('blocked','submit-target-changed'));
       if (!info.form.checkValidity()) return record(result('blocked','browser-validation-rejected'));
       let observed=false;
       const observe = event => {if(event.target===info.form) observed=true;};

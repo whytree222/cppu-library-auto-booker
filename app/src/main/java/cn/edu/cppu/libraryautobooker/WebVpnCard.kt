@@ -57,10 +57,10 @@ fun WebVpnCard(
             Switch(checked = enabled, onCheckedChange = null)
         }
         Text(statuses.webVpn.detail, style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(onClick = onLogin, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 网页登录") }
+        OutlinedButton(onClick = onLogin, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 应用内登录") }
         FilledTonalButton(onClick = onCheck, modifier = Modifier.fillMaxWidth()) { Text("检查 WebVPN") }
-        OutlinedButton(onClick = onAccounts, modifier = Modifier.fillMaxWidth()) { Text("自动登录账号设置") }
-        Text("可选择在本机加密保存统一认证与图书馆账号，并在会话过期时自动重登；验证码只在本机识别，不上传。",
+        OutlinedButton(onClick = onAccounts, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 账号设置") }
+        Text("统一认证过期后，请在应用内手动输入验证码。可在本机加密记住两套账号；已有 WebVPN 会话有效时继续后台预约。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

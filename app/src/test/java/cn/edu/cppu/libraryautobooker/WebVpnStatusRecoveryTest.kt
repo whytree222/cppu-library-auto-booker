@@ -28,8 +28,8 @@ class WebVpnStatusRecoveryTest {
             .putString("revision", java.util.UUID.randomUUID().toString()).commit()
     }
 
-    @Test fun statusOnlyExpiryActuallyStartsRecoveryAndDeliversItsVerifiedResult() {
-        for (kind in Kind.entries) {
+    @Test fun statusOnlyLibraryExpiryStartsRecoveryAndDeliversItsVerifiedResult() {
+        for (kind in listOf(Kind.LIBRARY)) {
             clear(); enable(kind)
             val result = if (kind == Kind.SSO) SessionChecker.Result("vpn_login_required", "expired", vpnAuthState = "expired")
                 else SessionChecker.Result("expired", "expired", vpnAuthState = "valid")
@@ -59,17 +59,29 @@ class WebVpnStatusRecoveryTest {
         }
     }
 
-    @Test fun pausedDisabledOrOcrOptOutExplainsTheBlockInsteadOfSilentlyShowingExpired() {
-        repeat(3) { variant ->
+    @Test fun pausedOrDisabledLibraryExplainsTheBlockInsteadOfSilentlyShowingExpired() {
+        repeat(2) { variant ->
             clear()
-            if (variant != 0) enable(Kind.SSO, paused = variant == 1)
-            if (variant == 2) app.getSharedPreferences("webvpn_ocr", 0).edit().putBoolean("enabled", false).commit()
+            if (variant != 0) enable(Kind.LIBRARY, paused = variant == 1)
             var received: SessionChecker.Result? = null
             SessionCoordinator.handleWebVpnCheck(app,
-                SessionChecker.Result("vpn_login_required", "expired", vpnAuthState = "expired"), false,
+                SessionChecker.Result("expired", "expired", vpnAuthState = "valid"), false,
                 SessionCoordinator.CheckRequest(), { received = it }, ensure = { throw AssertionError("Must not start") })
-            assertTrue(received!!.detail.contains(when (variant) { 0 -> "保存开启"; 1 -> "暂停"; else -> "识别已关闭" }))
+            assertTrue(received!!.detail.contains(if (variant == 0) "保存开启" else "暂停"))
             assertEquals(received!!.detail, LoginStatusStore(app).snapshot().webVpn.detail)
+        }
+    }
+
+    @Test fun ssoExpiryAlwaysRequiresNativeManualCaptchaEvenWithSavedAccountsAndOcrPreference() {
+        repeat(3) { variant ->
+            clear(); enable(Kind.SSO, paused = variant == 1)
+            app.getSharedPreferences("webvpn_ocr", 0).edit().putBoolean("enabled", variant != 2).commit()
+            val expired = SessionChecker.Result("vpn_login_required", "expired", vpnAuthState = "expired")
+            assertFalse(WebVpnAutoLogin.canRecover(app, expired))
+            var received: SessionChecker.Result? = null
+            SessionCoordinator.handleWebVpnCheck(app, expired, false, SessionCoordinator.CheckRequest(),
+                { received = it }, ensure = { throw AssertionError("Manual CAPTCHA must not start background SSO") })
+            assertTrue(received!!.detail.contains("应用内")); assertTrue(received!!.detail.contains("手动输入验证码"))
         }
     }
 
@@ -96,8 +108,8 @@ class WebVpnStatusRecoveryTest {
     }
 
     @Test fun statusFailureCoolsDownButDoesNotBlockTheScheduledRecoveryOrChangedAccount() {
-        enable(Kind.SSO)
-        val expired = SessionChecker.Result("vpn_login_required", "expired", vpnAuthState = "expired")
+        enable(Kind.LIBRARY)
+        val expired = SessionChecker.Result("expired", "expired", vpnAuthState = "valid")
         val request = WebVpnAutoLogin.ensure(app, updateSession = false) {}
         try {
             WebVpnAutoLogin.cancel()
@@ -109,7 +121,7 @@ class WebVpnStatusRecoveryTest {
             assertTrue(WebVpnAutoLogin.canRecover(app, expired, statusOnly = true))
             val again = WebVpnAutoLogin.ensure(app, updateSession = false) {}
             WebVpnAutoLogin.cancel(); again.close()
-            enable(Kind.SSO) // A new explicit save has a new revision.
+            enable(Kind.LIBRARY) // A new explicit save has a new revision.
             assertTrue(WebVpnAutoLogin.canRecover(app, expired, statusOnly = true))
         } finally { request.close(); WebVpnAutoLogin.cancel() }
     }

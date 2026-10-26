@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Debug builds install alongside the release app; a distinct label prevents
+         installing the fix but retesting the already-installed release build. -->
+    <application
+        android:label="图书馆自动预约（调试）"
+        tools:replace="android:label" />
+</manifest>

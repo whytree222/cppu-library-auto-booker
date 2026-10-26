@@ -9,11 +9,13 @@
 
 **先停手的情况**：要改预约/调度/登录提交/更新安全逻辑、要推送 tag 或发布 Release、要接触 keystore 或 token、要删除或修改历史 Release/tag、要在真实学校系统提交预约。以上操作必须先得到维护者明确授权。
 
+**接手前先读第 12 节**：用户已放弃 WebVPN 网页自动点击/OCR，明确改为应用原生表单与手动验证码，并授权发布 v0.20.1。真实发布结果以远端 tag、Release 和工作流为准；仍待真机回归。此前的自动 SSO 修复并未解决用户问题，不要恢复为当前交互。
+
 ---
 
 ## 1. 项目概览
 
-这是一个 Android 原生应用（Kotlin + Jetpack Compose），用于在可信校园网内直连 `http://mlib.cppu.edu.cn`，直连不可用时可通过学校 WebVPN（`https://webvpn.cppu.edu.cn`）完成图书馆座位预约。WebVPN 默认手动网页登录，也可由用户明确开启本机加密的两层账号自动重登。按用户设置的阅览室、座位和使用时段执行。
+这是一个 Android 原生应用（Kotlin + Jetpack Compose），用于在可信校园网内直连 `http://mlib.cppu.edu.cn`，直连不可用时可通过学校 WebVPN（`https://webvpn.cppu.edu.cn`）完成图书馆座位预约。WebVPN 使用原生表单、手动验证码和可选本机加密记住账号；仅图书馆内层可自动重登。按用户设置的阅览室、座位和使用时段执行。
 
 三个核心能力：
 
@@ -25,7 +27,7 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 应用版本 | `0.20.0`，`versionCode=52`，`minSupportedVersionCode=50` |
+| 应用版本 | `0.20.1`，`versionCode=53`，`minSupportedVersionCode=50` |
 | 包名 | `cn.edu.cppu.libraryautobooker` |
 | Debug 包名 | `cn.edu.cppu.libraryautobooker.debug` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
@@ -44,8 +46,8 @@
 ### 2.1 网络与登录范围
 
 - 只允许两条线路：`http://mlib.cppu.edu.cn` 的校园网直连，以及 `https://webvpn.cppu.edu.cn` 的学校 WebVPN 图书馆代理。不要新增第三方代理、公共镜像、自建转换服务或其他校外备用线路。
-- WebVPN 默认使用**手动网页登录**；用户也可以明确选择保存统一认证与 WebVPN 图书馆两套账号，在会话过期时自动重登。自动重登只允许通过 `WebVpnAutoLogin` / `WebVpnLoginDriver` 连接学校 WebVPN 和统一认证页面，不得把两套账号用于直连、第三方站点或其他用途。
-- 验证码识别只允许本机离线执行：模型和字符集随 APK 打包，只接受学校已验证登录页上的 4 位数字，置信度阈值 0.70，最多 3 张图 / 180 秒。不得上传验证码图片、账号或页面内容，不得调用在线 OCR，不得引入第三方代理。用户可关闭自动识别并手动输入。
+- WebVPN 使用 `LoginActivity` 的**原生应用表单**，统一认证验证码仅手动输入。`NativeWebVpnSession` 按已核对的学校正常协议提交；动态 execution、验证码和 Cookie 必须绑定当前会话。不得自行假设新的字段、放宽 URL 白名单或把账号发给第三方。
+- 生产入口不再使用 OCR 或网页自动点击完成统一认证。`WebVpnAutoLogin.canRecover` 拒绝 SSO 自动恢复，后台驱动固定 `allowSso=false`；SSO 过期必须提示用户在应用内输入验证码。旧驱动、OCR 资产和历史测试暂时保留用于兼容，不代表仍开启该产品能力。已有 WebVPN 外层会话有效时可继续预约，并保留内层图书馆自动重登。
 - `network/LibraryRoute.kt` 校验两条线路的 scheme、主机、端口和 WebVPN 代理前缀；`network/WebVpnPages` 限制 WebVPN 登录页与统一认证跳转；`assets/transport.js` 在网页侧按线路限制请求。三处都必须保留。
 - HTTP 明文是学校站点现状，不是遗漏。`res/xml/network_security_config.xml` 只对 `mlib.cppu.edu.cn` 放开明文；不要把明文范围扩大，也不要假设可以改成 HTTPS。WebVPN 使用 HTTPS。
 - 直连登录密码只在本机用 AES/GCM + AndroidKeyStore 加密保存。WebVPN 的两套账号只有在用户明确勾选并保存后才允许用同样的本机加密保存；默认不保存统一认证密码。任何密码不得写入日志、崩溃信息、`SharedPreferences` 明文、Intent、`rememberSaveable` 或任何仓库文件。
@@ -182,6 +184,8 @@ npm test
 
 v0.19.1 发布时的基线是 Node 302、Android 184。数量会随功能增长，不是固定目标；判断标准是“全绿 + 覆盖了本次改动”。
 
+第 12 节改动后的当前测试数量（2026-10-26）：Node **444**、Android **345**；发布预检仍需全部通过。Android 的用例数可以直接从 `app/build/test-results/testDebugUnitTest/*.xml` 汇总（Gradle 在 `UP-TO-DATE` 时不打印数量）。
+
 ### 3.5 签名与 Debug/Release 差异
 
 - 本地签名需要四个环境变量同时存在，缺一不可，否则 `app/build.gradle.kts` 会直接报错：
@@ -189,6 +193,8 @@ v0.19.1 发布时的基线是 Node 302、Android 184。数量会随功能增长�
 - 不签名时不要设置其中任何一个；四个都不设置才能构建 unsigned release。
 - Debug 构建：
   - 包名加 `.debug`，可与正式版共存；
+  - 应用标签是“图书馆自动预约（调试）”（`app/src/debug/AndroidManifest.xml` 用 `tools:replace="android:label"` 覆盖）。这是故意的：两个包共存时，标签相同会让维护者装了修复版却去测旧正式版。不要删掉这个清单；
+  - `WebVpnLoginDriver.fail()` 只在 `BuildConfig.DEBUG` 下给失败文案追加“（调试最后阶段：…）”，用于定位真机失败发生在哪一步。正式版文案不变，且任何状态都不得包含账号、密码或页面内容；
   - `BuildConfig.UPDATE_MANIFEST_URL` 等为空，**不能测试应用内更新**；
   - 使用 debug 签名，不能覆盖安装正式版。
 - Release 构建开启 R8/ProGuard；`@JavascriptInterface` 方法已有 keep 规则，ONNX Runtime 也需 keep。新增 JS Bridge 方法后必须至少跑一次 `assembleRelease`，不能只验证 debug。
@@ -207,11 +213,12 @@ v0.19.1 发布时的基线是 Node 302、Android 184。数量会随功能增长�
 | `EntryLoginScreen.kt` | 登录入口：Session 检查、账号密码输入、直连/WebVPN 手动网页登录、自动重登、错误提示 | 密码故意使用 `remember` 而不是 `rememberSaveable`；`fieldError` 只用于本地输入错误，`detailIsError` 用于网络/存储等状态错误 |
 | `SessionChecker.kt` | 只读 `POST /isLogin` 检查，7 秒超时，按直连/WebVPN 两层登录状态（`vpnAuthState`）分类网络、SSO 过期、图书馆过期和服务器错误 | 不记录 Cookie；不要让旧请求覆盖新状态（`SessionProbeEpochs`）；不把 WebVPN 密码页误判为已登录；两层状态只由已核对页面/跳转判断 |
 | `AutoLogin.kt` | 直连共享 WebView 登录、`SessionCoordinator`、直连→WebVPN 检查与恢复协调 | 直连自动登录只用于直连；`SessionCoordinator` 在直连网络故障且开关开启时才检查 WebVPN；WebVPN 恢复委托给 `WebVpnAutoLogin`；登录页识别、同源限制和安全页面判断不能放宽 |
-| `LoginActivity.kt` / `LoginInput.kt` | 按线路打开学校网页登录；WebVPN 支持手动登录和可选的两层自动登录驱动；验证码可关闭自动识别 | 不要加入密码日志或保存到 saved state；不要让 WebVPN 页面跳转到非学校主机；OCR 只在本机离线运行；`EXTRA_WEBVPN` 保持为 `"webvpn"` |
+| `LoginActivity.kt` / `WebVpnNativeForm.kt` | WebVPN 原生两步表单、手动验证码和可选本机记住账号；直连手动网页入口保留 | 密码/验证码不进入 Bundle；`EXTRA_WEBVPN` 保持为 `"webvpn"`；生产 WebVPN 分支不创建 WebView |
+| `network/NativeWebVpnSession.kt` / `NativeVpnHttp.kt` | 严格解析学校表单、密码编码、Cookie 同步、受限 HTTP 与跳转、一次提交及只读核对 | 不跟随 307/308 重发凭据；不暴露动态参数；Cookie 写入回调完成后才继续下一跳；挑战过期、变更或重复使用时停止 |
 | `WebVpnCard.kt` | 预约页的 WebVPN 状态、自动切换开关、手动登录/检查、自动登录账号设置入口 | 开关只保存 `webVpnBackup`，不能改预约目标或取消已排队闹钟 |
 | `WebVpnAccountsActivity.kt` | 分别保存/暂停/删除统一认证与 WebVPN 图书馆两套账号，明确授权说明 | 密码字段必须用 `remember` 而非 `rememberSaveable`；不得把密码放进 Intent；保存只在本机加密 |
-| `WebVpnAutoLogin.kt` | 共享隐藏 WebView 的 WebVPN 恢复运行、订阅者管理、5 分钟状态冷却、与可见登录页互斥 | 它是唯一允许自动执行 WebVPN/SSO 登录的入口；不得在提交结果不明时启动；不得与用户打开的登录页并行 |
-| `WebVpnLoginDriver.kt` | 两层登录状态机：SSO 表单、验证码 OCR、图书馆表单、90 秒期限、最多 3 次提交/2 次重开、`rememberMe` | 保留“已提交但结果不明不重发”、明确验证码失效才重开、手动输入优先、旧页面封闭和一次原生触摸保护 |
+| `WebVpnAutoLogin.kt` | 仅在 WebVPN 外层会话有效时恢复图书馆内层；订阅者管理、冷却与可见登录表单互斥 | 不自动恢复 SSO；不得在预约提交结果不明时启动，不得与原生登录表单并行 |
+| `WebVpnLoginDriver.kt` | 历史网页驱动保留；当前生产后台固定 `allowSso=false`，仅图书馆内层自动登录 | 不允许生产入口开启 SSO/OCR；保留提交不明不重发和旧回调封闭，旧驱动测试不代表当前 UI |
 | `WebViewLoginTap.kt` | 在受信 SSO 页面内执行一次原生 DOWN/UP 触摸 | 只在受信地址和非零布局下执行；不得越过验证码/登录按钮；生命周期变化必须取消 |
 | `ocr/CaptchaPagePolicy.kt` / `CtcDecoder.kt` / `DdddOcrEngine.kt` / `WebVpnCaptchaController.kt` | 本机验证码页面策略、CTC 解码、ONNX 推理和按载入填表控制 | 只接受已验证 HTTPS 登录页；只输出 4 位数字且置信度 ≥ 0.70；最多 3 张图/180 秒；禁止联网、日志记录图片或读取账号 |
 | `data/WebVpnCredentialStore.kt` | 分开保存 SSO 与 WebVPN 图书馆账号（AES/GCM + AndroidKeyStore，AAD，`revision`） | `Kind` 的存储名/密钥别名是迁移契约；不得明文回退；`Credentials.toString()` 必须继续脱敏 |
@@ -327,8 +334,8 @@ v0.19.1 发布时的基线是 Node 302、Android 184。数量会随功能增长�
 - 输入校验错误同时标红输入框和状态文字；网络/存储/学校返回错误只标红状态文字，不把输入框误标红；用户一编辑就清除输入错误。
 - 密码不进入 `rememberSaveable`；只预填已保存的账号。
 - 自动重登是可选能力：直连图书馆账号的自动重登与 WebVPN 两层自动重登都只在用户明确保存并开启后运行；失败时回退到手动登录，不吞掉错误。
-- WebVPN 默认提供手动网页登录入口；用户也可以在“自动登录账号设置”中分别保存统一认证与 WebVPN 图书馆账号，密码只用本机 AES/GCM + AndroidKeyStore 加密。验证码只在本机离线识别，可关闭并手动输入。`LoginActivity` 只允许学校 WebVPN/统一认证页和已核对的图书馆代理路径。
-- WebVPN 自动重登共用 90 秒期限，最多 3 次提交、2 次明确验证码失效后的重开；已经提交但结果不明时必须停止，不重发。失败后状态检查有 5 分钟冷却，但预约任务本身仍可在未提交时重新尝试。
+- WebVPN 使用原生应用表单，分别填写统一认证与图书馆两套账号。验证码仅手动输入；密码仅在明确勾选后用本机 AES/GCM + AndroidKeyStore 保存。原生 HTTP 只连接学校 WebVPN 已核对的代理路径，动态字段和 Cookie 不输出到日志或诊断。
+- 原生表单最多使用一次，超过 120 秒或会话改变时要求重新获取；明确拒绝后用户可手动再次提交新表单，提交结果不明不自动重发。仅图书馆内层保留原来的有界后台恢复和冷却；统一认证过期一律提示应用内手动验证码。
 - `SessionCoordinator` 直连优先；只有直连网络故障且开关开启时才检查 WebVPN，已有 WebVPN 会话可用于进入应用和预约备用。可见的 WebVPN 登录页存续期间必须阻止隐藏的自动恢复。
 
 ---
@@ -431,7 +438,7 @@ minSupportedVersionCode=50
 - `minSupportedVersionCode` 通常保持 `50`（v0.19.0 起的最低支持版本）。只有确实要让旧客户端强制更新时才提高；提高会让低于该版本的客户端进入 `updateRequired` 流程。不要为了“提醒更新”随意提高。
 - 新增 `release-notes/<versionName>.md`，例如 `release-notes/0.20.0.md`；最多 8000 字符，写用户可见变化和已知限制，不写密钥、账号、内部路径或未经验证的“已修复”。
 - README 顶部的版本号和用户可见说明按需更新；固定下载链接不随版本变化。
-- 发布 WebVPN 相关版本时，说明中要写明“WebVPN 默认手动，可选本机加密的两层自动重登与本地验证码识别；仅在提交前回退/重登，提交后不重发；尚未完成真机隔夜验证”。
+- 发布 WebVPN 相关版本时，说明中要写明“原生应用表单、仅手动验证码、可选本机加密记住两套账号；统一认证过期需用户补输验证码，仅内层保留自动重登；提交后不重发；尚未完成真机与隔夜验证”。
 
 ### 7.3 构建与检查
 
@@ -607,6 +614,9 @@ Repository Variable：
 23. **不要在测试中访问真实学校站点**：jsdom/fixtures/mock 是硬要求；真实预约只能由维护者明确授权后在真机进行。
 24. **Robolectric 通过 ≠ 真机通过**：精确闹钟、厂商后台限制、锁屏网络、WebVPN 会话、验证码 OCR、系统安装器都需要真机验证。
 25. **Release 混淆**：新增 `@JavascriptInterface` 方法时确认 ProGuard keep 规则生效，并跑 `assembleRelease`。
+26. **WebVPN 的 wengine 会改写表单 action，但不改写 `formaction`，也不拦截 submit**：代理页上 `form.action` 的 getter 显示上游地址、活动 DOM 属性却是根相对路径，原生 `button.formAction` 会解析成未加代理前缀的门户地址，于是默认提交打不到统一认证端点。唯一可靠做法是把提交按钮的 `formaction` 绑成精确代理 URL（`assets/webvpn-sso-login.js` 的 `bindSubmitAction()`），并在每次提交前用 `submitTargetIntact()` 复核。
+27. **学校 `checkPassLogin()` 只做校验和 RSA 加密，不提交**：不要“自己实现学校登录”，也不要为了绕过它而直接构造 POST；必须让学校按钮的原始处理器跑一次。
+28. **未登录时 WebVPN 的 `/isLogin` 返回的是代理自己的 JSON 信封**（`{"success":false,"url":"/login"}`，没有 `ReturnValue`），它是“外层 VPN 会话需要重登”，不是“学校返回格式不符”。分类逻辑在 `SessionChecker.kt` 的 `vpnSessionEnded` 分支，不要放宽成只看 `success==false`。
 
 ---
 
@@ -671,3 +681,49 @@ Repository Variable：
 - 不主动创建新的规划/分析文档；用户文档放 `README.md`，代理交接信息放本文件，版本变更放 `release-notes/`。
 - 发现历史 Release、tag、keystore 或 token 状态异常时，先停止并说明，不要用删除/覆盖来“清理”。
 - 如果必须在安全约束和“让测试通过”之间选择，选择安全约束，并说明测试为什么需要调整。
+
+---
+
+## 12. 当前交接状态（截至 2026-10-26）
+
+### 12.1 用户最终决定与当前范围
+
+此前独立观察代次、三次只读检查修复后，维护者仍反馈 WebVPN 网页自动登录失败。因此明确要求：**WebVPN 登录全部改成应用内原生表单，验证码也在应用内输入**；并明确选择**仅手动输入验证码，不保留自动识别选项**。
+
+本轮以本地 `2457cb1` 及既有改动为基础完成实现。维护者已于 2026-10-26 明确授权发布 `v0.20.1 / versionCode 53`，最低支持仍为 50；签名预检在 main 执行，成功后才推新 tag。不要把旧版自动 SSO/OCR 的产品说明当成当前要求，实际发布状态以远端为准。
+
+### 12.2 已完成的实现
+
+- `LoginActivity` 的 WebVPN 分支创建 `WebVpnNativeForm`，不创建或显示学校 WebView；直连的手动网页入口保留。
+- 原生第一步填写统一认证学工号、密码、四位验证码，可选学校“五天内自动登录”和本机加密记住账号；学校验证外层会话后再显示第二套图书馆账号密码。
+- 保存账号的“已验证”只归属于本轮确实提交、表单已消费且 revision 未变的那套凭据；读取已有会话不验证保存密码，刷新、退出、明确拒绝或未发出清除归属，未知提交可保留供手动只读核对。
+- 验证码图片、动态 execution 和表单内容只在内存；密码和验证码输入框关闭 Android 自动保存与自动填充。仅明确勾选后使用原有 AES/GCM + AndroidKeyStore 分别保存账号。
+- `NativeWebVpnSession` 严格核对正常学校表单、service、隐藏字段、脚本、公钥和图像来源；按学校公开 `security.js` 的 16 位字与无填充 RSA 编码，以及图书馆 Base64 字符编码提交。保留公开脚本对非 ASCII 字符首次平方的 JS 32 位截断行为，已用真实公开脚本的合成密码输出核对。
+- `NativeVpnHttp` 只请求学校 WebVPN 的明确路径，使用平台 TLS。通过 Android CookieManager 共享正常会话，等待 Set-Cookie 完成后才跟随下一跳；凭据 POST 只允许 301/302/303 转为 GET，拒绝 307/308 凭据重发与外部跳转。
+- 每个验证码表单绑定当前 Cookie、身份和创建时间（本地最多 120 秒），原子消费一次。过期、换图、会话改变或重复点击时不能再次使用。明确验证码拒绝可显示返回的新表单，但仍由用户点击下一次提交；结果不明只提供检查状态/明确重新获取，不自动重发。
+- 生产后台 `WebVpnAutoLogin.canRecover` 不再恢复统一认证；其旧驱动固定 `allowSso=false`、OCR 关闭。已有 WebVPN 外层会话有效时可继续预约，仅图书馆内层过期时保留已授权的内层自动重登。不要偷偷恢复后台 OCR。
+- 预约、00:58 调度、线路切换和提交后禁止重发保护没有放宽。
+- UI 中入口和账号设置文案同步为应用内登录、手动验证码。旧 OCR/驱动源码和模型暂留作兼容，未在本轮删除；仍有历史测试覆盖它们，但生产统一认证入口不会调用。
+
+### 12.3 公开协议核对依据
+
+本轮只 GET 读取了未登录的学校公开登录页与脚本，未使用任何账号或提交登录：
+
+- 统一认证代理路径为 `WebVpnPages.SSO_PROXY_PREFIX + /tpass/login`，form 为 `#fm1`，字段为 username/password/authcode，隐藏域 execution/encrypted/_eventId/loginType；rememberMe 值为 true。
+- service 精确为 `https://webvpn.cppu.edu.cn/login?cas_login=true`；密码公钥取自学校当前公开 login.js，指数为 010001。
+- 验证码为同会话的 `/tpass/captcha.jpg`，通常 60×20；不另开 Cookie 会话获取。
+- 图书馆主表单是 `#fromuser`，user/passwd/url，原 submitForm 只将密码经其 Base64 编码后正常提交。
+- 公开 security.js 的 SHA-256 为 `de4ce8fd9327b150289a30e949739ea9b5f475ed009434a3139be79c6241f6d7`；合成密码英文、中文及分块输出用于兼容核对，不含真实账号数据。
+- 使用 jsoup 解析 HTML，依赖遵循 [jsoup 官方说明](https://jsoup.org/download)；启用 Android 核心库 desugaring，见 [Android 官方配置](https://developer.android.com/studio/write/java8-support)。
+
+### 12.4 测试与待验证项
+
+发布前必须通过 Node 全量 444 项与 Android 全量 345 项；本地结果和签名预检以实际日志、产物摘要与远端工作流为准。新增测试覆盖原生两层状态、真实编码向量、验证码校验/拒绝/过期、Cookie 变化、重复点击、提交超时、字段或目标变化、只读核对、共享 Cookie 与重定向规则、原生控件、敏感输入不保存以及本轮提交的凭据验证归属。测试全部使用模拟连接和合成数据，不访问学校业务。
+
+**仍需真机验证**：首次原生两层登录、验证码刷新、学校当前业务响应、五天登录实际有效期、锁屏及隔夜预约。本轮没有执行真实登录或预约。遇到未知新增页面、字段、额外认证或网络结果不明，应显示明确错误并停止，不放宽白名单或自动重发。
+
+### 12.5 接手注意
+
+当前源码位于 `C:\Users\20571\Documents\Qoder\2026-10-24\9ff79a09`。本轮诊断和可安装调试包在原工作区 `diagnostics/native-webvpn-login-2026-10-26/`。调试应用标签仍为“图书馆自动预约（调试）”，包名带 .debug，可与正式版共存。维护者应测试这个包。
+
+既有未提交的代理 formaction 修复、会话结束 JSON 分类、调试阶段和标签改动仍保留。不要覆盖既有工作，不要移动历史 tag，也不要在未经明确授权时发布；不要索取或保存聊天中的真实账号密码、Cookie 或 ticket。

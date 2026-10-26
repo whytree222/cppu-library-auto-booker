@@ -55,6 +55,8 @@ object WebVpnAutoLogin {
 
     fun canRecover(context: Context, result: SessionChecker.Result, statusOnly: Boolean = false): Boolean {
         if (interactiveLoginOpen) return false
+        // SSO now requires the user to enter its challenge in the native form.
+        if (result.state == "vpn_login_required") return false
         val kind = if (result.state == "vpn_login_required") Kind.SSO
             else if (result.state == "expired" && result.vpnAuthState == "valid") Kind.LIBRARY else return false
         val store = WebVpnCredentialStore(context, kind)
@@ -71,6 +73,7 @@ object WebVpnAutoLogin {
         val name = if (kind == Kind.SSO) "统一认证" else "WebVPN 图书馆"
         return when {
             interactiveLoginOpen -> "校方登录页面正在处理认证，请先完成登录或返回应用；不会同时启动另一轮后台登录"
+            kind == Kind.SSO -> "统一认证已过期，请打开应用内 WebVPN 登录并手动输入验证码"
             !store.enabled -> "$name 自动登录尚未保存开启"
             store.paused -> "$name 自动登录因上次提交未通过或结果不明而暂停，需先核对账号和学校结果"
             kind == Kind.SSO && !context.getSharedPreferences("webvpn_ocr", Context.MODE_PRIVATE).getBoolean("enabled", true) -> "验证码识别已关闭，无法自动完成统一认证"
@@ -150,7 +153,7 @@ object WebVpnAutoLogin {
                     if (updatesSession) RuntimeStore(app).session("logging_in", it)
                     LoginStatusStore(app).recovering(it)
                 }
-            }, onResult = ::finish)
+            }, onResult = ::finish, allowSso = false)
             // Like the reservation renderer, give the off-screen WebView an actual layout.
             // This is an explicitly opted-in login run; no Activity or lockscreen is opened.
             val metrics = app.resources.displayMetrics

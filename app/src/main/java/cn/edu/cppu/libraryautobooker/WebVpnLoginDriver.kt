@@ -18,17 +18,20 @@ import org.json.JSONTokener
 class WebVpnLoginDriver internal constructor(
     context: Context,
     private val view: WebView,
-    private val onStatus: (String) -> Unit,
+    private val statusSink: (String) -> Unit,
     private val onResult: (SessionChecker.Result) -> Unit,
     private val ssoStore: WebVpnCredentialStore,
     private val libraryStore: WebVpnCredentialStore,
-    private val probe: ((SessionChecker.Result) -> Unit) -> Unit
+    private val probe: ((SessionChecker.Result) -> Unit) -> Unit,
+    private val allowSso: Boolean = true
 ) : AutoCloseable {
     constructor(context: Context, view: WebView, onStatus: (String) -> Unit,
-        onResult: (SessionChecker.Result) -> Unit) : this(context, view, onStatus, onResult,
+        onResult: (SessionChecker.Result) -> Unit, allowSso: Boolean = true) : this(context, view, onStatus, onResult,
         WebVpnCredentialStore(context, Kind.SSO), WebVpnCredentialStore(context, Kind.LIBRARY),
-        { callback -> SessionChecker.probe(context.applicationContext, LibraryRoute.WEBVPN, updateSession = false, callback = callback) })
+        { callback -> SessionChecker.probe(context.applicationContext, LibraryRoute.WEBVPN, updateSession = false, callback = callback) }, allowSso)
     private val app = context.applicationContext
+    private var lastStatus = ""
+    private fun onStatus(message: String) { lastStatus = message; statusSink(message) }
     private val main = Handler(Looper.getMainLooper())
     private val sso = ssoStore
     private val library = libraryStore
@@ -52,6 +55,10 @@ class WebVpnLoginDriver internal constructor(
     private var prepared = false
     private var ssoSubmitted = false
     private var ssoCallSerial = 0L
+    // Observation has its own generation: a handler fallback must retire the early
+    // watchdog without re-arming the one-shot login gesture/submission itself.
+    private var ssoVerificationSerial = 0L
+    private var ssoOutcomeChecks = 0
     private var ssoSubmittedDocument = -1L
     private var ssoAttempts = 0
     private var loginTapAttempts = 0
@@ -86,7 +93,7 @@ class WebVpnLoginDriver internal constructor(
     }
 
     init {
-        captcha.setEnabled(ocrEnabled)
+        captcha.setEnabled(ocrEnabled && allowSso)
         main.postDelayed({ timeout() }, 90_000L)
     }
 
@@ -251,6 +258,10 @@ class WebVpnLoginDriver internal constructor(
     }
 
     private fun prepareSso() {
+        if (!allowSso) {
+            fail("统一认证已过期，请在应用内 WebVPN 登录中手动输入验证码；后台不会识别或提交统一认证", "vpn_login_required", "expired", pause = null)
+            return
+        }
         if (preparing || restartPending || !CaptchaPagePolicy.isTrusted(view.url) || !withinDeadline()) return
         if (!ocrEnabled) { fail("未开启验证码识别，请手动认证或在网页开启识别", "vpn_login_required", "expired"); return }
         val credentials = sso.read()
@@ -295,6 +306,7 @@ class WebVpnLoginDriver internal constructor(
         ssoSubmittedDocument = documentSerial
         ssoAttempts++
         val call = ++ssoCallSerial
+        ssoOutcomeChecks = 0
         // Once the credential POST may start, OCR must not refresh another challenge.
         captcha.onPause()
         onStatus("正在核对学校原登录按钮及当前验证码，准备一次登录触控…")
@@ -517,6 +529,9 @@ class WebVpnLoginDriver internal constructor(
             return
         }
         ssoFallbackCall = call
+        // Replace the pre-touch watchdog before invoking JS. Its callback may be
+        // delayed/lost, and the older timer must not conclude this POST's outcome.
+        verifyLater(id, Kind.SSO, call)
         onStatus(if (provenUnsent)
             "未能定位学校原登录按钮，未发送登录触控；正在改用学校自身校验处理器提交一次（不代表成功）…"
         else "原生触控未触发学校按钮，正在改用学校自身校验处理器提交一次（不代表成功）…")
@@ -658,21 +673,57 @@ class WebVpnLoginDriver internal constructor(
     }
 
     private fun verifyLater(id: Long, kind: Kind, call: Long = ssoCallSerial) {
+        if (kind == Kind.SSO) {
+            scheduleSsoVerification(id, call, 12_000L)
+            return
+        }
         main.postDelayed({
             if (!live(id) || loading) return@postDelayed
-            if (kind == Kind.SSO && (!ssoSubmitted || call != ssoCallSerial)) return@postDelayed
             if (LibraryRoute.WEBVPN.pathOf(view.url.orEmpty()) != null) checkLibrary()
-            else if (kind == Kind.SSO) checkSsoOutcome(id)
         }, 12_000L)
     }
 
-    private fun checkSsoOutcome(id: Long) {
-        if (probing || !live(id) || !ssoSubmitted) return
+    private fun scheduleSsoVerification(id: Long, call: Long, delayMillis: Long) {
+        val verification = ++ssoVerificationSerial
+        main.postDelayed({
+            if (!ssoVerificationCurrent(id, call, verification) || loading) return@postDelayed
+            if (LibraryRoute.WEBVPN.pathOf(view.url.orEmpty()) != null) checkLibrary()
+            else checkSsoOutcome(id, call, verification)
+        }, delayMillis)
+    }
+
+    private fun ssoVerificationCurrent(id: Long, call: Long, verification: Long) =
+        live(id) && ssoSubmitted && call == ssoCallSerial && verification == ssoVerificationSerial
+
+    private fun ssoSettingsCurrent() =
+        ocrEnabled && sso.enabled && !sso.paused && sso.revision == ssoVersion
+
+    private fun checkSsoOutcome(id: Long, call: Long, verification: Long) {
+        if (!ssoVerificationCurrent(id, call, verification)) return
+        if (!ssoSettingsCurrent()) {
+            fail("统一认证已提交，但账号或识别设置已改变；已停止检查，不重复提交", "unknown", pause = null)
+            return
+        }
+        if (probing) {
+            // Another read-only recovery probe may still be completing. Keep one
+            // observer, within the original deadline, rather than dropping it.
+            scheduleSsoVerification(id, call, 1_000L)
+            return
+        }
+        if (ssoOutcomeChecks >= 3) {
+            fail("统一认证已提交，三次只读检查后仍无法确认学校会话；未重发，也未判定账号错误，请核对学校页面", pause = null)
+            return
+        }
+        ssoOutcomeChecks++
         probing = true
         CookieManager.getInstance().flush()
         probe { result ->
-            if (!live(id)) return@probe
+            if (!ssoVerificationCurrent(id, call, verification)) return@probe
             probing = false
+            if (!ssoSettingsCurrent()) {
+                fail("统一认证已提交，但账号或识别设置已改变；已停止检查，不重复提交", "unknown", pause = null)
+                return@probe
+            }
             if (result.vpnAuthState == "valid" && result.state in setOf("valid", "expired")) {
                 ssoConfirmed = true
                 if (sso.revision == ssoVersion && sso.enabled) sso.markVerified()
@@ -680,7 +731,21 @@ class WebVpnLoginDriver internal constructor(
                     stopped = true
                     onResult(result.copy(detail = "学校验证两层登录有效"))
                 } else navigate(LibraryRoute.WEBVPN.url("/login"))
-            } else fail("统一认证调用后仍未验证通过：${result.detail}；已停止，不重复提交，请核对学校页面", result.state, result.vpnAuthState, Kind.SSO)
+            } else if (ssoOutcomeChecks < 3 &&
+                (result.networkFailure || result.state in setOf("unknown", "vpn_login_required"))) {
+                // School/VPN cookies can settle after the first probe. Observe only;
+                // no field refill, CAPTCHA refresh, click, credential POST or restart.
+                val delay = ssoOutcomeChecks * 3_000L
+                onStatus("统一认证已提交，学校会话暂未确认；${delay / 1_000} 秒后仅检查登录状态（$ssoOutcomeChecks/3），不会再次提交")
+                scheduleSsoVerification(id, call, delay)
+            } else {
+                // A read-only probe that cannot establish the school session says nothing
+                // about the submitted credentials. Stop without resending and without
+                // pausing the saved account: pausing would turn a client-side verification
+                // limitation into a false credential failure.
+                fail("统一认证已提交，但无法确认学校会话：${result.detail}；未重发，也未判定账号错误，请稍后重试或手动登录",
+                    result.state, result.vpnAuthState, pause = null)
+            }
         }
     }
 
@@ -703,6 +768,10 @@ class WebVpnLoginDriver internal constructor(
     fun fail(message: String, state: String = "unknown", auth: String? = null,
         pause: Kind? = if (librarySubmitted) Kind.LIBRARY else if (ssoSubmitted) Kind.SSO else null) {
         if (closed || stopped) return
+        // Debug-only: the last live status names the stage that failed. Release messages
+        // stay unchanged, and no status ever contains credentials or page content.
+        val detail = if (BuildConfig.DEBUG && lastStatus.isNotEmpty() && !message.contains(lastStatus))
+            "$message（调试最后阶段：$lastStatus）" else message
         if (CaptchaPagePolicy.isTrusted(view.url)) runCatching { view.evaluateJavascript("window.SchoolSsoAutoLogin?.cancel()", null) }
         stopped = true
         restartPending = false
@@ -710,8 +779,8 @@ class WebVpnLoginDriver internal constructor(
         captcha.onPause()
         if (pause == Kind.SSO && sso.revision == ssoVersion) sso.pause()
         if (pause == Kind.LIBRARY && library.revision == libraryVersion) library.pause()
-        onStatus(message)
-        onResult(SessionChecker.Result(state, message, vpnAuthState = auth))
+        onStatus(detail)
+        onResult(SessionChecker.Result(state, detail, vpnAuthState = auth))
     }
 
     override fun close() {

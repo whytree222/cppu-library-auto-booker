@@ -81,6 +81,17 @@ class LoginStatusTest {
         assertEquals("vpn_login_required", SessionChecker.decodeRoute(vpn, 200, null, ssoPage).state)
         assertEquals("valid", SessionChecker.decodeRoute(vpn, 200, null, "{\"ReturnValue\":1}").state)
     }
+    @Test fun webVpnProxySessionEndedEnvelopeMeansRenewalNotMalformedReply() {
+        val ended = """{"message":"您的会话已结束，请重新登录","success":false,"url":"/login"}"""
+        val result = SessionChecker.decodeRoute(vpn, 200, null, ended)
+        assertEquals("vpn_login_required", result.state)
+        assertEquals("expired", result.vpnAuthState)
+        assertFalse(result.detail.contains("格式不符"))
+        // Only the proxy's exact session-ended envelope is reclassified.
+        assertEquals("unknown", SessionChecker.decodeRoute(vpn, 200, null, "{\"success\":false}").state)
+        assertEquals("unknown", SessionChecker.decodeRoute(direct, 200, null, ended).state)
+        assertEquals("expired", SessionChecker.decodeRoute(vpn, 200, null, "{\"ReturnValue\":0}").state)
+    }
     @Test fun manualLoginPagePolicyAllowsOnlySchoolVpnAndSso() {
         assertTrue(WebVpnPages.allows("https://webvpn.cppu.edu.cn/"))
         assertTrue(WebVpnPages.allows("https://webvpn.cppu.edu.cn/login"))
