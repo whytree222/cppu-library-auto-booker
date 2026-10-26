@@ -14,6 +14,7 @@ test('repair workflow is manual-only and reuses a verified build artifact', () =
   assert.match(workflow, /run-id: \$\{\{ inputs\.run_id \}\}/);
   assert.doesNotMatch(workflow, /gradle|assembleRelease|testDebugUnitTest/);
   assert.match(workflow, /--check-tag "\$TAG"/);
+  assert.match(workflow, /npm ci --ignore-scripts/);
   assert.match(workflow, /readPreparedDistribution/);
   assert.match(workflow, /RELEASE_CERT_SHA256/);
   assert.match(workflow, /gh release create[\s\S]*--draft --verify-tag/);
