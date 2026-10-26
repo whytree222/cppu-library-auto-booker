@@ -176,6 +176,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install publishing dependencies
+        run: npm ci --ignore-scripts
       - name: Validate tag and version
         run: |
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Publishing requires a v* tag"; exit 1; }

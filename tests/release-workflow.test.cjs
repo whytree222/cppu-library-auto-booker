@@ -16,6 +16,13 @@ const backfillWorkflow = fs.readFileSync(
   'utf8'
 );
 
+test('publish job installs its own dependencies before running publisher scripts', () => {
+  const publishJob = workflow.slice(workflow.indexOf('\n  publish:'));
+  const install = publishJob.indexOf('npm ci --ignore-scripts');
+  const publisher = publishJob.indexOf('node scripts/publish-gitee.mjs release');
+  assert.ok(install > 0 && publisher > install);
+});
+
 test('manifest sync workflow is manual-only and never republishes assets', () => {
   assert.match(syncWorkflow, /on:\s*\n\s*workflow_dispatch:/);
   assert.doesNotMatch(syncWorkflow, /^\s{2}(push|pull_request):/m);
