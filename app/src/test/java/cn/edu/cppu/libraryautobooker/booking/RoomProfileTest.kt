@@ -157,6 +157,8 @@ class RoomProfileTest {
         val id = initial.reservationFingerprint()
         assertEquals(id, initial.withPending(listOf(1L, 2L)).reservationFingerprint())
         assertEquals(id, initial.withPending(emptyList()).reservationFingerprint())
+        // Transport preference must never cancel a queued 00:58 alarm.
+        assertEquals(id, initial.copy(webVpnBackup = false).reservationFingerprint())
         listOf(initial.copy(room = free), initial.copy(seatNumbers = listOf("B002")),
             initial.copy(selectedSlots = listOf(1)), initial.copy(reserveTomorrow = !initial.reserveTomorrow),
             initial.copy(dryRun = !initial.dryRun)).forEach { assertNotEquals(id, it.reservationFingerprint()) }

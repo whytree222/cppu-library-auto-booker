@@ -28,6 +28,7 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.LibraryAutoBooker">
+        <activity android:name=".WebVpnAccountsActivity" android:exported="false" />
         <activity android:name=".RoomBrowserActivity" android:exported="false" />
         <activity
             android:name=".LoginActivity"

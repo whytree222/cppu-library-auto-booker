@@ -37,6 +37,7 @@ object ImmediateBookingPlan {
                 put(JSONObject().put("id", it.id).put("row", it.row).put("column", it.column))
             } }).put("slots", JSONArray(config.selectedSlots)).put("append", config.appendLastThree)
             .put("start", config.startTime).put("end", config.endTime)
+            .put("webVpnBackup", config.webVpnBackup)
             .put("roomKeywords", config.roomKeywords).put("seatKeywords", config.seatKeywords).toString()
             .also { require(it.length <= 32_000) }
     }
@@ -55,8 +56,8 @@ object ImmediateBookingPlan {
                 MapSeat(seat.getString("id"), seat.getInt("row"), seat.getInt("column"))
             } }, selectedSlots = (0 until slots.length()).map(slots::getInt),
             appendLastThree = json.getBoolean("append"), startTime = json.getString("start"),
-            endTime = json.getString("end"), roomKeywords = json.getString("roomKeywords"),
-            seatKeywords = json.getString("seatKeywords")))
+            endTime = json.getString("end"), webVpnBackup = json.optBoolean("webVpnBackup", true),
+            roomKeywords = json.getString("roomKeywords"), seatKeywords = json.getString("seatKeywords")))
         require(config.validationError() == null)
         Request(config, LocalDate.parse(json.getString("anchorDate")))
     }.getOrNull()

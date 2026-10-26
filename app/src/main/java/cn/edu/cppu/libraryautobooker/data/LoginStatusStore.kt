@@ -7,19 +7,35 @@ import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 class LoginStatusStore(context: Context) {
     val prefs = RuntimeStore(context).prefs
     data class Entry(val state: String = "unknown", val detail: String = "尚未检查", val checkedAt: Long = 0)
-    data class Snapshot(val direct: Entry)
+    data class Snapshot(val direct: Entry, val webVpn: Entry)
 
-    fun snapshot() = Snapshot(Entry(prefs.getString("login_direct_state", "unknown").orEmpty(),
-        prefs.getString("login_direct_detail", "尚未检查").orEmpty(), prefs.getLong("login_direct_at", 0)))
+    fun snapshot() = Snapshot(entry(LibraryRoute.DIRECT), entry(LibraryRoute.WEBVPN))
+
+    private fun prefix(route: LibraryRoute) =
+        if (route == LibraryRoute.DIRECT) "login_direct_" else "login_vpn_"
+
+    private fun entry(route: LibraryRoute): Entry {
+        val key = prefix(route)
+        return Entry(prefs.getString("${key}state", "unknown").orEmpty(),
+            prefs.getString("${key}detail", "尚未检查").orEmpty(), prefs.getLong("${key}at", 0))
+    }
 
     fun checking(route: LibraryRoute) {
-        prefs.edit().putString("login_direct_state", "checking")
-            .putString("login_direct_detail", "正在检查学校返回结果…").apply()
+        val key = prefix(route)
+        prefs.edit().putString("${key}state", "checking")
+            .putString("${key}detail", "正在检查学校返回结果…").apply()
+    }
+
+    fun recovering(detail: String) {
+        val key = prefix(LibraryRoute.WEBVPN)
+        prefs.edit().putString("${key}state", "checking")
+            .putString("${key}detail", detail).apply()
     }
 
     fun record(route: LibraryRoute, result: SessionChecker.Result) {
-        prefs.edit().putString("login_direct_state", result.state)
-            .putString("login_direct_detail", result.detail)
-            .putLong("login_direct_at", System.currentTimeMillis()).apply()
+        val key = prefix(route)
+        prefs.edit().putString("${key}state", result.state)
+            .putString("${key}detail", result.detail)
+            .putLong("${key}at", System.currentTimeMillis()).apply()
     }
 }

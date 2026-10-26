@@ -9,7 +9,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceError
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import cn.edu.cppu.libraryautobooker.data.ConfigStore
 import cn.edu.cppu.libraryautobooker.data.CredentialStore
+import cn.edu.cppu.libraryautobooker.data.LoginStatusStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import org.json.JSONObject
@@ -132,7 +134,25 @@ object SessionCoordinator {
     }
 
     private fun checkPreferred(context: Context, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
-        return checkRoute(context, LibraryRoute.DIRECT, callback = callback)
+        val request = CheckRequest()
+        request.attach(checkRoute(context, LibraryRoute.DIRECT) { direct ->
+            if (!request.active) return@checkRoute
+            if (!direct.networkFailure || !ConfigStore(context).load().webVpnBackup) {
+                request.deliver { callback(direct) }
+                return@checkRoute
+            }
+            request.attach(checkRoute(context, LibraryRoute.WEBVPN) { vpn ->
+                if (!request.active) return@checkRoute
+                request.deliver {
+                    callback(if (vpn.state == "valid")
+                        SessionChecker.Result("valid", "校园网直连不可用，已通过学校 WebVPN 验证图书馆登录",
+                            vpnAuthState = vpn.vpnAuthState)
+                    else SessionChecker.Result(vpn.state,
+                        "校园网直连不可用；${vpn.detail}", vpn.networkFailure, vpn.vpnAuthState))
+                }
+            })
+        })
+        return request
     }
 
     fun checkState(context: Context, callback: (String) -> Unit): AutoCloseable {
@@ -152,9 +172,41 @@ object SessionCoordinator {
                         callback(SessionChecker.Result(if (valid) "valid" else RuntimeStore(context).prefs.getString("session_state", "unknown").orEmpty(), detail))
                     }
                 }
-            } else request.deliver { callback(result) }
+            } else if (route == LibraryRoute.WEBVPN) handleWebVpnCheck(context, result, updateSession, request, callback)
+            else request.deliver { callback(result) }
         }
         return request
+    }
+
+    internal fun handleWebVpnCheck(context: Context, result: SessionChecker.Result, updateSession: Boolean,
+        request: CheckRequest, callback: (SessionChecker.Result) -> Unit,
+        ensure: ((SessionChecker.Result) -> Unit) -> AutoCloseable = { listener ->
+            WebVpnAutoLogin.ensure(context, updateSession = updateSession, callback = listener)
+        }) {
+        if (!request.active) return
+        if (WebVpnAutoLogin.canRecover(context, result, statusOnly = !updateSession)) {
+            request.attach(ensure { recovered -> request.deliver { callback(recovered) } })
+        } else request.deliver {
+            val reason = WebVpnAutoLogin.recoveryUnavailableReason(context, result)
+            val explained = if (reason == null) result else result.copy(detail = "${result.detail}；$reason")
+            if (reason != null) LoginStatusStore(context).record(LibraryRoute.WEBVPN, explained)
+            callback(explained)
+        }
+    }
+
+    /** Status cards use recovery too, without replacing the preferred booking route. */
+    fun checkWebVpnStatus(context: Context, callback: (SessionChecker.Result) -> Unit = {}): AutoCloseable {
+        // Reservation-owned checks decide recovery once a task starts. A status-card
+        // refresh must never change authentication cookies underneath an in-flight POST.
+        if (cn.edu.cppu.libraryautobooker.booking.BookingService.running ||
+            RuntimeStore(context).prefs.getString("task_state", "") in setOf("RUNNING", "TRIGGERED")) {
+            val request = CheckRequest()
+            SessionChecker.probe(context, LibraryRoute.WEBVPN, updateSession = false) { result ->
+                request.deliver { callback(result) }
+            }
+            return request
+        }
+        return checkRoute(context, LibraryRoute.WEBVPN, updateSession = false, callback = callback)
     }
 
     /** Main-thread ownership of an asynchronous probe and its optional shared recovery. */

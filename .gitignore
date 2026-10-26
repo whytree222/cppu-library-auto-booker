@@ -10,6 +10,7 @@ app/build/
 node_modules/
 /.ocr-cache/
 /.ocr-private/
+app/src/main/assets/ocr/*.onnx
 app/src/main/assets/ocr/charsets.json
 *.jks
 *.keystore

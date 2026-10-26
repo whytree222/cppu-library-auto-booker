@@ -30,6 +30,7 @@ class ConfigStore(context: Context) {
         releaseTimes = readLongs("release_times").filter { it in 0..1439 }.map { it.toInt() },
         scheduledTimes = readLongs("scheduled_times").filter { it > 0 },
         waitForRelease = prefs.getBoolean("wait_for_release", false),
+        webVpnBackup = prefs.getBoolean("webvpn_backup", true),
         room = if (!prefs.contains("room_profile")) RoomProfile.DEFAULT else runCatching {
             RoomProfile.fromJson(JSONObject(prefs.getString("room_profile", "")!!))
         }.getOrNull() ?: RoomProfile("", "未识别的阅览室", "", "未知楼层", "unknown")
@@ -40,6 +41,7 @@ class ConfigStore(context: Context) {
             .putBoolean("enabled", config.enabled)
             .putBoolean("dry_run", config.dryRun)
             .putBoolean("wait_for_release", config.waitForRelease)
+            .putBoolean("webvpn_backup", config.webVpnBackup)
             .putString("room_profile", config.room.toJson().toString())
             .putBoolean("reserve_tomorrow", config.reserveTomorrow)
             .putInt("release_hour", config.releaseHour)

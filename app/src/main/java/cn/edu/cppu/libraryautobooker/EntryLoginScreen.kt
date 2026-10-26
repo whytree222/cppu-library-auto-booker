@@ -135,6 +135,7 @@ fun EntryLoginScreen(
         detail = when (state) {
             "valid" -> "当前登录仍有效，可以直接继续"
             "expired" -> "请登录学校图书馆账号"
+            "vpn_login_required" -> "WebVPN 需要完成学校网页登录；可使用 WebVPN 登录"
             else -> "无法验证登录，请检查校园网络后重新检查，或使用学校网页登录"
         }
     }
@@ -161,17 +162,30 @@ fun EntryLoginScreen(
             } else checked(state)
         }
     }
+    var schoolRoute by remember { mutableStateOf(LibraryRoute.DIRECT) }
     val schoolLogin = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             validSession = true
             busy = false
             detailIsError = false
             fieldError = false
-            detail = "学校网页登录成功，可以继续；自动重新登录需在此填写账号密码"
+            detail = if (schoolRoute == LibraryRoute.WEBVPN)
+                "WebVPN 网页登录成功，可以继续；应用不会保存统一认证密码"
+            else "学校网页登录成功，可以继续；自动重新登录需在此填写账号密码"
             if (autoEnterValid) onAuthenticated()
         } else {
             checkAttempt++
         }
+    }
+    fun openSchoolLogin(route: LibraryRoute) {
+        password = ""
+        clearInputError()
+        // A school-web login may switch accounts; old saved credentials cannot be assumed to match.
+        store.setEnabled(false)
+        store.setPreference(autoRelogin)
+        schoolRoute = route
+        schoolLogin.launch(Intent(context, LoginActivity::class.java)
+            .putExtra(LoginActivity.EXTRA_WEBVPN, route == LibraryRoute.WEBVPN))
     }
 
     if (gateOnly) {
@@ -182,10 +196,10 @@ fun EntryLoginScreen(
                 if (busy) CircularProgressIndicator()
                 Text(detail)
                 if (!busy) Button(onClick = { checkAttempt++ }) { Text("重新检查") }
-                TextButton(onClick = {
-                    store.setEnabled(false)
-                    schoolLogin.launch(Intent(context, LoginActivity::class.java))
-                }, enabled = !busy) { Text("使用学校网页登录") }
+                TextButton(onClick = { openSchoolLogin(LibraryRoute.DIRECT) },
+                    enabled = !busy) { Text("使用学校网页登录") }
+                TextButton(onClick = { openSchoolLogin(LibraryRoute.WEBVPN) },
+                    enabled = !busy) { Text("WebVPN 网页登录") }
                 LoginStatusCard(rememberLoginStatuses())
             }
         }
@@ -203,12 +217,12 @@ fun EntryLoginScreen(
                 IconBadge(Icons.Filled.Lock)
                 Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                     Text("图书馆预约", style = MaterialTheme.typography.titleLarge)
-                    Text("校园网直连", style = MaterialTheme.typography.bodySmall,
+                    Text("直连优先 · WebVPN 备用", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Text("登录", style = MaterialTheme.typography.headlineSmall)
-            Text("连接校园网络后登录", style = MaterialTheme.typography.bodyMedium,
+            Text("可连接校园网直连，或使用 WebVPN 校外登录", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(username, { username = it; clearInputError() }, label = { Text("学校账号") },
                 singleLine = true, enabled = !busy, isError = fieldError,
@@ -298,14 +312,10 @@ fun EntryLoginScreen(
                     }
                 }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("继续进入应用") }
             }
-            TextButton(onClick = {
-                password = ""
-                clearInputError()
-                // A school-web login may switch accounts; old saved credentials cannot be assumed to match.
-                store.setEnabled(false)
-                store.setPreference(autoRelogin)
-                schoolLogin.launch(Intent(context, LoginActivity::class.java))
-            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("使用学校网页登录") }
+            TextButton(onClick = { openSchoolLogin(LibraryRoute.DIRECT) },
+                enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("使用学校网页登录") }
+            TextButton(onClick = { openSchoolLogin(LibraryRoute.WEBVPN) },
+                enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 网页登录（夜间/校外备用）") }
             if (store.configured) TextButton(onClick = {
                 runCatching { store.clear(); store.setPreference(autoRelogin) }.onSuccess {
                     username = ""; password = ""; detailIsError = false; fieldError = false
@@ -315,7 +325,7 @@ fun EntryLoginScreen(
             LoginStatusCard(rememberLoginStatuses(), onCheck = {
                 SessionChecker.probe(app, LibraryRoute.DIRECT, updateSession = false) {}
             })
-            Text("图书馆使用 HTTP，请仅在可信校园网络中登录。", style = MaterialTheme.typography.bodySmall)
+            Text("直连图书馆使用 HTTP，请仅在可信校园网络中使用；WebVPN 使用 HTTPS。", style = MaterialTheme.typography.bodySmall)
         }
     }
 }

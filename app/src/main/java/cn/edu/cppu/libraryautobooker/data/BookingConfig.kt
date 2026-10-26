@@ -24,6 +24,7 @@ data class BookingConfig(
     val releaseTimes: List<Int> = emptyList(),
     val scheduledTimes: List<Long> = emptyList(),
     val waitForRelease: Boolean = false,
+    val webVpnBackup: Boolean = true,
     val room: RoomProfile = RoomProfile.DEFAULT
 ) {
     /** Binds an already-queued alarm handoff to this exact room/seat/time draft. */

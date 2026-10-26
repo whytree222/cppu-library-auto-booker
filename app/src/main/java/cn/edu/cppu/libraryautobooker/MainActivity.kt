@@ -450,7 +450,28 @@ class MainActivity : ComponentActivity() {
                                 startActivity(Intent(this@MainActivity, LoginActivity::class.java))
                             }, modifier = Modifier.fillMaxWidth()) { Text("直连 · 图书馆网页登录") }
                         }
-                        PreparationCard(loginStatuses.direct.state, config,
+                        WebVpnCard(
+                            statuses = loginStatuses,
+                            enabled = liveConfig.webVpnBackup,
+                            onEnabledChange = { enabled ->
+                                config = config.copy(webVpnBackup = enabled)
+                                store.save(store.load().copy(webVpnBackup = enabled))
+                            },
+                            onLogin = {
+                                startActivity(Intent(this@MainActivity, LoginActivity::class.java)
+                                    .putExtra(LoginActivity.EXTRA_WEBVPN, true))
+                            },
+                            onCheck = {
+                                SessionCoordinator.checkWebVpnStatus(this@MainActivity) {}
+                            },
+                            onAccounts = {
+                                startActivity(Intent(this@MainActivity, WebVpnAccountsActivity::class.java))
+                            }
+                        )
+                        val loginReadyState = if (loginStatuses.direct.state == "valid") "valid"
+                            else if (liveConfig.webVpnBackup && loginStatuses.webVpn.state == "valid") "valid"
+                            else loginStatuses.direct.state
+                        PreparationCard(loginReadyState, config,
                             seatMaps?.forRoom(config.room) != null, liveConfig.enabled)
                         RoomSettingsCard(config.room, rooms, onSelect = selectRoom, onSync = {
                             roomBrowser.launch(Intent(this@MainActivity, RoomBrowserActivity::class.java))

@@ -51,6 +51,7 @@ internal fun loginPill(state: String): Pair<String, StatusTone> = when (state) {
     "valid" -> "登录有效" to StatusTone.Success
     "expired" -> "未登录 / 已过期" to StatusTone.Error
     "blocked" -> "登录受限" to StatusTone.Error
+    "vpn_login_required" -> "需网页登录" to StatusTone.Warning
     "checking" -> "检查中" to StatusTone.Info
     else -> "无法确认" to StatusTone.Neutral
 }
@@ -103,7 +104,7 @@ fun LoginStatusCard(
         if (details) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
             Text(statuses.direct.detail, style = MaterialTheme.typography.bodyMedium)
-            Text("需要连接可访问图书馆的校园网络；状态仅代表最近一次检查结果。图书馆站点使用 HTTP，请仅在可信网络中使用。",
+            Text("需要连接可访问图书馆的校园网络；校园网不可用时可在下方使用 WebVPN 备用。状态仅代表最近一次检查结果。图书馆站点使用 HTTP，请仅在可信网络中使用。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

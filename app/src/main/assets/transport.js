@@ -1,8 +1,8 @@
 (() => {
   if (window.LibraryTransport) return;
   const route = __TRANSPORT_CONFIG__;
-  const origin = 'http://mlib.cppu.edu.cn', prefix = '';
-  if (route.origin !== origin || route.prefix !== '' || location.origin !== origin) return;
+  const origin = route.origin, prefix = route.prefix;
+  if (location.origin !== origin || !location.pathname.startsWith(prefix + '/')) return;
   const pathOf = url => {
     const u = new URL(url, location.href);
     if (u.origin !== origin || u.username || u.password || !u.pathname.startsWith(prefix + '/')) return null;
@@ -11,7 +11,13 @@
   const map = value => {
     const raw = String(value);
     const u = new URL(raw, location.href);
-    return u.origin === origin && !u.username && !u.password ? u.href : raw;
+    if (u.origin === 'http://mlib.cppu.edu.cn') return origin + prefix + u.pathname + u.search + u.hash;
+    if (u.origin !== origin) return raw;
+    if (u.pathname.startsWith(prefix + '/')) return u.href;
+    // Only library endpoints, not the VPN's own authentication/control resources.
+    if (/^\/(?:readingroom\/|readingRoom\/|isLogin(?:$|\/)|login(?:$|\/)|selectreadingroom(?:$|\/)|(?:multi)?readingroomtablelist(?:$|\/)|checkIsBesk(?:$|\/))/.test(u.pathname))
+      return origin + prefix + u.pathname + u.search + u.hash;
+    return raw;
   };
   const reservation = url => /\/(?:multi)?postbeskdata(?:$|\/)/i.test(pathOf(url) || '');
   window.LibraryTransport = { path: () => pathOf(location.href), url: map };

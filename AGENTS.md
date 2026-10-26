@@ -13,7 +13,7 @@
 
 ## 1. 项目概览
 
-这是一个 Android 原生应用（Kotlin + Jetpack Compose），用于在可信校园网内直连 `http://mlib.cppu.edu.cn`，按用户设置的阅览室、座位和使用时段完成图书馆座位预约。
+这是一个 Android 原生应用（Kotlin + Jetpack Compose），用于在可信校园网内直连 `http://mlib.cppu.edu.cn`，直连不可用时可通过学校 WebVPN（`https://webvpn.cppu.edu.cn`）完成图书馆座位预约。WebVPN 默认手动网页登录，也可由用户明确开启本机加密的两层账号自动重登。按用户设置的阅览室、座位和使用时段执行。
 
 三个核心能力：
 
@@ -25,7 +25,7 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 应用版本 | `0.19.1`，`versionCode=51`，`minSupportedVersionCode=50` |
+| 应用版本 | `0.20.0`，`versionCode=52`，`minSupportedVersionCode=50` |
 | 包名 | `cn.edu.cppu.libraryautobooker` |
 | Debug 包名 | `cn.edu.cppu.libraryautobooker.debug` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
@@ -43,11 +43,13 @@
 
 ### 2.1 网络与登录范围
 
-- 只允许 `http://mlib.cppu.edu.cn` 的校园网直连。不要新增 WebVPN、统一认证、代理转换、校外备用线路、验证码 OCR 等已移除能力。
-- `network/LibraryRoute.kt` 校验 HTTP scheme、主机和端口；`assets/transport.js` 在网页侧限制同源请求。两处都必须保留。
-- HTTP 明文是学校站点现状，不是遗漏。`res/xml/network_security_config.xml` 只对 `mlib.cppu.edu.cn` 放开明文；不要把明文范围扩大，也不要假设可以改成 HTTPS。
-- 登录密码只在本机用 AES/GCM + AndroidKeyStore 加密保存。不得写入日志、崩溃信息、`SharedPreferences` 明文、Intent、`rememberSaveable` 或任何仓库文件。
-- `SessionChecker` 只读检查登录状态（`POST /isLogin`），不得记录 Cookie；`SubmissionGuard` 的“未知结果不再提交”保护必须保留。
+- 只允许两条线路：`http://mlib.cppu.edu.cn` 的校园网直连，以及 `https://webvpn.cppu.edu.cn` 的学校 WebVPN 图书馆代理。不要新增第三方代理、公共镜像、自建转换服务或其他校外备用线路。
+- WebVPN 默认使用**手动网页登录**；用户也可以明确选择保存统一认证与 WebVPN 图书馆两套账号，在会话过期时自动重登。自动重登只允许通过 `WebVpnAutoLogin` / `WebVpnLoginDriver` 连接学校 WebVPN 和统一认证页面，不得把两套账号用于直连、第三方站点或其他用途。
+- 验证码识别只允许本机离线执行：模型和字符集随 APK 打包，只接受学校已验证登录页上的 4 位数字，置信度阈值 0.70，最多 3 张图 / 180 秒。不得上传验证码图片、账号或页面内容，不得调用在线 OCR，不得引入第三方代理。用户可关闭自动识别并手动输入。
+- `network/LibraryRoute.kt` 校验两条线路的 scheme、主机、端口和 WebVPN 代理前缀；`network/WebVpnPages` 限制 WebVPN 登录页与统一认证跳转；`assets/transport.js` 在网页侧按线路限制请求。三处都必须保留。
+- HTTP 明文是学校站点现状，不是遗漏。`res/xml/network_security_config.xml` 只对 `mlib.cppu.edu.cn` 放开明文；不要把明文范围扩大，也不要假设可以改成 HTTPS。WebVPN 使用 HTTPS。
+- 直连登录密码只在本机用 AES/GCM + AndroidKeyStore 加密保存。WebVPN 的两套账号只有在用户明确勾选并保存后才允许用同样的本机加密保存；默认不保存统一认证密码。任何密码不得写入日志、崩溃信息、`SharedPreferences` 明文、Intent、`rememberSaveable` 或任何仓库文件。
+- `SessionChecker` 只读检查登录状态（`POST /isLogin`），不得记录 Cookie；直连与 WebVPN 状态分开保存，旧请求不得覆盖新状态。`FallbackPolicy` 的“提交后不换线路、不重发”保护必须保留。
 
 ### 2.2 预约正确性
 
@@ -57,7 +59,9 @@
 - 闹钟触发时校验 `expected_at`、配置启用状态和 `reservationFingerprint()`；`BookingScheduler.consume()` 只消费一次并武装下一个待执行时间。不要绕过这些检查直接启动服务。
 - 直接预约使用 `ImmediateBookingPlan` 的不可变快照，不覆盖已保存的定时计划；Intent 参数有大小上限，解码必须继续校验房间、座位、座位图和时间段。
 - 同一时间只能有一个预约任务运行；并发启动必须被拒绝，不能靠“应该不会同时发生”。
-- 提交前必须经过 `SubmissionGuard`；提交后结果不明时停止并提示核对学校记录，**绝不重复提交**。
+- 提交前必须经过 `FallbackPolicy.markSubmission()`；提交后结果不明时停止并提示核对学校记录，**绝不重复提交**。
+- 直连到 WebVPN 的切换只能在**未提交**且直连发生网络故障时发生，且只能单向切换一次。一旦 `markSubmission()` 成功，线路锁定；提交后网络中断、超时或结果不明都只能停止并提示核对，不能换线路、换座位或重发。
+- 同一批次只使用一条线路；切换后重新做登录检查并重新开始该批次。WebVPN 会话在**提交前**过期时，可进行一次有界的自动重登（`webVpnReloginDecision`），重登成功后重新加载入口页；`automationStarted` 或本批已重登过则不得再试。一旦 `markSubmission()` 成功，WebVPN 页面再要求登录也只能停止并提示核对，不得重新登录、换线路或重发；不得使用保存的直连密码登录 WebVPN。
 - 只有学校明确返回“座位已被预约/占用”之类的冲突，才允许尝试下一个候选座位。网络错误、超时、限流、参数错误、账号错误都不能当作冲突重试。
 - 定时任务等待开放最多 10 分钟，截止时间不因轮询重置；确认阶段有 45 秒上限；单批任务有 150 秒上限。不要为了“多等一会儿”放宽这些限制。
 - 学校页面上的房间、日期、时段、座位身份必须严格匹配；布局或身份变化时 fail-closed，不做“按序号猜一个”或近似分钟替换。
@@ -81,7 +85,7 @@
 
 ### 2.4 发布、签名与密钥
 
-- `version.properties` 是版本唯一真相源；tag 必须是 `v` + `versionName`，例如 `v0.19.1`。
+- `version.properties` 是版本唯一真相源；tag 必须是 `v` + `versionName`，例如 `v0.20.0`。
 - 只有推送 `v*` tag（或在该 tag 上手动运行且 `publish=true`）才发布。`main` 分支推送只测试和构建未签名 release，不创建或修改 Release。
 - 不覆盖历史 Release/tag，不使用 `--clobber`，不强制推送，不删除历史资产。失败时只允许删除**本次工作流新建的 GitHub 草稿 Release**。
 - 固定发布签名必须保持不变。keystore、密码和 token 不能提交到仓库；keystore 必须离线备份。签名一旦改变，已安装用户无法覆盖升级，只能卸载重装。
@@ -128,6 +132,9 @@ export ANDROID_HOME=/c/Users/20571/AppData/Local/Android/Sdk
 
 GRADLE=/d/android-build/gradle-8.9/bin/gradle.bat
 
+# 首次拉取或清理后准备固定 OCR 资源（ONNX 模型与字符集已 gitignore）
+python scripts/prepare_ocr.py
+
 # 全量 Android JVM/Robolectric 测试
 "$GRADLE" --no-daemon testDebugUnitTest
 
@@ -141,6 +148,8 @@ GRADLE=/d/android-build/gradle-8.9/bin/gradle.bat
 # 未签名 release 构建（用于检查编译/混淆，不可直接安装）
 "$GRADLE" --no-daemon assembleRelease
 ```
+
+`app/build.gradle.kts` 的 `verifyOcrAssets` 会在构建前校验模型和 `charsets.json` 的存在与 SHA-256；缺少资源时构建直接失败，不要删除该校验或提交模型文件。CI 使用 Python 3.12 运行 `prepare_ocr.py`，再安装固定版本 `onnxruntime` 执行 `scripts/verify_ocr_model.py`；本地 Python 3.7 只能运行下载脚本，不能运行模型契约验证。
 
 输出位置：
 
@@ -158,7 +167,7 @@ npm test
 
 `npm test` 运行 `node --test tests/*.test.cjs`，覆盖：
 
-- 网页登录、传输层、等待开放、选日/选时段、确认与提交保护；
+- 网页登录、直连/WebVPN 传输层、统一认证/图书馆两层自动登录脚本、验证码页面策略、等待开放、选日/选时段、确认与提交保护；
 - 房间/时段目录、座位图、发布配置、`update.json`、Gitee 幂等发布、固定别名、双二维码；
 - 发布工作流的“不覆盖历史 Release”“只在 tag 发布”“同步/补传只增不改”等约束。
 
@@ -166,12 +175,12 @@ npm test
 
 ### 3.4 测试基线
 
-截至 v0.19.1：
+截至 2026-10-26 的 v0.20.0 发布基线：
 
-- Node：**302 个测试全部通过**；
-- Android JVM + Robolectric：**184 个测试全部通过**。
+- Node：**438 个测试全部通过**；
+- Android JVM + Robolectric：**311 个测试全部通过**。
 
-数量会随功能增长，不是固定目标；判断标准是“全绿 + 覆盖了本次改动”。
+v0.19.1 发布时的基线是 Node 302、Android 184。数量会随功能增长，不是固定目标；判断标准是“全绿 + 覆盖了本次改动”。
 
 ### 3.5 签名与 Debug/Release 差异
 
@@ -182,7 +191,8 @@ npm test
   - 包名加 `.debug`，可与正式版共存；
   - `BuildConfig.UPDATE_MANIFEST_URL` 等为空，**不能测试应用内更新**；
   - 使用 debug 签名，不能覆盖安装正式版。
-- Release 构建开启 R8/ProGuard；`@JavascriptInterface` 方法已有 keep 规则。新增 JS Bridge 方法后必须至少跑一次 `assembleRelease`，不能只验证 debug。
+- Release 构建开启 R8/ProGuard；`@JavascriptInterface` 方法已有 keep 规则，ONNX Runtime 也需 keep。新增 JS Bridge 方法后必须至少跑一次 `assembleRelease`，不能只验证 debug。
+- Release 只打包 `arm64-v8a` / `armeabi-v7a`（ONNX Runtime 的 x86 变体只用于本地模拟器 debug）。含离线验证码模型后 release APK 约 51 MB，仍低于 manifest 的 100 MB 上限；debug 构建包含全部 ABI。
 - 应用内更新的签名校验是“与当前已安装应用相同”。v0.18.0 是 CI 临时调试密钥签名，所以 v0.19.0 必须卸载重装；这不是可以通过代码兼容的问题。
 
 ---
@@ -193,11 +203,18 @@ npm test
 
 | 路径 | 职责 | 修改注意 |
 | --- | --- | --- |
-| `MainActivity.kt` | 应用状态中枢：登录门禁、Session 探测、更新 ViewModel、权限引导、预约草稿、调度、房间规则、历史、结果弹窗 | 大部分状态用 `remember`/`rememberSaveable` 持有；不要为了 UI 方便绕过更新安全闸门或并发保护 |
-| `EntryLoginScreen.kt` | 登录入口：Session 检查、账号密码输入、自动重登、错误提示 | 密码故意使用 `remember` 而不是 `rememberSaveable`；`fieldError` 只用于本地输入错误，`detailIsError` 用于网络/存储等状态错误 |
-| `SessionChecker.kt` | 只读 `POST /isLogin` 检查，7 秒超时，分类网络/登录过期/服务器错误 | 不记录 Cookie；不要让旧请求覆盖新状态（`SessionProbeEpochs`） |
-| `AutoLogin.kt` | 共享 WebView 登录、`SessionCoordinator`、自动重登协调 | 登录页识别、同源限制和“不处理验证码/iframe”是安全边界 |
-| `LoginActivity.kt` / `LoginInput.kt` | 学校网页登录 Activity 与输入校验 | 不要加入密码日志或保存到 saved state |
+| `MainActivity.kt` | 应用状态中枢：登录门禁、Session 探测、WebVPN 卡片与开关、更新 ViewModel、权限引导、预约草稿、调度、房间规则、历史、结果弹窗 | 大部分状态用 `remember`/`rememberSaveable` 持有；不要为了 UI 方便绕过更新安全闸门或并发保护 |
+| `EntryLoginScreen.kt` | 登录入口：Session 检查、账号密码输入、直连/WebVPN 手动网页登录、自动重登、错误提示 | 密码故意使用 `remember` 而不是 `rememberSaveable`；`fieldError` 只用于本地输入错误，`detailIsError` 用于网络/存储等状态错误 |
+| `SessionChecker.kt` | 只读 `POST /isLogin` 检查，7 秒超时，按直连/WebVPN 两层登录状态（`vpnAuthState`）分类网络、SSO 过期、图书馆过期和服务器错误 | 不记录 Cookie；不要让旧请求覆盖新状态（`SessionProbeEpochs`）；不把 WebVPN 密码页误判为已登录；两层状态只由已核对页面/跳转判断 |
+| `AutoLogin.kt` | 直连共享 WebView 登录、`SessionCoordinator`、直连→WebVPN 检查与恢复协调 | 直连自动登录只用于直连；`SessionCoordinator` 在直连网络故障且开关开启时才检查 WebVPN；WebVPN 恢复委托给 `WebVpnAutoLogin`；登录页识别、同源限制和安全页面判断不能放宽 |
+| `LoginActivity.kt` / `LoginInput.kt` | 按线路打开学校网页登录；WebVPN 支持手动登录和可选的两层自动登录驱动；验证码可关闭自动识别 | 不要加入密码日志或保存到 saved state；不要让 WebVPN 页面跳转到非学校主机；OCR 只在本机离线运行；`EXTRA_WEBVPN` 保持为 `"webvpn"` |
+| `WebVpnCard.kt` | 预约页的 WebVPN 状态、自动切换开关、手动登录/检查、自动登录账号设置入口 | 开关只保存 `webVpnBackup`，不能改预约目标或取消已排队闹钟 |
+| `WebVpnAccountsActivity.kt` | 分别保存/暂停/删除统一认证与 WebVPN 图书馆两套账号，明确授权说明 | 密码字段必须用 `remember` 而非 `rememberSaveable`；不得把密码放进 Intent；保存只在本机加密 |
+| `WebVpnAutoLogin.kt` | 共享隐藏 WebView 的 WebVPN 恢复运行、订阅者管理、5 分钟状态冷却、与可见登录页互斥 | 它是唯一允许自动执行 WebVPN/SSO 登录的入口；不得在提交结果不明时启动；不得与用户打开的登录页并行 |
+| `WebVpnLoginDriver.kt` | 两层登录状态机：SSO 表单、验证码 OCR、图书馆表单、90 秒期限、最多 3 次提交/2 次重开、`rememberMe` | 保留“已提交但结果不明不重发”、明确验证码失效才重开、手动输入优先、旧页面封闭和一次原生触摸保护 |
+| `WebViewLoginTap.kt` | 在受信 SSO 页面内执行一次原生 DOWN/UP 触摸 | 只在受信地址和非零布局下执行；不得越过验证码/登录按钮；生命周期变化必须取消 |
+| `ocr/CaptchaPagePolicy.kt` / `CtcDecoder.kt` / `DdddOcrEngine.kt` / `WebVpnCaptchaController.kt` | 本机验证码页面策略、CTC 解码、ONNX 推理和按载入填表控制 | 只接受已验证 HTTPS 登录页；只输出 4 位数字且置信度 ≥ 0.70；最多 3 张图/180 秒；禁止联网、日志记录图片或读取账号 |
+| `data/WebVpnCredentialStore.kt` | 分开保存 SSO 与 WebVPN 图书馆账号（AES/GCM + AndroidKeyStore，AAD，`revision`） | `Kind` 的存储名/密钥别名是迁移契约；不得明文回退；`Credentials.toString()` 必须继续脱敏 |
 | `LibraryAppPages.kt` | 底部三个页面：预约、权限、记录；保留各页 SaveableState | 只改 UI 时优先改这里和独立 Compose 组件 |
 | `PermissionsPage.kt` / `PermissionSetup.kt` / `OemProfiles.kt` | 精确闹钟、通知、电池优化、厂商自启动路径与首次引导 | OEM 页面名称可能随系统变化；不要承诺“设置后一定不被杀” |
 | `UpdateCard.kt` / `UpdateDialog.kt` | 更新卡片和更新弹窗 | 下载/安装入口必须继续受 `UpdatePolicy` 保护 |
@@ -212,29 +229,31 @@ npm test
 | `booking/ImmediateBookingPlan.kt` | 直接预约的不可变 Intent 快照与解码校验 | 不能覆盖定时计划；Intent 有大小上限；解码必须严格 |
 | `booking/BookingAlarmReceiver.kt` | 闹钟触发：校验启用、消费队列、带指纹启动前台服务 | 指纹不匹配时必须停止，不能带旧配置继续 |
 | `booking/BootReceiver.kt` | 开机/升级/精确闹钟权限变化后恢复 | 已过期待执行时间记 `MISSED`，不补交；只恢复未来任务 |
-| `booking/BookingService.kt` | 前台服务：并发拒绝、配置/座位图校验、登录、WebView、脚本注入、超时、结果记录 | 10 分钟等待、150 秒批次、提交保护和“未知结果停止”都在这里 |
+| `booking/BookingService.kt` | 前台服务：并发拒绝、配置/座位图校验、按线路登录、WebVPN 提交前一次性自动重登、WebView、直连→WebVPN 单向回退、脚本注入、超时、结果记录 | 10 分钟等待、150 秒批次、提交保护和“未知结果停止”都在这里；回退只在未提交且直连网络故障时允许；`markSubmission()` 之后禁止任何重新登录或重发 |
+| `booking/WebVpnReloginPolicy.kt` | 提交锁优先、每批最多一次 WebVPN 重登的纯策略 | `submitted` 必须先于 `automationStarted`/`alreadyRecovered` 判断；修改时同步 `WebVpnReloginPolicyTest` 和 `tests/webvpn-booking-recovery.test.cjs` |
 | `booking/BookingSequence.kt` | 单批/双批进度与成功失败消息 | 双批仅限过刊“前四段 + 后三段” |
-| `booking/AutomationScript.kt` | 把配置注入 JS 模板 | 注意转义和配置字段一致性 |
-| `assets/transport.js` | 同源限制、XHR 钩子、提交前调用 `beginSubmission` | 不能放宽到其他主机；网络错误必须上报 |
+| `booking/AutomationScript.kt` | 把配置和当前线路注入 JS 模板 | 注意转义和配置字段一致性；WebVPN 必须传入代理 origin/prefix |
+| `assets/transport.js` | 按当前线路限制同源请求、映射 WebVPN 代理、XHR 钩子、提交前调用 `beginSubmission` | 不能放宽到其他主机；直连绝对 URL 只能映射到已核对的图书馆接口；网络错误必须上报 |
 | `assets/release-wait.js` | 等待学校开放，最多 10 分钟，串行轮询 | 截止时间不重置；只有明确“未开放”才重试 |
 | `assets/selection.js` | 选房间、日期、时段，校验页面签名和旧勾选 | 页面身份变化必须停止，不做近似替换 |
 | `assets/automation.js` | 座位图匹配、选座、确认身份、提交、冲突重试、结果分类 | 只在明确座位冲突时换候选；提交后未知/超时绝不重发 |
-| `assets/login.js` | 学校登录页同源表单提交 | 不处理验证码/iframe；失败要返回明确状态 |
+| `assets/login.js` | 直连学校登录页同源表单提交（自动重登） | 只用于直连；不处理验证码/iframe；失败要返回明确状态 |
+| `assets/webvpn-sso-login.js` / `webvpn-library-login.js` / `webvpn-captcha.js` | WebVPN 两层登录表单、验证码读取与填表保护 | 只允许已核对页面和字段；不读取/回传密码到日志；手动输入优先；提交结果不明时不得重发 |
 | `assets/room-discovery.js`、`assets/capture_seat.js` | 房间/座位数据采集辅助脚本 | 生产预约不使用它们；改动需同步 Node 测试/fixtures |
 
 ### 4.3 数据与网络
 
 | 路径 | 职责 | 修改注意 |
 | --- | --- | --- |
-| `data/BookingConfig.kt` | 预约配置、时段校验、目标日期、指纹、待执行时间 | 指纹不包含 `slotsDate` 等展示字段；改动会影响闹钟校验 |
-| `data/ConfigStore.kt` | `booking_config` SharedPreferences 读写与迁移 | 无效时段用 `-1` 标记；迁移要幂等 |
+| `data/BookingConfig.kt` | 预约配置、时段校验、目标日期、指纹、待执行时间、`webVpnBackup` 开关 | 指纹不包含 `slotsDate` 等展示字段，也**不包含** `webVpnBackup`；切换线路不应取消已排队闹钟 |
+| `data/ConfigStore.kt` | `booking_config` SharedPreferences 读写与迁移 | 无效时段用 `-1` 标记；迁移要幂等；`webvpn_backup` 默认开启 |
 | `data/RoomProfile.kt` / `RoomCatalogStore.kt` | 房间规则、时段、本地缓存与内置数据合并 | 时间必须来自实际核对；不要用近似分钟 |
 | `data/SeatMapCatalog.kt` / `SeatCatalog.kt` / `SeatChoice.kt` | 座位图解析、位置绑定、候选座位 | 布局/编号/重复项校验必须保留；无编号座位不可选 |
 | `data/CredentialStore.kt` | AES/GCM + AndroidKeyStore 保存图书馆账号 | 只预填账号，绝不把密码放入 saved state；`clear()` 会删密钥 |
 | `data/RuntimeStore.kt` | 运行状态、最近三次记录、测试状态 | 每次最多保留 3 次运行、每次 50 行；不要无限增长 |
-| `data/LoginStatusStore.kt` / `data/LegacyFeatureMigration.kt` | 登录状态与旧版迁移 | 迁移不能清除直连账号、座位、时段；不要恢复已退役 WebVPN 数据 |
-| `network/LibraryRoute.kt` | 唯一校园网路由 | 只允许 `http://mlib.cppu.edu.cn`，无代理/备用线路 |
-| `network/SubmissionGuard.kt` | 提交一次性标记 | 只有确认下一批时才允许重置 |
+| `data/LoginStatusStore.kt` / `data/LegacyFeatureMigration.kt` | 直连与 WebVPN 登录状态分开保存；WebVPN 恢复中的临时状态；旧版迁移 | 迁移不能清除直连账号、座位、时段；v17 一次性清理旧 WebVPN 自动登录存储和 `login_vpn_*` 后不得再次执行，否则会误删用户新保存的两层账号 |
+| `network/LibraryRoute.kt` | 两条预约线路：校园网直连与学校 WebVPN；AES-CFB 代理前缀；`WebVpnPages` 登录页白名单 | 不要增加第三条线路或放宽主机；WebVPN 前缀算法必须与已核对值一致 |
+| `network/FallbackPolicy.kt` | 当前线路与提交一次性锁 | 只有未提交的直连网络故障才可单向切到 WebVPN；确认下一批后才可重置提交标记 |
 
 ### 4.4 更新域
 
@@ -278,9 +297,9 @@ npm test
 2. `BookingScheduler.schedule()` 调用 `FixedBookingPlan.prepare()`，计算下一次本地 00:58（今天已过则明天），写入待执行队列并用 `setExactAndAllowWhileIdle` 安排闹钟。
 3. `BookingAlarmReceiver` 触发：检查任务仍启用、`expected_at` 匹配；`consume()` 只消费当前时间并把剩余队列继续武装；记录 `TRIGGERED`；带 `booking_fingerprint` 启动 `BookingService`。
 4. 服务校验指纹、房间/座位/座位图和当前配置；启动前台通知和 WakeLock；创建 WebView。
-5. `SessionCoordinator` 先检查登录；过期时尝试自动重登或打开学校登录页；登录成功后注入 `transport.js`。
-6. 定时任务注入 `release-wait.js`，最多等待 10 分钟；学校开放后进入 `selection.js`，再进入 `automation.js`。
-7. 提交前 JS 调用原生 `beginSubmission()`，由 `SubmissionGuard` 只放行一次；成功/失败/未知结果按严格分类记录。
+5. `SessionCoordinator` 先检查所选线路登录：直连过期时用保存的直连账号自动重登；WebVPN 的 SSO 或图书馆会话过期时，只有用户保存并开启了对应账号才启动两层自动重登，否则停止并说明。若直连在未提交阶段发生网络故障且 `webVpnBackup` 开启，`FallbackPolicy` 单向切换到 WebVPN 并重新开始该批次。登录成功后注入按线路配置的 `transport.js`。
+6. 定时任务注入 `release-wait.js`，最多等待 10 分钟；学校开放后进入 `selection.js`，再进入 `automation.js`。等待期间或进入座位图前 WebVPN 再次过期，可在未开始自动化时重登一次并重新加载入口；开始自动化后只停止，不重登。
+7. 提交前 JS 调用原生 `beginSubmission()`，由 `FallbackPolicy` 锁定当前线路并只放行一次；成功/失败/未知结果按严格分类记录。提交后绝不换线路、重新登录或重发。
 8. 服务写 `RuntimeStore`、发结果通知并 `stopSelf()`；闹钟已在消费时处理，不会每天循环。
 
 ### 5.2 直接预约
@@ -288,7 +307,7 @@ npm test
 1. 用户点击“直接预约”，`MainActivity` 生成 `ImmediateBookingPlan` 的不可变快照并启动服务。
 2. 服务解码并校验房间、候选座位、座位图、日期和时段；不使用等待开放逻辑。
 3. 当天/明天的基准以点击日为准；快照不覆盖已保存的定时计划。
-4. 运行中拒绝第二个任务；提交保护和未知结果停止规则与定时任务相同。
+4. 运行中拒绝第二个任务；提交保护和未知结果停止规则与定时任务相同。直连网络故障且尚未提交时可单向切换 WebVPN，快照中的 `webVpnBackup` 决定是否允许。
 5. 结果通过应用内弹窗显示，同时写入记录；弹窗只关联本次直接预约，不弹旧记录。
 
 ### 5.3 应用内更新
@@ -306,7 +325,10 @@ npm test
 - 密码默认提示是“默认密码是学号”，但不要把它写成学校承诺；这只是输入提示。
 - 输入校验错误同时标红输入框和状态文字；网络/存储/学校返回错误只标红状态文字，不把输入框误标红；用户一编辑就清除输入错误。
 - 密码不进入 `rememberSaveable`；只预填已保存的账号。
-- 自动重登是可选能力；失败时回退到手动登录，不吞掉错误。
+- 自动重登是可选能力：直连图书馆账号的自动重登与 WebVPN 两层自动重登都只在用户明确保存并开启后运行；失败时回退到手动登录，不吞掉错误。
+- WebVPN 默认提供手动网页登录入口；用户也可以在“自动登录账号设置”中分别保存统一认证与 WebVPN 图书馆账号，密码只用本机 AES/GCM + AndroidKeyStore 加密。验证码只在本机离线识别，可关闭并手动输入。`LoginActivity` 只允许学校 WebVPN/统一认证页和已核对的图书馆代理路径。
+- WebVPN 自动重登共用 90 秒期限，最多 3 次提交、2 次明确验证码失效后的重开；已经提交但结果不明时必须停止，不重发。失败后状态检查有 5 分钟冷却，但预约任务本身仍可在未提交时重新尝试。
+- `SessionCoordinator` 直连优先；只有直连网络故障且开关开启时才检查 WebVPN，已有 WebVPN 会话可用于进入应用和预约备用。可见的 WebVPN 登录页存续期间必须阻止隐藏的自动恢复。
 
 ---
 
@@ -349,6 +371,7 @@ npm test
 
 - 先写清楚要解决的问题和现有保护为什么不够；
 - 保留一次性消费、指纹校验、并发拒绝、提交保护、未知结果停止、冲突才重试；
+- 保留直连优先、单向回退和“提交后不换线路”；回退只能发生在 `markSubmission()` 之前且原因是网络故障；
 - 补对应单元测试和 Node/jsdom 测试；
 - 跑全量 Node + Android 测试，并至少 `assembleRelease`；
 - 在交付说明中明确“未做真机预约验证”。
@@ -364,7 +387,8 @@ npm test
 
 - 旧版迁移集中在 `data/LegacyFeatureMigration.kt` 和 `ConfigStore`/`CredentialStore`。
 - 迁移必须幂等、可重复执行；不能删除直连账号、座位、时段或学校的预约记录。
-- 已退役的 WebVPN/统一认证数据可以清理，但不要恢复相关功能。
+- v0.16 及更早的旧 WebVPN 自动登录存储只在 v17 一次性迁移中清理；新版 `WebVpnCredentialStore` 的两套账号必须在用户重新明确保存后才会存在。迁移不得在每次启动时清掉新版的 `webvpn_sso_credentials_v1` / `webvpn_library_credentials_v1` 或对应 AndroidKeyStore 别名。
+- `LegacyFeatureMigration` 的 v17 一次性标记防止重复清理；改迁移时必须保证旧的 `login_vpn_*` 清理逻辑不会在每次启动时抹掉新的 WebVPN 状态。
 - 改迁移必须补 `LegacyFeatureMigrationTest` 和升级场景测试。
 
 ### 6.8 测试写法
@@ -394,8 +418,8 @@ npm test
 修改 [`version.properties`](version.properties)：
 
 ```properties
-versionCode=51
-versionName=0.19.1
+versionCode=52
+versionName=0.20.0
 minSupportedVersionCode=50
 ```
 
@@ -404,8 +428,9 @@ minSupportedVersionCode=50
 - `versionCode` 必须递增，不能复用。
 - `versionName` 必须是 `X.Y.Z`，tag 将是 `vX.Y.Z`。
 - `minSupportedVersionCode` 通常保持 `50`（v0.19.0 起的最低支持版本）。只有确实要让旧客户端强制更新时才提高；提高会让低于该版本的客户端进入 `updateRequired` 流程。不要为了“提醒更新”随意提高。
-- 新增 `release-notes/<versionName>.md`，例如 `release-notes/0.19.1.md`；最多 8000 字符，写用户可见变化和已知限制，不写密钥、账号、内部路径或未经验证的“已修复”。
+- 新增 `release-notes/<versionName>.md`，例如 `release-notes/0.20.0.md`；最多 8000 字符，写用户可见变化和已知限制，不写密钥、账号、内部路径或未经验证的“已修复”。
 - README 顶部的版本号和用户可见说明按需更新；固定下载链接不随版本变化。
+- 发布 WebVPN 相关版本时，说明中要写明“WebVPN 默认手动，可选本机加密的两层自动重登与本地验证码识别；仅在提交前回退/重登，提交后不重发；尚未完成真机隔夜验证”。
 
 ### 7.3 构建与检查
 
@@ -417,6 +442,7 @@ export JAVA_HOME=/d/android-build/jdk-17.0.20.1+1
 export PATH="$JAVA_HOME/bin:$PATH"
 export GRADLE_USER_HOME=/d/android-build/gradle-home
 GRADLE=/d/android-build/gradle-8.9/bin/gradle.bat
+python scripts/prepare_ocr.py
 "$GRADLE" --no-daemon testDebugUnitTest
 "$GRADLE" --no-daemon assembleRelease
 ```
@@ -443,8 +469,8 @@ gradle --no-daemon testDebugUnitTest assembleRelease
 确认预检产物无误后，只有在维护者授权下执行：
 
 ```bash
-git tag v0.19.1
-git push origin v0.19.1
+git tag v0.20.0
+git push origin v0.20.0
 ```
 
 规则：
@@ -565,15 +591,20 @@ Repository Variable：
 9. **`prepare-dist` 会删除 `dist/`**：不要在那个目录放未备份的文件；manifest 最后写入是故意的。
 10. **Gitee/GitHub 固定路径顺序不同**：Gitee 是 `/releases/download/latest/...`，GitHub 是 `/releases/latest/download/...`；写反会 404。
 11. **Gitee 可能返回 `.apk.zip`**：这是 MIME 行为，不是 APK 被压缩；不要解压，删除文件名末尾 `.zip` 后安装。
-12. **tag/版本必须一致**：tag 是 `v0.19.1` 时 `versionName` 必须是 `0.19.1`；不能移动历史 tag。
+12. **tag/版本必须一致**：tag 是 `v0.20.0` 时 `versionName` 必须是 `0.20.0`；不能移动历史 tag。
 13. **不要硬编码版本到 workflow**：`ReleaseWorkflow` 测试会检查 workflow 不含硬编码的 `vX.Y.Z`，版本从 `version.mjs` 读取。
 14. **不要用 `--clobber`**：会覆盖历史资产；发布链路故意拒绝已有 Release/不同内容资产。
 15. **Gitee 分支是 `master`，GitHub 源码分支是 `main`**：不要把两者混用。
 16. **`minSupportedVersionCode` 不是“版本号”**：提高它会让低于该版本的客户端强制更新；通常保持 `50`。
-17. **HTTP 只对 `mlib.cppu.edu.cn` 放开**：不要全局放开明文，也不要给学校站点加自签证书绕过。
-18. **不要在测试中访问真实学校站点**：jsdom/fixtures/mock 是硬要求；真实预约只能由维护者明确授权后在真机进行。
-19. **Robolectric 通过 ≠ 真机通过**：精确闹钟、厂商后台限制、锁屏网络、系统安装器都需要真机验证。
-20. **Release 混淆**：新增 `@JavascriptInterface` 方法时确认 ProGuard keep 规则生效，并跑 `assembleRelease`。
+17. **HTTP 只对 `mlib.cppu.edu.cn` 放开**：不要全局放开明文；WebVPN 必须使用 HTTPS，也不要给学校站点加自签证书绕过。
+18. **WebVPN 自动登录是有边界的可选功能**：默认手动；只有用户明确保存并开启两层账号后才自动重登。验证码只允许本机离线识别 4 位数字，不得上传或接入在线 OCR；不得用保存的直连密码登录 WebVPN。
+19. **WebVPN 只在提交前回退或重登**：直连网络故障且尚未提交才能切换；`automationStarted` 或本批已重登后不得再试；一旦调用 `markSubmission()`，结果不明时只能停止并核对学校记录，不能换线路、重新登录或重发。
+20. **WebVPN 会话时长未验证**：能否整夜保持有效由学校决定；自动重登也不能绕过学校额外验证/风控。不要承诺隔夜自动成功。房间/座位采集页仍只走直连。
+21. **OCR 资源不入库**：`common_old.onnx` 和 `charsets.json` 由 `scripts/prepare_ocr.py` 按固定 SHA-256 准备，已 gitignore；构建前必须存在，`verifyOcrAssets` 会校验。不要提交模型或删除校验。
+22. **`webVpnBackup` 不进指纹**：切换“直连失败时自动切换”不得取消已排队的 00:58 闹钟或改变预约目标。
+23. **不要在测试中访问真实学校站点**：jsdom/fixtures/mock 是硬要求；真实预约只能由维护者明确授权后在真机进行。
+24. **Robolectric 通过 ≠ 真机通过**：精确闹钟、厂商后台限制、锁屏网络、WebVPN 会话、验证码 OCR、系统安装器都需要真机验证。
+25. **Release 混淆**：新增 `@JavascriptInterface` 方法时确认 ProGuard keep 规则生效，并跑 `assembleRelease`。
 
 ---
 
@@ -595,16 +626,19 @@ Repository Variable：
 
 - [ ] 密码提示/错误颜色符合当前约定：输入错误标红输入框，网络/存储错误只标红状态文字。
 - [ ] 用户编辑后清除输入错误。
-- [ ] 密码没有进入 saved state、日志或明文存储。
-- [ ] `EntryLoginUiTest` 等相关测试通过。
+- [ ] 密码没有进入 saved state、日志或明文存储；WebVPN 两套密码只有在用户明确勾选后才用本机加密保存，默认不保存、不自动填写到直连页面。
+- [ ] 验证码图片不上传、不写日志；自动识别可关闭，手动输入优先。
+- [ ] `EntryLoginUiTest`、`LoginActivityUiTest`、`LoginActivityOcrUiTest`、`LoginStatusTest`、`WebVpnCredentialStoreTest`、`WebVpnStatusRecoveryTest` 等相关测试通过。
 
 ### 10.3 预约/调度改动
 
 - [ ] 保持 00:58 一次性、精确闹钟、指纹校验、`consume()` 一次性。
 - [ ] 保持直接预约快照不覆盖定时计划。
 - [ ] 保持并发拒绝、10 分钟等待、45 秒确认、150 秒批次、提交保护和未知结果停止。
+- [ ] 直连→WebVPN 回退只在未提交且直连网络故障时发生，并且只发生一次；提交后未知结果绝不换线路重发。
+- [ ] WebVPN 重登只在提交前、自动化未开始、本批未重登时发生；`webVpnReloginDecision` 的 `AFTER_SUBMISSION` 优先；提交后不重新登录、不重发；不会用保存的直连密码登录 WebVPN。
 - [ ] 只有明确座位冲突才重试候选。
-- [ ] 全量 Node + Android 测试通过；明确告知维护者仍需真机验证。
+- [ ] 全量 Node + Android 测试通过；明确告知维护者仍需真机验证（含 WebVPN 登录与隔夜会话）。
 
 ### 10.4 更新改动
 

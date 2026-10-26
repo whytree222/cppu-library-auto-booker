@@ -63,7 +63,7 @@ fun LibraryAppPages(
                     title = {
                         Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                             Text("图书馆预约", style = MaterialTheme.typography.titleLarge)
-                            Text("校园网直连", style = MaterialTheme.typography.labelMedium,
+                            Text("直连优先 · WebVPN 备用", style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },

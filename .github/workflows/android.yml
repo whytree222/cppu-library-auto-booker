@@ -66,6 +66,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare verified offline OCR model
+        run: python scripts/prepare_ocr.py
+      - name: Verify offline model contract (synthetic input only)
+        run: |
+          python -m pip install 'onnxruntime==1.24.3'
+          python scripts/verify_ocr_model.py
       - name: Install Android SDK packages
         run: |
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' | sort -V | tail -1)

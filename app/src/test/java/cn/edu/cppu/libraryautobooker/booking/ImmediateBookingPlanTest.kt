@@ -35,6 +35,8 @@ class ImmediateBookingPlanTest {
         assertEquals(today.plusDays(1), FixedBookingPlan.targetDate(initial, now))
         assertEquals(today.plusDays(1), ImmediateBookingPlan.targetDate(initial.copy(reserveTomorrow = true), today))
         val request = requireNotNull(ImmediateBookingPlan.decode(ImmediateBookingPlan.encode(initial, today)))
+        assertFalse(requireNotNull(ImmediateBookingPlan.decode(ImmediateBookingPlan.encode(
+            initial.copy(webVpnBackup = false), today))).config.webVpnBackup)
         val run = BookingSequence(request.config, request.anchorDate)
         assertEquals(today, run.targetDate)
         assertNull(run.configForDate(today.plusDays(1))) // Never silently change expired "today" to tomorrow.

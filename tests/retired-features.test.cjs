@@ -34,7 +34,7 @@ test('room and date switches are local; online rules loading requires explicit b
 test('dashboard has separate immediate and fixed actions while retired modules stay removed',()=>{
   const main = fs.readFileSync(root+'MainActivity.kt','utf8');
   const entry = fs.readFileSync(root+'EntryLoginScreen.kt','utf8');
-  assert.doesNotMatch(main+entry,/WebVpn|WebVPN|webvpn|OcrTrial|ReleaseTimesField|ReleaseTimeField|立即预约所选座位|演练模式/);
+  assert.doesNotMatch(main+entry,/OcrTrial|ReleaseTimesField|ReleaseTimeField|立即预约所选座位|演练模式/);
   assert.equal((main.match(/onDirect = direct@\{/g)||[]).length,1);
   assert.equal((main.match(/onSchedule = book@\{/g)||[]).length,1);
   const direct = main.slice(main.indexOf('onDirect = direct@{'), main.indexOf('onSchedule = book@{'));
@@ -46,13 +46,18 @@ test('dashboard has separate immediate and fixed actions while retired modules s
   assert.match(main,/FixedBookingPlan\.prepare/);
   assert.match(main,/LibraryAppPages/);
 });
-test('retired authentication, conversion, OCR and custom time modules are absent',()=>{
-  for(const file of ['WebVpnAutoLogin.kt','WebVpnLoginDriver.kt','WebVpnAccountsActivity.kt','WebViewLoginTap.kt',
-    'OcrTrialActivity.kt','ReleaseTimeField.kt','data/WebVpnCredentialStore.kt','network/FallbackPolicy.kt']){
+test('custom time and standalone OCR trial stay removed while local WebVPN recovery remains present',()=>{
+  for(const file of ['OcrTrialActivity.kt','ReleaseTimeField.kt'])
     assert.equal(fs.existsSync(root+file),false,file);
-  }
+  for(const file of ['WebVpnAutoLogin.kt','WebVpnLoginDriver.kt','WebVpnAccountsActivity.kt','WebViewLoginTap.kt',
+    'data/WebVpnCredentialStore.kt'])
+    assert.equal(fs.existsSync(root+file),true,file);
   for(const file of ['webvpn-sso-login.js','webvpn-library-login.js','webvpn-captcha.js'])
-    assert.equal(fs.existsSync('app/src/main/assets/'+file),false,file);
-  assert.doesNotMatch(fs.readFileSync('app/build.gradle.kts','utf8'),/onnxruntime|verifyOcrAssets/);
-  assert.doesNotMatch(fs.readFileSync('app/src/main/AndroidManifest.xml','utf8'),/WebVpn|OcrTrial/);
+    assert.equal(fs.existsSync('app/src/main/assets/'+file),true,file);
+  assert.doesNotMatch(fs.readFileSync('app/src/main/AndroidManifest.xml','utf8'),/OcrTrial/);
+  assert.match(fs.readFileSync('app/src/main/AndroidManifest.xml','utf8'),/WebVpnAccountsActivity/);
+  assert.match(fs.readFileSync('app/build.gradle.kts','utf8'),/onnxruntime|verifyOcrAssets/);
+  const ocr = ['CaptchaPagePolicy.kt','CtcDecoder.kt','DdddOcrEngine.kt','WebVpnCaptchaController.kt']
+    .map(file=>fs.readFileSync(root+'ocr/'+file,'utf8')).join('\n');
+  assert.doesNotMatch(ocr,/HttpURLConnection|OkHttp|java\.net\.URL|Retrofit|Socket/);
 });
