@@ -1,6 +1,10 @@
 package cn.edu.cppu.libraryautobooker
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +20,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import cn.edu.cppu.libraryautobooker.data.LoginStatusStore
 import cn.edu.cppu.libraryautobooker.data.RuntimeStore
 import cn.edu.cppu.libraryautobooker.data.WebVpnCredentialStore
@@ -38,6 +43,9 @@ internal class WebVpnNativeForm(
     private val main = Handler(Looper.getMainLooper())
     private var closed = false
     private var busy = false
+    private var resultDialog: AlertDialog? = null
+    private var lastOperation = "读取登录表单"
+    private val diagnostics = TextView(activity).apply { textSize = 12f }
     private var step: NativeVpnStep? = null
     private var kind: NativeVpnForm.Kind? = null
     // Session validity does not prove that a stored password was ever used. Keep
@@ -68,6 +76,7 @@ internal class WebVpnNativeForm(
         minimumHeight = (80 * resources.displayMetrics.density).toInt()
         setOnClickListener { if (!busy) load() }
     }
+    private val captchaNote = TextView(activity).apply { text = "正在获取验证码…"; textSize = 14f }
     private val remember = CheckBox(activity).apply { text = "在本机加密记住这套账号密码"; isSaveEnabled = false }
     private val fiveDays = CheckBox(activity).apply {
         text = "学校五天内自动登录"
@@ -80,11 +89,16 @@ internal class WebVpnNativeForm(
 
     init {
         root.addView(content)
+        if (BuildConfig.DEBUG) content.addView(TextView(activity).apply { text = "认证回跳修复版 E · 10-27"; textSize = 12f })
         for (view in listOf(title, TextView(activity).apply {
             text = "在这里完成统一认证，再登录图书馆。验证码由你手动输入，不再自动识别或点击学校网页。五天有效期由学校决定。"
-        }, status, progress, username, password, image, captcha, fiveDays, remember, submit, refresh, check,
+        }, status, progress, username, password, image, captchaNote, captcha, fiveDays, remember, submit, refresh, check,
             Button(activity).apply { text = "返回应用"; setOnClickListener { activity.finish() } })) {
             content.addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        if (BuildConfig.DEBUG) {
+            content.addView(diagnostics)
+            content.addView(Button(activity).apply { text = "复制脱敏诊断"; setOnClickListener { copyDiagnostics() } })
         }
         load()
     }
@@ -93,7 +107,10 @@ internal class WebVpnNativeForm(
         if (busy) return
         credentialVerification = null
         step = null; captcha.setText(""); image.setImageDrawable(null)
-        execute { session.load() }
+        image.visibility = View.GONE
+        captchaNote.visibility = View.VISIBLE; captchaNote.text = "正在重新获取验证码…"
+        status.text = "正在获取学校登录表单…"
+        execute(operation = "重新获取登录表单") { session.load() }
     }
 
     private fun submit() {
@@ -121,15 +138,20 @@ internal class WebVpnNativeForm(
             CredentialVerification(form, account.revision) else null
         credentialVerification = verification
         status.text = if (form.kind == NativeVpnForm.Kind.SSO) "正在提交统一认证并等待学校响应…" else "正在登录 WebVPN 图书馆…"
-        execute(submitted = verification) { session.submit(form, user, secret, code, rememberFiveDays) }
+        execute(submitted = verification, loginSubmission = true,
+            operation = if (form.kind == NativeVpnForm.Kind.SSO) "点击登录统一认证" else "点击登录图书馆") {
+            session.submit(form, user, secret, code, rememberFiveDays)
+        }
     }
 
     private fun store(formKind: NativeVpnForm.Kind) = credentialStoreFactory(activity,
         if (formKind == NativeVpnForm.Kind.SSO) WebVpnCredentialStore.Kind.SSO else WebVpnCredentialStore.Kind.LIBRARY)
 
-    private fun execute(submitted: CredentialVerification? = null, action: () -> NativeVpnStep) {
+    private fun execute(submitted: CredentialVerification? = null, loginSubmission: Boolean = false,
+        operation: String = "检查登录状态", action: () -> NativeVpnStep) {
         if (busy || closed) return
-        busy = true; updateControls()
+        lastOperation = operation
+        busy = true; updateControls(); updateDiagnostics()
         SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
         worker.execute {
             val result = runCatching(action)
@@ -140,6 +162,8 @@ internal class WebVpnNativeForm(
                     if (submitted != null && (!submitted.form.consumed.get() || next.error))
                         discardVerification(submitted)
                     show(next)
+                    updateDiagnostics()
+                    if (loginSubmission && next.error) showFailureDialog(next.result.detail)
                 }, onFailure = { error ->
                     // Unknown post-submit outcomes may later be confirmed by a
                     // read-only check. Proven pre-send failures cannot verify it.
@@ -147,15 +171,21 @@ internal class WebVpnNativeForm(
                         error !is NativeVpnFailure || !error.mayHaveSubmitted))
                         discardVerification(submitted)
                     step = null; password.setText(""); captcha.setText(""); image.setImageDrawable(null)
+                    image.visibility = View.GONE
+                    captchaNote.visibility = View.VISIBLE
+                    captchaNote.text = "当前验证码不可用，请重新获取表单；这不表示登录成功。"
                     status.text = (error as? NativeVpnFailure)?.explanation
-                        ?: "无法读取已适配的学校登录表单，请检查网络或稍后重试"
+                        ?: NativeVpnFailure.from(error, "U01 处理应用内登录").explanation
                     updateControls()
+                    updateDiagnostics()
+                    if (loginSubmission) showFailureDialog(status.text.toString())
                 })
             }
         }
     }
 
     private fun show(next: NativeVpnStep) {
+        val sameForm = step?.form != null && step?.form === next.form
         step = next
         val result = next.result
         status.text = result.detail
@@ -185,22 +215,46 @@ internal class WebVpnNativeForm(
         username.contentDescription = username.hint; password.contentDescription = password.hint
         title.text = if (sso) "第一步 · 学校统一认证" else "第二步 · 图书馆登录"
         submit.text = if (sso) "登录统一认证" else "登录图书馆"
-        captcha.setText(""); image.setImageDrawable(null)
+        if (!sameForm) captcha.setText("")
+        image.setImageDrawable(null)
+        captchaNote.text = "请根据学校验证码图片填写四位数字"
         if (sso && next.image != null) {
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(next.image, 0, next.image.size, options)
             if (options.outWidth in 1..2048 && options.outHeight in 1..2048) {
                 image.setImageBitmap(BitmapFactory.decodeByteArray(next.image, 0, next.image.size))
-            } else { step = null; status.text = "验证码图片无法读取，请重新获取" }
+            } else { step = null; status.text = "验证码图片无法读取，请重新获取"; captchaNote.text = status.text }
         }
-        listOf(image, captcha, fiveDays).forEach { it.visibility = if (sso) View.VISIBLE else View.GONE }
+        listOf(captchaNote, captcha, fiveDays).forEach { it.visibility = if (sso) View.VISIBLE else View.GONE }
+        image.visibility = if (sso && image.drawable != null) View.VISIBLE else View.GONE
         updateControls()
     }
 
     private fun updateControls() {
         listOf(username, password, captcha, remember, fiveDays, refresh, check).forEach { it.isEnabled = !busy }
+        captcha.isEnabled = !busy && step?.form?.kind == NativeVpnForm.Kind.SSO && image.drawable != null
         submit.isEnabled = !busy && step?.form != null
         progress.visibility = if (busy) View.VISIBLE else View.GONE
+    }
+
+    private fun showFailureDialog(message: String) {
+        resultDialog?.dismiss()
+        val builder = AlertDialog.Builder(activity).setTitle("登录未完成").setMessage(message)
+            .setPositiveButton("知道了", null)
+        if (BuildConfig.DEBUG) builder.setNeutralButton("复制诊断") { _, _ -> copyDiagnostics() }
+        resultDialog = builder.show()
+    }
+
+    private fun updateDiagnostics() {
+        if (BuildConfig.DEBUG) diagnostics.text = "最近操作：$lastOperation\n${session.diagnostics()}"
+    }
+
+    private fun copyDiagnostics() {
+        if (!BuildConfig.DEBUG) return
+        val safe = "认证回跳修复版 E\n最近操作：$lastOperation\n结果：${status.text}\n${session.diagnostics()}"
+        (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+            .setPrimaryClip(ClipData.newPlainText("登录脱敏诊断", safe))
+        Toast.makeText(activity, "已复制脱敏诊断，不含账号、密码或验证码", Toast.LENGTH_SHORT).show()
     }
 
     private fun discardVerification(candidate: CredentialVerification) {
@@ -225,6 +279,7 @@ internal class WebVpnNativeForm(
 
     override fun close() {
         credentialVerification = null
+        resultDialog?.dismiss(); resultDialog = null
         closed = true; session.close(); (worker as? ExecutorService)?.shutdownNow()
         password.setText(""); captcha.setText(""); image.setImageDrawable(null)
     }

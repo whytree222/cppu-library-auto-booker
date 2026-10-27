@@ -62,6 +62,65 @@ class LoginActivityOcrUiTest {
         shadowOf(Looper.getMainLooper()).idle()
     }
 
+    @Test fun checkingBeforeSubmissionKeepsTheImageAndTypedCodeWithoutSendingCredentials() {
+        val controller = open()
+        try {
+            fun views() = children(controller.get().window.decorView)
+            val code = views().filterIsInstance<EditText>().single { it.hint == "四位数字验证码" }
+            code.setText("1234")
+            click(controller.get(), "检查登录状态")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("1234", code.text.toString())
+            assertTrue(code.isEnabled)
+            assertTrue(views().filterIsInstance<ImageView>().any { it.visibility == View.VISIBLE && it.drawable != null })
+            assertTrue(views().filterIsInstance<Button>().single { it.text == "登录统一认证" }.isEnabled)
+            assertTrue(fixture.posts.isEmpty())
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test fun unknownSubmissionShowsItsErrorInADialogAndExplainsTheUnavailableCaptcha() {
+        saveSyntheticAccounts()
+        val controller = open()
+        try {
+            fixture.failPost = true
+            submitSso(controller.get())
+            shadowOf(Looper.getMainLooper()).idle()
+            val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            assertTrue(dialog.isShowing)
+            val message = org.robolectric.Shadows.shadowOf(dialog).message.toString()
+            assertTrue(message.contains("不会自动重发"))
+            assertFalse(message.contains("synthetic-password"))
+            val views = children(controller.get().window.decorView)
+            assertTrue(views.filterIsInstance<TextView>().any { it.text.contains("当前验证码不可用") })
+            assertFalse(views.filterIsInstance<EditText>().single { it.hint == "四位数字验证码" }.isEnabled)
+            assertFalse(views.filterIsInstance<Button>().single { it.text == "登录统一认证" }.isEnabled)
+            assertEquals(1, fixture.posts.size)
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(1, fixture.posts.size)
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test fun copiedDiagnosticsIdentifyTheOperationWithoutCopyingAnyTypedCredentialOrCaptcha() {
+        saveSyntheticAccounts()
+        val controller = open()
+        try {
+            fixture.failPost = true
+            submitSso(controller.get())
+            shadowOf(Looper.getMainLooper()).idle()
+            click(controller.get(), "复制脱敏诊断")
+            val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            val detail = clipboard.primaryClip!!.getItemAt(0).text.toString()
+            assertTrue(detail.contains("认证回跳修复版 E"))
+            assertTrue(detail.contains("最近操作：点击登录统一认证"))
+            assertTrue(detail.contains("登录提交尝试：1"))
+            assertTrue(detail.contains("P01"))
+            assertFalse(detail.contains("synthetic"))
+            assertFalse(detail.contains("1234"))
+            assertEquals(1, fixture.posts.size)
+        } finally { controller.pause().stop().destroy() }
+    }
+
     @Test fun webVpnShowsNativeCaptchaFieldsAndNoWebPageOrOcrOption() {
         val controller = open()
         try {
