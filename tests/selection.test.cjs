@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { JSDOM } = require('jsdom');
+const { JSDOM, VirtualConsole } = require('jsdom');
 
 const script = fs.readFileSync('app/src/main/assets/selection.js', 'utf8');
 const dateString = offset => {
@@ -14,27 +14,38 @@ function run(options = {}) {
   const targetDate = dateString(offset);
   const room = options.room;
   const roomId = room?.id || '26', roomName = room?.name || '过刊阅览室';
+  const prefix = '/http/77726476706e69737468656265737421fdfb489e693378406b468ca88d1b203b';
+  const origin = options.webvpn ? 'https://webvpn.cppu.edu.cn' : 'http://mlib.cppu.edu.cn';
   const dom = new JSDOM(`<body><div id="roomdata"><div onclick="roomonclick('${roomId}')">${roomName}</div></div>
     <div id="dates" style="display:none"><div onclick="selectusedaybuttonclick('${offset}','0','${targetDate}')">${targetDate}</div></div>
     <div id="slots" style="display:none"><form action="/multireadingroomtablelist"><div id="selectdate"></div>
     <button type="button">下一步</button></form></div>
     <div id="selecusetime" style="display:none"><input id="begintime"><input id="endtime">
       <button onclick="selectedtimes();">下一步</button></div></body>`,
-    { url: 'http://mlib.cppu.edu.cn/selectreadingroom', runScripts: 'outside-only' });
+    { url: origin + (options.webvpn ? prefix : '') + '/selectreadingroom',
+      runScripts: 'outside-only', virtualConsole: new VirtualConsole() });
   const w = dom.window;
   const d = w.document;
   const messages = [];
   const timers = [];
   const labelClicks = [];
+  const phases = [];
+  let now = Date.now();
+  if (options.timerStep) w.Date.now = () => now;
   let freeValues;
   let next = 0;
   w.setTimeout = fn => { timers.push(fn); return timers.length; };
-  w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }) };
+  w.AutoBooker = { report: (state, detail) => messages.push({ state, detail }), selectionStage: value => phases.push(value) };
   if (options.transport) w.eval(fs.readFileSync('app/src/main/assets/transport.js', 'utf8').replace('__TRANSPORT_CONFIG__', JSON.stringify({
-    origin:'http://mlib.cppu.edu.cn', prefix:''
+    origin, prefix: options.webvpn ? prefix : ''
   })));
-  d.querySelector('#roomdata div').onclick = () => { d.getElementById('dates').style.display = ''; };
+  d.querySelector('#roomdata div').onclick = () => {
+    if (options.roomHandlerError) throw new Error('sensitive-school-query-and-cookie-must-not-be-logged');
+    if (options.noDates) d.getElementById('dates').remove();
+    else d.getElementById('dates').style.display = '';
+  };
   d.querySelector('#dates div').onclick = () => {
+    if (options.dateHandlerError) throw new Error('sensitive-school-query-and-cookie-must-not-be-logged');
     d.getElementById('dates').style.display = 'none';
     w.roominfor = { ControlNo: options.wrongRoom ? '99' : roomId,
       ReadingRoomName: options.wrongName ? '另一个房间' : roomName, timefree: room?.timeMode === 'free' ? 1 : 0 };
@@ -88,18 +99,46 @@ function run(options = {}) {
   };
   if (options.foreignAction) d.querySelector('#slots form').action = 'https://example.org/multireadingroomtablelist';
   if (options.duplicateFreeButton) d.querySelector('#selecusetime').append(d.querySelector('#selecusetime button').cloneNode(true));
+  if (options.scriptError) w.getComputedStyle = () => { throw new Error('sensitive-school-query-and-cookie-must-not-be-logged'); };
   w.eval(script.replace('__BOOKING_CONFIG__', JSON.stringify({ targetDate,
     reserveTomorrow: !!options.tomorrow, selectedSlots: options.selectedSlots || [4, 5, 6],
     waitForRelease: !!options.wait, room, startTime: options.startTime, endTime: options.endTime })));
-  for (let count = 0; count < 8 && timers.length && !next && !messages.some(m => m.state === 'error'); count++) timers.shift()();
+  for (let count = 0; count < (options.maxTicks || 8) && timers.length && !next && !messages.some(m => m.state === 'error'); count++) {
+    now += options.timerStep || 0;
+    timers.shift()();
+  }
   const selected = [...d.querySelectorAll('#slots input:checked')].map(input => input.id);
   const selectedRanges = [...d.querySelectorAll('#slots input:checked')].map(input => {
     const params = new URLSearchParams(input.value);
     return `${params.get('begintime')}-${params.get('endtime')}`;
   });
   w.close();
-  return { messages, selected, next, freeValues, selectedRanges, labelClicks };
+  return { messages, selected, next, freeValues, selectedRanges, labelClicks, phases };
 }
+
+test('WebVPN date and slot flow uses the proxied form and reports native stages', () => {
+  const f = run({transport: true, webvpn: true, tomorrow: true});
+  assert.equal(f.next, 1, JSON.stringify(f.messages));
+  assert.deepEqual(f.phases, ['room', 'date', 'slots', 'navigate']);
+});
+
+for (const option of ['roomHandlerError', 'dateHandlerError', 'scriptError']) {
+  test(`selection stops with a redacted diagnostic instead of silently losing its timer: ${option}`, () => {
+    const f = run({[option]: true});
+    assert.equal(f.next, 0);
+    assert.equal(f.messages.filter(item => item.state === 'error').length, 1);
+    assert.match(f.messages.at(-1).detail, /程序出错|脚本异常/);
+    assert.doesNotMatch(JSON.stringify(f.messages), /sensitive-school|cookie|query/);
+  });
+}
+
+test('missing date dialog reports its stage before the overall task deadline', () => {
+  const f = run({noDates: true, timerStep: 1000, maxTicks: 30});
+  assert.equal(f.next, 0);
+  assert.equal(f.messages.at(-1).state, 'error');
+  assert.match(f.messages.at(-1).detail, /日期选项未出现/);
+  assert.deepEqual(f.phases, ['room', 'date']);
+});
 
 for (const [name, options] of [
   ['today full date', {}], ['today relative zero', { rawDate: '0' }],

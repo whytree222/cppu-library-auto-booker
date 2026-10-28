@@ -47,6 +47,41 @@ class BookingService : Service() {
     private var gateActive = false
     @Volatile private var fallback: FallbackPolicy? = null
     private var loginCheck: AutoCloseable? = null
+    private var selectionWatchdogSerial = 0L
+    private var selectionPhase = "done"
+
+    // Runs on Android's main thread, not the page's JS event loop. A stuck proxy
+    // observer must not also disable the timeout which explains the failed stage.
+    internal fun watchSelection(sourceGeneration: Int, phase: String) {
+        val label = when (phase) {
+            "room" -> "查找阅览室"
+            "date" -> "加载并选择使用日期"
+            "slots" -> "加载并选择使用时段"
+            "navigate" -> "进入座位图"
+            else -> return
+        }
+        if (terminal || generation != sourceGeneration || selectionPhase == "done" || selectionPhase == phase) return
+        selectionPhase = phase
+        val serial = ++selectionWatchdogSerial
+        main.postDelayed({
+            if (!terminal && generation == sourceGeneration && serial == selectionWatchdogSerial) {
+                val outcome = if (fallback?.hasSubmitted() == true)
+                    "已进入提交阶段，结果不明，不重发；请核对学校记录"
+                else "未提交座位预约"
+                fail("$label 超过 25 秒未完成，页面脚本可能中断或请求未返回；$outcome")
+            }
+        }, 25_000L)
+    }
+
+    internal fun resetSelectionWatchdog() {
+        selectionWatchdogSerial++
+        selectionPhase = ""
+    }
+
+    internal fun stopSelectionWatchdog() {
+        selectionWatchdogSerial++
+        selectionPhase = "done"
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -143,6 +178,7 @@ class BookingService : Service() {
     }
 
     private fun startBatch() {
+        stopSelectionWatchdog()
         releaseLoginCheck()
         val authGeneration = ++generation
         val route = fallback?.route ?: LibraryRoute.DIRECT
@@ -189,6 +225,7 @@ class BookingService : Service() {
         val currentGeneration = ++generation
         val route = fallback?.route ?: LibraryRoute.DIRECT
         gateActive = config.waitForRelease
+        resetSelectionWatchdog()
         val bridge = Bridge(currentGeneration, run.batch, route)
         // Fresh fields and dialogs for each batch; app-wide cookies keep the login.
         webView?.destroy()
@@ -209,6 +246,7 @@ class BookingService : Service() {
                 WebVpnReloginDecision.ALLOWED -> Unit
             }
             recoveredLogin = true
+            stopSelectionWatchdog()
             target.stopLoading()
             releaseLoginCheck()
             record("RUNNING", sequence?.progress("$reason；正在自动恢复 WebVPN 登录（未提交预约）") ?: reason)
@@ -216,6 +254,7 @@ class BookingService : Service() {
                 if (terminal || generation != currentGeneration) return@checkRoute
                 releaseLoginCheck()
                 if (result.state == "valid") {
+                    resetSelectionWatchdog()
                     target.loadUrl(route.url(config.room.entryPath))
                 } else fail(if (result.networkFailure)
                     "${result.detail}；WebVPN 自动重登时网络故障，未提交预约"
@@ -262,15 +301,20 @@ class BookingService : Service() {
                             return
                         }
                         recoveredLogin = true
+                        stopSelectionWatchdog()
                         AutoLogin.login(this@BookingService) { valid, detail ->
                             if (terminal || generation != currentGeneration) return@login
-                            if (valid) view.loadUrl(route.url(config.room.entryPath)) else fail(detail)
+                            if (valid) {
+                                resetSelectionWatchdog()
+                                view.loadUrl(route.url(config.room.entryPath))
+                            } else fail(detail)
                         }
                         return
                     }
                     if (path == "/selectreadingroom" || path in setOf("/multireadingroomtablelist", "/readingroomtablelist"))
                         view.evaluateJavascript(AutomationScript.transport(this@BookingService, route), null)
                     if (path == "/selectreadingroom" && !automationStarted) {
+                        if (!config.waitForRelease && selectionPhase.isEmpty()) watchSelection(currentGeneration, "room")
                         val asset = if (config.waitForRelease) "release-wait.js" else "selection.js"
                         val template = assets.open(asset).bufferedReader().use { it.readText() }
                             .replace("__WAIT_MS__", (releaseDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0).toString())
@@ -282,6 +326,7 @@ class BookingService : Service() {
                         return
                     }
                     if (automationStarted) return
+                    stopSelectionWatchdog()
                     automationStarted = true
                     val template = assets.open("automation.js").bufferedReader().use { it.readText() }
                     view.evaluateJavascript(AutomationScript.build(template, config, run.targetDate.toString()), null)
@@ -345,6 +390,7 @@ class BookingService : Service() {
 
     private fun complete(detail: String, state: String = "DONE") {
         terminal = true
+        stopSelectionWatchdog()
         releaseLoginCheck()
         val room = sequence?.config?.room
         val identified = if (room != null) "${room.groupName} · ${room.name}：$detail" else detail
@@ -379,6 +425,9 @@ class BookingService : Service() {
         }
 
         @JavascriptInterface
+        fun selectionStage(phase: String) = dispatch { watchSelection(sourceGeneration, phase) }
+
+        @JavascriptInterface
         fun report(state: String, detail: String) = dispatch {
             when (state) {
                 "network-error" -> networkFailure(detail)
@@ -388,6 +437,7 @@ class BookingService : Service() {
                     val run = sequence ?: return@dispatch
                     val config = run.configForDate(LocalDate.now()) ?: return@dispatch fail("目标日期已不在今天或明天范围内")
                     record("RUNNING", run.progress(detail))
+                    watchSelection(sourceGeneration, "room")
                     val template = assets.open("selection.js").bufferedReader().use { it.readText() }
                     webView?.evaluateJavascript(AutomationScript.build(template, config, run.targetDate.toString()), null)
                     main.postDelayed({
@@ -395,6 +445,7 @@ class BookingService : Service() {
                     }, 150_000L)
                 }
                 "closed" -> {
+                    stopSelectionWatchdog()
                     if (sequence?.config?.waitForRelease == true && SystemClock.elapsedRealtime() < releaseDeadline) {
                         record("RUNNING", sequence!!.progress("$detail；继续检查，10 分钟窗口不重置"))
                         main.postDelayed({ if (!terminal && generation == sourceGeneration) launchBatch() }, 1000L)

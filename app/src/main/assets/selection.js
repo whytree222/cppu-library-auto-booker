@@ -114,14 +114,34 @@
   let nextClicked = false;
   let stageAt = Date.now();
   let finished = false;
+  let phase = 'room';
+  let schoolClickActive = false;
+  const schoolError = () => {
+    if (schoolClickActive) fail('学校页面的选日或选时段处理程序出错；已停止，未提交座位预约');
+  };
   const fail = detail => {
     if (finished) return;
     finished = true;
+    window.removeEventListener('error', schoolError);
     report('error', detail);
   };
-  const stage = (detail) => {
+  const stage = (detail, nextPhase) => {
     stageAt = Date.now();
+    phase = nextPhase;
+    window.AutoBooker?.selectionStage?.(phase);
     report('progress', detail);
+  };
+  const clickSchool = element => {
+    schoolClickActive = true;
+    try { element.click(); } finally { schoolClickActive = false; }
+  };
+  const later = delay => setTimeout(safeTick, delay);
+  const safeTick = () => {
+    if (finished) return;
+    try { tick(); } catch (_) {
+      // Never report exception text: proxy URLs can contain session parameters.
+      fail(`选择流程脚本异常（${({room:'查找阅览室', date:'选择日期', slots:'选择时段', navigate:'进入座位图'})[phase]}）；已停止，未提交座位预约`);
+    }
   };
   const tick = () => {
     if (finished || ['/multireadingroomtablelist', '/readingroomtablelist'].includes(window.LibraryTransport?.path() || location.pathname)) return;
@@ -147,12 +167,12 @@
         : `未找到${targetRoom.name}卡片`);
       return;
     }
-    if (nextClicked) return setTimeout(tick, 300);
+    if (nextClicked) return later(300);
 
     if (free && roomClicked && dateClicked) {
       const forms = queryAll('#selecusetime').filter(visible);
       if (forms.length > 1) return fail('出现多个自选时间页面；已停止');
-      if (!forms.length) return setTimeout(tick, 300);
+      if (!forms.length) return later(300);
       const form = forms[0], owner = form.ownerDocument.defaultView;
       const information = owner.roominfor;
       if (!information || String(information.ControlNo ?? information.controlNo) !== roomId ||
@@ -174,10 +194,10 @@
         if (field.value !== value) return fail('学校未接受所填写的起止时间；已停止');
       }
       nextClicked = true;
-      stage(`已选择 ${config.startTime}–${config.endTime}，正在进入${targetRoom.name}座位图`);
+      stage(`已选择 ${config.startTime}–${config.endTime}，正在进入${targetRoom.name}座位图`, 'navigate');
       // Let selectedtimes() use the school's live room/date state and URL rules.
-      next[0].click();
-      return setTimeout(tick, 300);
+      clickSchool(next[0]);
+      return later(300);
     }
 
     const choices = boxes();
@@ -245,7 +265,7 @@
         // Fail closed rather than selecting a different live checkbox by guess.
         if (!box.id || [...box.ownerDocument.querySelectorAll('[id]')].filter(element => element.id === box.id).length !== 1 || labels.length !== 1)
           return fail('时段输入框或标签不能唯一对应；已停止');
-        labels[0].click();
+        clickSchool(labels[0]);
       });
       if (finished) return;
       if (choices.some(box => box.checked !== selectedBoxes.has(box))) {
@@ -261,32 +281,34 @@
         .filter(element => visible(element) && !element.disabled && /^下一步$/.test(text(element)));
       if (next.length !== 1) return fail('不能唯一识别时段页面的“下一步”按钮');
       nextClicked = true;
-      stage(`已选择 ${slots.map(index => index + 1).join('、')} 时段，正在进入座位图`);
-      next[0].click();
-      return setTimeout(tick, 300);
+      stage(`已选择 ${slots.map(index => index + 1).join('、')} 时段，正在进入座位图`, 'navigate');
+      clickSchool(next[0]);
+      return later(300);
     }
 
     if (!roomClicked) {
       const matches = roomMatches();
       if (matches.length > 1) return fail('阅览室卡片重复，不能唯一识别；已停止');
       const target = matches[0];
-      if (!target) return setTimeout(tick, 300);
+      if (!target) return later(300);
       roomClicked = true;
-      stage(`已找到${targetRoom.name}，正在选择使用日`);
-      target.click();
-      return setTimeout(tick, 300);
+      stage(`已找到${targetRoom.name}，正在选择使用日`, 'date');
+      clickSchool(target);
+      return later(300);
     }
     if (!dateClicked) {
       const matches = dateCards();
       if (matches.length > 1) return fail('目标日期卡片重复，不能唯一识别；已停止');
       const target = matches[0];
-      if (!target) return setTimeout(tick, 300);
+      if (!target) return later(300);
       dateClicked = true;
-      stage(`正在选择使用日 ${targetDate}`);
-      target.click();
-      return setTimeout(tick, 300);
+      stage(`正在选择使用日 ${targetDate}`, 'slots');
+      clickSchool(target);
+      return later(300);
     }
-    setTimeout(tick, 300);
+    later(300);
   };
-  tick();
+  window.addEventListener('error', schoolError);
+  window.AutoBooker?.selectionStage?.(phase);
+  safeTick();
 })();

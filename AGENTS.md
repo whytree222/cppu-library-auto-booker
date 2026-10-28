@@ -27,7 +27,7 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 本地待发布版本 | `0.20.2`，`versionCode=54`，`minSupportedVersionCode=50`；远端正式发布仍为 v0.20.1 |
+| 当前版本 | `0.20.3`，`versionCode=55`，`minSupportedVersionCode=50`；10-28 已授权发布选日修复，实际发布状态以远端为准 |
 | 包名 | `cn.edu.cppu.libraryautobooker` |
 | Debug 包名 | `cn.edu.cppu.libraryautobooker.debug` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
@@ -759,3 +759,13 @@ E 新增完整模拟 HTTP/Cookie/两层登录链路，验证 SSO POST 一次、�
 本地准备检查已通过：Node 445、Android 365 项全部通过，未签名 release 混淆构建通过，aapt2 确认正式包名 / versionCode 54 / versionName 0.20.2。签名预检须在 main 上以 publish=false 运行，不在 tag 上做 publish=false 预检；本段仅记录已获授权和本地结果，实际发布以远端运行结果为准。
 
 正式版与调试版包名、签名和本地数据独立，E 版账号/会话不会自动迁移。发布后让用户先更新正式版并在正式版内重新完成 WebVPN 登录，确认可用再移除调试包；不要直接卸载其仍在使用的应用。当前未跟踪的 docs/in-app-update.md 并非本轮新增，不擅自纳入发布提交或覆盖。
+
+### 12.8 WebVPN 选日卡住修复（2026-10-28，未发布）
+
+v0.20.2 已完成 Gitee/GitHub 发布及公开校验，tag 指向 65296fa929605daa4f810e7b159c269048cfa0e5，不要移动 tag。维护者随后提供真实记录：直连 UnknownHostException 后正确切换 WebVPN，登录检查通过、找到过刊阅览室，停在选择使用日，150 秒后总任务超时。维护者已授权修复本问题，并在测试修复包后反馈“可以了，发布吧”，授权 v0.20.3 / 55 的提交、推送、签名预检与 Gitee/GitHub 发布，不重复询问同一次发布权限。
+
+离线复现发现 transport.js 通过 form.action 属性比较代理网址，若代理将该属性虚拟化为原始地址，MutationObserver 会反复写入同一个 action，阻塞网页计时器。已改为比较 DOM action 属性，并在扫描写入期间暂停自身观察，避免代理同时虚拟化 getAttribute 时继续自触发。真实手机上的具体代理钩子尚未采集，不把模拟复现描述为已确认的学校现场原因。
+
+selection.js 为轮询及学校原有点击处理补充脱敏异常提示，阶段固定为 room/date/slots/navigate。BookingService.selectionStage 是只接收上述固定阶段的 JS Bridge，Android 主线程独立执行每阶段 25 秒超时，不依赖网页事件循环；阶段推进使旧定时器失效，同阶段重复通知不能续期，进入座位图或切换批次后清理，旧代次不能干扰新任务。原有 10 分钟等待、150 秒批次、45 秒确认、精确身份校验、直连优先和提交后不重发保护保留。
+
+新增代理属性虚拟化、真实 MutationObserver 不自触发、WebVPN 下日期与时段流程、脚本错误脱敏、缺少日期弹窗，以及四项 Android 独立超时测试。Node 452、Android 369 全部通过，debug 与 release 构建成功；维护者确认独立调试 APK 可用。正式版与调试版会话不共享，新正式签名包及隔夜预约仍待维护者验证；代理未执行真实学校登录或预约。v0.20.3 发布预检结果以 diagnostics/release-v0.20.3、本地日志及远端工作流为准。

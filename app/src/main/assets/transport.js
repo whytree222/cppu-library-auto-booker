@@ -45,9 +45,25 @@
     return send.apply(this, args);
   };
   const forms = () => window.document?.querySelectorAll('form[action]').forEach(form => {
-    const mapped = map(form.getAttribute('action'));
-    if (form.action !== new URL(mapped, location.href).href) form.action = mapped;
+    const raw = form.getAttribute('action');
+    const mapped = map(raw);
+    // Reverse proxies may virtualize form.action to expose the original library
+    // URL even after the DOM attribute has been rewritten. Comparing that getter
+    // to the proxy URL causes our observer to write the same attribute forever,
+    // starving timers and the school's date dialog. Compare the actual attribute.
+    if (new URL(raw, location.href).href !== new URL(mapped, location.href).href)
+      form.setAttribute('action', mapped);
   });
   forms();
-  new MutationObserver(forms).observe(document.documentElement, {childList:true, subtree:true, attributes:true, attributeFilter:['action']});
+  const observation = {childList:true, subtree:true, attributes:true, attributeFilter:['action']};
+  const observer = new MutationObserver(() => {
+    // Some proxies virtualize attribute getters too. Do not observe our own
+    // writes even in that case; otherwise the observer can starve every timer.
+    observer.disconnect();
+    try { forms(); } finally {
+      const root = window.document?.documentElement;
+      if (root) observer.observe(root, observation);
+    }
+  });
+  observer.observe(document.documentElement, observation);
 })();
