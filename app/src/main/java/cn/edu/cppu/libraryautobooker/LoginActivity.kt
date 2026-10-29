@@ -37,8 +37,10 @@ class LoginActivity : Activity() {
             insets
         }
         if (route == LibraryRoute.WEBVPN) {
-            interactiveLogin = WebVpnAutoLogin.acquireInteractiveLogin()
-            nativeForm = WebVpnNativeForm(this, onVerified = { finishLogin(true) })
+            nativeForm = WebVpnNativeForm(this, onVerified = { finishLogin(true) }, autoStart = false)
+            interactiveLogin = WebVpnAutoLogin.acquireInteractiveLogin { ready ->
+                if (!isFinishing && !isDestroyed) nativeForm?.authenticationReady(ready)
+            }
             container.addView(nativeForm!!.root, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         } else {
             container.addView(Button(this).apply { text = "返回应用"; setOnClickListener { verifyLogin(true) } })
@@ -80,10 +82,13 @@ class LoginActivity : Activity() {
         finish()
     }
     override fun onDestroy() {
-        nativeForm?.close(); nativeForm = null
+        val retiringForm = nativeForm
+        val retiringLease = interactiveLogin
+        nativeForm = null; interactiveLogin = null
+        if (retiringForm != null) retiringForm.closeWhenIdle { retiringLease?.close() }
+        else retiringLease?.close()
         if (::webView.isInitialized) webView.destroy()
         CookieManager.getInstance().flush()
-        interactiveLogin?.close(); interactiveLogin = null
         super.onDestroy()
     }
     companion object { const val EXTRA_WEBVPN = "webvpn" }

@@ -11,7 +11,24 @@ import java.net.URLEncoder
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
 
-internal class NativeVpnFailure(val explanation: String, val mayHaveSubmitted: Boolean = false) :
+internal enum class NativeVpnFailureKind {
+    NONE, CAPTCHA_REJECTED, CREDENTIAL_REJECTED, RATE_LIMITED, EXTRA_VERIFICATION,
+    UNKNOWN_RESULT, CANCELLED, FORM_STALE, INVALID_INPUT, PRE_SUBMISSION_FAILURE
+}
+
+/** Only stable categories leave parsing; raw school feedback never enters logs. */
+internal object NativeVpnFeedback {
+    fun classify(message: String): NativeVpnFailureKind = when {
+        Regex("锁定|冻结|频繁|次数.*(?:上限|过多|限制|超)|过多.*尝试|请求过多|稍后(?:再|重)试|封禁|限流").containsMatchIn(message) -> NativeVpnFailureKind.RATE_LIMITED
+        Regex("短信|动态口令|二次认证|额外验证|额外认证|双重认证|一次性密码|扫码|人脸|多因素|滑块").containsMatchIn(message) -> NativeVpnFailureKind.EXTRA_VERIFICATION
+        Regex("(?:密码|账号|帐号|用户名|用户).*(?:错误|不正确|无效|不存在|不匹配|未找到|失败)|请输入.*(?:密码|账号|帐号|用户名)").containsMatchIn(message) -> NativeVpnFailureKind.CREDENTIAL_REJECTED
+        Regex("验证码.*(?:无效|错误|不正确|失效|过期|失败)").containsMatchIn(message) -> NativeVpnFailureKind.CAPTCHA_REJECTED
+        else -> NativeVpnFailureKind.UNKNOWN_RESULT
+    }
+}
+
+internal class NativeVpnFailure(val explanation: String, val mayHaveSubmitted: Boolean = false,
+    val kind: NativeVpnFailureKind = if (mayHaveSubmitted) NativeVpnFailureKind.UNKNOWN_RESULT else NativeVpnFailureKind.PRE_SUBMISSION_FAILURE) :
     Exception(explanation) {
     companion object {
         // Only fixed labels and error categories reach the UI. Never include the
@@ -31,7 +48,10 @@ internal class NativeVpnFailure(val explanation: String, val mayHaveSubmitted: B
                 else -> "处理学校登录响应失败"
             }
             val prefix = if (submitted) "登录已提交，但结果未确认；请先检查登录状态，不会自动重发。" else ""
-            return NativeVpnFailure("$prefix$phase：$reason", submitted)
+            return NativeVpnFailure("$prefix$phase：$reason", submitted,
+                if (error is NativeVpnTransportFailure && error.reason == NativeVpnTransportFailure.Reason.CANCELLED)
+                    NativeVpnFailureKind.CANCELLED else if (submitted) NativeVpnFailureKind.UNKNOWN_RESULT
+                else NativeVpnFailureKind.PRE_SUBMISSION_FAILURE)
         }
     }
 }
@@ -46,7 +66,8 @@ internal class NativeVpnForm(val kind: Kind, internal val action: String,
 }
 
 internal class NativeVpnStep(val form: NativeVpnForm? = null, val image: ByteArray? = null,
-    val result: SessionChecker.Result, val error: Boolean = false) {
+    val result: SessionChecker.Result, val error: Boolean = false,
+    val failureKind: NativeVpnFailureKind = NativeVpnFailureKind.NONE) {
     override fun toString() = "NativeVpnStep(state=${result.state}, content=<redacted>)"
 }
 
@@ -63,11 +84,23 @@ internal class NativeWebVpnSession(
     fun diagnostics(): String = (listOf("当前阶段：$phase", "登录提交尝试：$credentialAttempts", "最近会话检查：$probeSummary") +
         transport.diagnostics()).joinToString("\n")
     @Volatile private var closed = false
+    private val lifecycle = Any()
     private fun requireOpen() { check(!closed) }
+
+    /** Current, unconsumed challenge only. Does not send or consume anything. */
+    fun validate(form: NativeVpnForm, guard: () -> Boolean = { true }): Boolean = synchronized(lifecycle) {
+        runCatching { !closed && guard() && form === active && !form.consumed.get() &&
+            clock() - form.createdAt in 0..120_000L && transport.cookieBinding(form.action) == form.cookieBinding }.getOrDefault(false)
+    }
+
+    private fun requireValid(form: NativeVpnForm, guard: () -> Boolean) {
+        if (closed || !guard()) throw NativeVpnFailure("登录操作已取消或账号设置已变化，未继续发送", kind = NativeVpnFailureKind.CANCELLED)
+        if (!validate(form)) throw NativeVpnFailure("验证码或登录会话已变化，请重新获取登录表单", kind = NativeVpnFailureKind.FORM_STALE)
+    }
 
     fun load(): NativeVpnStep {
         try {
-            requireOpen(); active = null; activeImage = null
+            synchronized(lifecycle) { requireOpen(); active = null; activeImage = null }
             phase = "L01 读取图书馆登录入口"
             var page = transport.request(NativeVpnUrls.libraryLogin)
             var rootAlreadyLoaded = false
@@ -80,7 +113,7 @@ internal class NativeWebVpnSession(
             if (isSso(page)) return ssoStep(page)
             if (isLibraryLogin(page)) return libraryStep(page)
             return verifiedOrFail(recoverSso = true, rootAlreadyLoaded = rootAlreadyLoaded)
-        } catch (error: Exception) { active = null; activeImage = null; throw NativeVpnFailure.from(error, phase) }
+        } catch (error: Exception) { synchronized(lifecycle) { active = null; activeImage = null }; throw NativeVpnFailure.from(error, phase) }
     }
 
     fun check(): NativeVpnStep {
@@ -94,24 +127,20 @@ internal class NativeWebVpnSession(
                 !form.consumed.get() && clock() - form.createdAt in 0..120_000L &&
                 transport.cookieBinding(form.action) == form.cookieBinding && activeImage != null }.getOrDefault(false)
             if (reusable) return NativeVpnStep(form, activeImage, SessionChecker.Result("unknown",
-                "登录状态未确认；当前验证码尚未提交，可继续填写或换图。${failure.explanation}"), error = true)
+                "登录状态未确认；当前验证码尚未提交，可继续填写或换图。${failure.explanation}"), error = true,
+                failureKind = NativeVpnFailureKind.PRE_SUBMISSION_FAILURE)
             throw failure
         }
     }
 
     fun submit(form: NativeVpnForm, username: String, password: String, captcha: String,
-        remember: Boolean): NativeVpnStep {
-        requireOpen()
-        if (form !== active || form.consumed.get()) throw NativeVpnFailure("本轮登录已提交或页面已更新，请先检查登录状态或重新获取验证码")
-        if (clock() - form.createdAt !in 0..120_000L || transport.cookieBinding(form.action) != form.cookieBinding) {
-            active = null
-            throw NativeVpnFailure("验证码或登录会话已变化，请重新获取登录表单")
-        }
+        remember: Boolean, guard: () -> Boolean = { true }): NativeVpnStep {
+        synchronized(lifecycle) { requireValid(form, guard) }
         if (username.isBlank() || password.isEmpty() || username.length > 256 || password.length > 4096 ||
             (username + password).any { it == '\r' || it == '\n' || it == '\u0000' })
-            throw NativeVpnFailure("请填写有效的账号和密码")
+            throw NativeVpnFailure("请填写有效的账号和密码", kind = NativeVpnFailureKind.INVALID_INPUT)
         if (form.kind == NativeVpnForm.Kind.SSO && !captcha.matches(Regex("[0-9]{4}")))
-            throw NativeVpnFailure("请手动填写图片中的四位数字验证码")
+            throw NativeVpnFailure("请填写图片中的四位数字验证码", kind = NativeVpnFailureKind.INVALID_INPUT)
         val fields = LinkedHashMap(form.hidden)
         if (form.kind == NativeVpnForm.Kind.SSO) {
             fields["username"] = username.trim()
@@ -124,21 +153,28 @@ internal class NativeWebVpnSession(
             fields["passwd"] = SchoolPasswordEncoding.library(password)
             fields["url"] = "selectreadingroom"
         }
-        if (!form.consumed.compareAndSet(false, true)) throw NativeVpnFailure("本轮登录已提交，请检查登录状态")
-        active = null
-        activeImage = null
         val body = fields.entries.joinToString("&") { encode(it.key) + "=" + encode(it.value) }.toByteArray(Charsets.UTF_8)
         try {
+            // close() and final consumption share this short state lock. RSA and
+            // all network I/O remain outside it; a cancelled OCR cannot submit.
+            synchronized(lifecycle) {
+                requireValid(form, guard)
+                if (!form.consumed.compareAndSet(false, true)) throw NativeVpnFailure("本轮登录已提交，请检查登录状态", kind = NativeVpnFailureKind.FORM_STALE)
+                active = null; activeImage = null
+            }
             phase = if (form.kind == NativeVpnForm.Kind.SSO) "P01 提交统一认证并读取响应" else "P02 提交图书馆登录并读取响应"
             credentialAttempts++
-            val response = transport.request(form.action, "POST", body, referer = form.action)
+            val response = transport.guardedRequest(form.action, "POST", body, referer = form.action) { !closed && guard() }
+            if (response.code == 429) return rejected(form.kind, NativeVpnFailureKind.RATE_LIMITED)
             if (isSso(response)) {
                 val doc = document(response)
                 val feedback = doc.select("#fm1 #msg1, #fm1 #swiSpan1, #msg1, #swiSpan1").text()
-                if (Regex("验证码.*(无效|错误|不正确|失效|过期)").containsMatchIn(feedback))
-                    return ssoStep(response, "验证码未通过，请输入新的验证码后再点登录", true)
-                if (Regex("密码|账号|帐号|用户名|锁定|频繁|拒绝|失败").containsMatchIn(feedback))
-                    return ssoStep(response, "学校未接受本次认证，请核对账号密码或稍后重试", true)
+                when (val reason = NativeVpnFeedback.classify(feedback)) {
+                    NativeVpnFailureKind.CAPTCHA_REJECTED -> return ssoStep(response, "验证码未通过，请输入新的验证码后再点登录", true, reason)
+                    NativeVpnFailureKind.CREDENTIAL_REJECTED, NativeVpnFailureKind.RATE_LIMITED,
+                    NativeVpnFailureKind.EXTRA_VERIFICATION -> return rejected(form.kind, reason)
+                    else -> Unit
+                }
             }
             val result = probe()
             if (result.state == "valid") return NativeVpnStep(result = result)
@@ -146,14 +182,31 @@ internal class NativeWebVpnSession(
                 val page = if (isLibraryLogin(response)) response else transport.request(NativeVpnUrls.libraryLogin)
                 if (isLibraryLogin(page)) return libraryStep(page)
             }
-            if (form.kind == NativeVpnForm.Kind.LIBRARY && result.state == "expired" && result.vpnAuthState == "valid" && isLibraryLogin(response))
-                return libraryStep(response, "图书馆未接受本次登录，请核对图书馆账号密码", true)
+            if (form.kind == NativeVpnForm.Kind.LIBRARY && result.state == "expired" && result.vpnAuthState == "valid" && isLibraryLogin(response)) {
+                val reason = NativeVpnFeedback.classify(document(response).select(".alert-danger,.alertify-message,[role=alert],.error-message,#msg1,#msg").text())
+                if (reason == NativeVpnFailureKind.RATE_LIMITED || reason == NativeVpnFailureKind.EXTRA_VERIFICATION)
+                    return rejected(form.kind, reason)
+                if (reason == NativeVpnFailureKind.CAPTCHA_REJECTED)
+                    return rejected(form.kind, NativeVpnFailureKind.EXTRA_VERIFICATION)
+                return libraryStep(response, "图书馆未接受本次登录，请核对图书馆账号密码", true, NativeVpnFailureKind.CREDENTIAL_REJECTED)
+            }
             if (form.kind == NativeVpnForm.Kind.SSO && result.state == "vpn_login_required" && isSso(response))
-                return ssoStep(response, "学校仍返回统一认证登录页，尚未登录；请核对输入并填写新验证码后再点登录", true)
+                return ssoStep(response, "学校仍返回统一认证登录页，尚未登录；请核对输入并填写新验证码后再点登录", true, NativeVpnFailureKind.UNKNOWN_RESULT)
             throw NativeVpnFailure("登录已提交，但学校结果尚未确认。请点“检查登录状态”；不会自动重复提交", true)
         } catch (error: NativeVpnFailure) { throw error }
         catch (error: Exception) { throw NativeVpnFailure.from(error, phase, submitted = true) }
         finally { body.fill(0); fields.clear() }
+    }
+
+    private fun rejected(kind: NativeVpnForm.Kind, reason: NativeVpnFailureKind): NativeVpnStep {
+        val message = when (reason) {
+            NativeVpnFailureKind.CREDENTIAL_REJECTED -> "学校未接受本次认证，请核对账号密码或稍后重试"
+            NativeVpnFailureKind.RATE_LIMITED -> "学校限制登录频率或账号已锁定，已停止自动尝试"
+            NativeVpnFailureKind.EXTRA_VERIFICATION -> "学校要求额外认证，请手动完成登录"
+            else -> "登录结果未确认，已停止自动尝试"
+        }
+        return NativeVpnStep(result = SessionChecker.Result(if (kind == NativeVpnForm.Kind.SSO) "vpn_login_required" else "expired",
+            message, vpnAuthState = if (kind == NativeVpnForm.Kind.SSO) "expired" else "valid"), error = true, failureKind = reason)
     }
 
     private fun probe(): SessionChecker.Result {
@@ -192,7 +245,8 @@ internal class NativeWebVpnSession(
             else "暂时无法验证学校登录状态，请检查网络后重试")
     }
 
-    private fun ssoStep(page: NativeVpnResponse, message: String = "请在应用内输入统一认证账号、密码和验证码", error: Boolean = false): NativeVpnStep {
+    private fun ssoStep(page: NativeVpnResponse, message: String = "请在应用内输入统一认证账号、密码和验证码", error: Boolean = false,
+        failureKind: NativeVpnFailureKind = NativeVpnFailureKind.NONE): NativeVpnStep {
         phase = "S01 解析统一认证表单"
         val doc = document(page)
         val forms = doc.select("form#fm1")
@@ -240,13 +294,17 @@ internal class NativeWebVpnSession(
         require(buttons.size == 1)
         val remember = form.select("input[name=rememberMe]")
         require(remember.size == 1)
-        active = NativeVpnForm(NativeVpnForm.Kind.SSO, action, hidden, transport.cookieBinding(action), clock(),
-            exponent, modulus, buttons.single().attr("value"), remember.single().attr("value").ifBlank { "on" })
-        activeImage = image.body
-        return NativeVpnStep(active, image.body, SessionChecker.Result("vpn_login_required", message, vpnAuthState = "expired"), error)
+        synchronized(lifecycle) {
+            requireOpen()
+            active = NativeVpnForm(NativeVpnForm.Kind.SSO, action, hidden, transport.cookieBinding(action), clock(),
+                exponent, modulus, buttons.single().attr("value"), remember.single().attr("value").ifBlank { "on" })
+            activeImage = image.body
+            return NativeVpnStep(active, image.body, SessionChecker.Result("vpn_login_required", message, vpnAuthState = "expired"), error, failureKind)
+        }
     }
 
-    private fun libraryStep(page: NativeVpnResponse, message: String = "统一认证已通过，请在应用内登录图书馆", error: Boolean = false): NativeVpnStep {
+    private fun libraryStep(page: NativeVpnResponse, message: String = "统一认证已通过，请在应用内登录图书馆", error: Boolean = false,
+        failureKind: NativeVpnFailureKind = NativeVpnFailureKind.NONE): NativeVpnStep {
         phase = "B01 解析图书馆登录表单"
         val forms = document(page).select("form#fromuser")
         require(forms.size == 1)
@@ -262,9 +320,12 @@ internal class NativeWebVpnSession(
         require(form.select("iframe, input[name*=captcha], input[name*=authcode]").isEmpty())
         val hidden = hidden(form)
         require(hidden.keys == setOf("url"))
-        active = NativeVpnForm(NativeVpnForm.Kind.LIBRARY, action, hidden, transport.cookieBinding(action), clock())
-        activeImage = null
-        return NativeVpnStep(active, result = SessionChecker.Result("expired", message, vpnAuthState = "valid"), error = error)
+        synchronized(lifecycle) {
+            requireOpen()
+            active = NativeVpnForm(NativeVpnForm.Kind.LIBRARY, action, hidden, transport.cookieBinding(action), clock())
+            activeImage = null
+            return NativeVpnStep(active, result = SessionChecker.Result("expired", message, vpnAuthState = "valid"), error = error, failureKind = failureKind)
+        }
     }
 
     private fun hidden(form: Element): Map<String, String> {
@@ -279,7 +340,9 @@ internal class NativeWebVpnSession(
         val charset = Regex("charset=([^;\\s]+)", RegexOption.IGNORE_CASE).find(page.contentType)?.groupValues?.get(1)?.trim('"', '\'')
         return Jsoup.parse(ByteArrayInputStream(page.body), charset, page.url)
     }
-    override fun close() { closed = true; active = null; activeImage = null; transport.close() }
+    fun awaitQuiescence(timeoutMs: Long): Boolean = transport.awaitQuiescence(timeoutMs)
+    fun isQuiescent(): Boolean = transport.isQuiescent()
+    override fun close() { synchronized(lifecycle) { closed = true; active = null; activeImage = null }; transport.close() }
     private fun encode(value: String) = URLEncoder.encode(value, "UTF-8")
 }
 

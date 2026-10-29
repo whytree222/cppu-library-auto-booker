@@ -18,6 +18,7 @@ import cn.edu.cppu.libraryautobooker.network.LibraryRoute
 import cn.edu.cppu.libraryautobooker.ocr.CaptchaPagePolicy
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 
 object SessionChecker {
     data class Result(val state: String, val detail: String, val networkFailure: Boolean = false,
@@ -43,6 +44,14 @@ object SessionChecker {
     }
 
     fun probe(context: Context, route: LibraryRoute, updateSession: Boolean = true, callback: (Result) -> Unit) {
+        val permit = if (route == LibraryRoute.WEBVPN) WebVpnAuthOwnership.beginProbe() else null
+        if (route == LibraryRoute.WEBVPN && permit == null) {
+            main.post { callback(Result("logging_in", "WebVPN 认证正在处理，请等待本轮完成")) }
+            return
+        }
+        val released = AtomicBoolean()
+        fun releasePermit() { if (released.compareAndSet(false, true)) permit?.close() }
+        try {
         val id = if (updateSession) generation.incrementAndGet() else -1
         val app = context.applicationContext
         LoginStatusStore(app).checking(route)
@@ -83,21 +92,72 @@ object SessionChecker {
                 decodeRoute(route, code, connection.getHeaderField("Location"), body)
             } catch (error: Exception) {
                 Result("unknown", "${route.label}登录检查失败：${error.javaClass.simpleName}", isNetworkFailure(error))
-            } finally { connection?.disconnect() }
-            main.post {
+            } finally { runCatching { connection?.disconnect() } }
+            if (!main.post {
+                var transferred = false
+                try {
+                if (route == LibraryRoute.WEBVPN && WebVpnAuthOwnership.busy) {
+                    releasePermit()
+                    callback(Result("logging_in", "WebVPN 认证已开始，旧检查结果未应用"))
+                    return@post
+                }
+                var acceptedNewest = false
                 probeEpochs.deliver(ticket, CookieManager.getInstance().getCookie(url), result, accept = {
                     // A late response must never restore cookies from before a newer login.
                     // Generation checks apply to cookies as well as persisted status.
-                    responseCookies.forEach { CookieManager.getInstance().setCookie(url, it) }
-                    if (responseCookies.isNotEmpty()) CookieManager.getInstance().flush()
-                    LoginStatusStore(app).record(route, it)
-                    if (updateSession && id == generation.get()) {
-                        RuntimeStore(app).session(it.state, it.detail)
-                        RuntimeStore(app).prefs.edit().putString("session_route", route.name).apply()
-                        if (it.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", route.name).apply()
+                    // Acceptance and delivery below are asynchronous: successful callers must
+                    // never navigate using cookies that the browser has not accepted yet.
+                    acceptedNewest = true
+                }, callback = { accepted ->
+                    val current = acceptedNewest && probeEpochs.isCurrent(ticket) &&
+                        (route != LibraryRoute.WEBVPN || !WebVpnAuthOwnership.busy)
+                    val bookingStatusOnly = !updateSession &&
+                        cn.edu.cppu.libraryautobooker.booking.BookingService.running
+                    val headers = if (current && !bookingStatusOnly) responseCookies else emptyList()
+                    var writeFailed = false
+                    val barrier = ProbeCookieCompletion(headers.size, { timedOut ->
+                        val final = when {
+                            timedOut -> Result("unknown", "登录检查的会话写入尚未完成，请稍后重试")
+                            writeFailed -> Result("unknown", "登录检查的会话写入未成功，请稍后重试")
+                            route == LibraryRoute.WEBVPN && WebVpnAuthOwnership.busy ->
+                                Result("logging_in", "WebVPN 认证已开始，旧检查结果未应用")
+                            !probeEpochs.authenticationCurrent(ticket) ->
+                                Result("unknown", "登录检查已过时，请重新检查")
+                            else -> accepted
+                        }
+                        try {
+                            if (!timedOut && current && probeEpochs.isCurrent(ticket) &&
+                                (route != LibraryRoute.WEBVPN || !WebVpnAuthOwnership.busy)) {
+                                if (headers.isNotEmpty()) CookieManager.getInstance().flush()
+                                LoginStatusStore(app).record(route, final)
+                                if (updateSession && id == generation.get()) {
+                                    RuntimeStore(app).session(final.state, final.detail)
+                                    RuntimeStore(app).prefs.edit().putString("session_route", route.name).apply()
+                                    if (final.state == "valid") RuntimeStore(app).prefs.edit().putString("active_route", route.name).apply()
+                                }
+                            }
+                        } finally { callback(final) }
+                    }, ::releasePermit)
+                    transferred = true
+                    headers.forEach { header ->
+                        val receipt = barrier.receipt()
+                        try { CookieManager.getInstance().setCookie(url, header) { ok ->
+                            if (!ok) writeFailed = true
+                            receipt()
+                        } } catch (_: RuntimeException) { writeFailed = true; receipt() }
                     }
-                }, callback = callback)
-            }
+                    barrier.registrationComplete()
+                    if (headers.isNotEmpty()) main.postDelayed({ barrier.timeout() }, 5000L)
+                })
+                } catch (_: Exception) {
+                    if (!transferred) releasePermit()
+                    // Callback failures must not leak the authentication lease.
+                }
+            }) releasePermit()
+        }
+        } catch (_: Exception) {
+            releasePermit()
+            main.post { callback(Result("unknown", "登录检查暂时不可用，请稍后重试")) }
         }
     }
 
@@ -153,6 +213,37 @@ object SessionChecker {
     }
 }
 
+/** Cookie receipts may arrive synchronously, twice, or after the UI timeout. */
+internal class ProbeCookieCompletion(
+    count: Int,
+    private val complete: (Boolean) -> Unit,
+    private val release: () -> Unit
+) {
+    private var pending = count
+    private var registered = false
+    private var delivered = false
+    private var delivering = false
+    private var released = false
+    fun receipt(): () -> Unit {
+        val once = AtomicBoolean()
+        return { if (once.compareAndSet(false, true)) synchronized(this) { pending--; drain(false) } }
+    }
+    @Synchronized fun registrationComplete() { registered = true; drain(false) }
+    @Synchronized fun timeout() { drain(true) }
+    private fun drain(timedOut: Boolean) {
+        if (registered && !delivered && (pending == 0 || timedOut)) {
+            delivered = true
+            delivering = true
+            try { complete(timedOut) } catch (_: Exception) { /* callers own their UI errors */ }
+            finally { delivering = false }
+        }
+        if (registered && pending == 0 && delivered && !delivering && !released) {
+            released = true
+            release()
+        }
+    }
+}
+
 /**
  * A probe reads one cookie snapshot, not whichever authentication session exists on completion.
  * Keep the snapshot private and never include it in diagnostics, data classes, or test output.
@@ -177,6 +268,9 @@ internal class SessionProbeEpochs {
     fun invalidateAuthentication(route: LibraryRoute) {
         authentication.getValue(route).incrementAndGet()
     }
+
+    fun authenticationCurrent(ticket: Ticket) = ticket.authenticationEpoch == authentication.getValue(ticket.route).get()
+    fun isCurrent(ticket: Ticket) = authenticationCurrent(ticket) && ticket.probeEpoch == probes.getValue(ticket.route).get()
 
     /** Only a current, unchanged session may publish response cookies or status. */
     fun deliver(ticket: Ticket, currentCookie: String?, result: SessionChecker.Result,

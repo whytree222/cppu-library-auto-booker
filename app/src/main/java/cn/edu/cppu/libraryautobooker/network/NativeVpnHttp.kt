@@ -23,6 +23,15 @@ internal interface NativeVpnTransport : AutoCloseable {
         referer: String? = null, follow: Boolean = true): NativeVpnResponse
     fun cookieBinding(url: String): String
     fun diagnostics(): List<String> = emptyList()
+    fun guardedRequest(url: String, method: String = "GET", body: ByteArray? = null,
+        referer: String? = null, follow: Boolean = true, guard: () -> Boolean): NativeVpnResponse {
+        check(guard())
+        return request(url, method, body, referer, follow)
+    }
+    /** Worker-thread barrier; close() alone does not retract queued cookie writes. */
+    fun awaitQuiescence(timeoutMs: Long): Boolean = true
+    /** Non-blocking snapshot, also safe on the UI thread after the owner is cancelled. */
+    fun isQuiescent(): Boolean = true
 }
 
 internal object NativeVpnUrls {
@@ -133,7 +142,8 @@ internal class NativeVpnTransportFailure(val reason: Reason) : java.io.IOExcepti
         REQUEST_SIZE("H08 登录提交内容超过读取上限"),
         COOKIE_REJECTED("H09 系统未接受学校会话 Cookie，已停止后续请求"),
         COOKIE_TIMEOUT("H10 等待学校会话 Cookie 写入超时，已停止后续请求"),
-        CALLBACK_REPEATED("H11 学校重复返回同一次认证回跳，已停止，未重复提交登录")
+        CALLBACK_REPEATED("H11 学校重复返回同一次认证回跳，已停止，未重复提交登录"),
+        CANCELLED("H12 登录操作已取消或账号设置已变化，未继续发送")
     }
 }
 
@@ -155,12 +165,18 @@ internal class NativeVpnCookieReceipt(private val expected: Int) {
 
 internal class NativeVpnHttp(
     private val openConnection: (String) -> HttpURLConnection = { URL(it).openConnection() as HttpURLConnection },
-    private val cookieAccess: NativeVpnCookies? = null
+    private val cookieAccess: NativeVpnCookies? = null,
+    private val cookieWriter: ((String, String, (Boolean) -> Unit) -> Unit)? = null,
+    private val cookieTimeoutMs: Long = 5_000L
 ) : NativeVpnTransport {
     private val closed = AtomicBoolean()
+    private val activity = Object()
+    private var activeRequests = 0
+    private var pendingCookieWrites = 0
     private val main = Handler(Looper.getMainLooper())
     private val events = ArrayDeque<String>()
     private fun record(event: String) = synchronized(events) {
+        if (closed.get()) return@synchronized
         if (events.size == 32) events.removeFirst()
         events.addLast(event)
     }
@@ -180,15 +196,30 @@ internal class NativeVpnHttp(
 
     private fun cookie(url: String) = cookieAccess?.get(url) ?: if (cookieAccess == null) cookies.getCookie(url) else null
 
-    override fun request(url: String, method: String, body: ByteArray?, referer: String?, follow: Boolean): NativeVpnResponse {
+    override fun request(url: String, method: String, body: ByteArray?, referer: String?, follow: Boolean): NativeVpnResponse =
+        guardedRequest(url, method, body, referer, follow) { true }
+
+    override fun guardedRequest(url: String, method: String, body: ByteArray?, referer: String?, follow: Boolean,
+        guard: () -> Boolean): NativeVpnResponse {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Login I/O must not run on UI thread" }
+        synchronized(activity) { checkActive(guard); activeRequests++ }
+        try { return requestActive(url, method, body, referer, follow, guard) }
+        finally { synchronized(activity) { activeRequests--; activity.notifyAll() } }
+    }
+
+    private fun checkActive(guard: () -> Boolean) {
+        if (closed.get() || !guard()) throw NativeVpnTransportFailure(NativeVpnTransportFailure.Reason.CANCELLED)
+    }
+
+    private fun requestActive(url: String, method: String, body: ByteArray?, referer: String?, follow: Boolean,
+        guard: () -> Boolean): NativeVpnResponse {
         var next = url
         var verb = method
         var payload = body
         var previous = referer
         var callbackVisited = false
         repeat(11) {
-            check(!closed.get())
+            synchronized(activity) { checkActive(guard) }
             if (!NativeVpnUrls.allows(next)) throw NativeVpnTransportFailure(NativeVpnTransportFailure.Reason.DESTINATION)
             require(verb in setOf("GET", "POST"))
             if (verb == "POST" && !(next == LibraryRoute.WEBVPN.url("/isLogin") ||
@@ -201,8 +232,10 @@ internal class NativeVpnHttp(
                 record("正在完成固定 WebVPN 服务的认证回跳 GET")
             }
             val current = openConnection(next)
-            connection = current
             try {
+                // Publish under the same short lock as close(). If cancellation
+                // raced with opening, the just-created connection is never sent.
+                synchronized(activity) { checkActive(guard); connection = current }
                 current.apply {
                     requestMethod = verb; instanceFollowRedirects = false
                     connectTimeout = 10_000; readTimeout = 12_000; useCaches = false
@@ -221,9 +254,14 @@ internal class NativeVpnHttp(
                         val bytes = payload ?: byteArrayOf()
                         if (bytes.size > 32_768) throw NativeVpnTransportFailure(NativeVpnTransportFailure.Reason.REQUEST_SIZE)
                         setFixedLengthStreamingMode(bytes.size)
-                        outputStream.use { it.write(bytes) }
+                        synchronized(activity) { checkActive(guard) }
+                        outputStream.use { output ->
+                            synchronized(activity) { checkActive(guard) }
+                            output.write(bytes)
+                        }
                     }
                 }
+                synchronized(activity) { checkActive(guard) }
                 val code = current.responseCode
                 val kind = when {
                     current.contentType.orEmpty().contains("json", true) -> "JSON"
@@ -279,7 +317,7 @@ internal class NativeVpnHttp(
                 throw NativeVpnTransportFailure(NativeVpnTransportFailure.Reason.REQUEST_SETUP)
             } finally {
                 current.disconnect()
-                if (connection === current) connection = null
+                synchronized(activity) { if (connection === current) connection = null }
             }
         }
         error("Too many login redirects")
@@ -295,6 +333,8 @@ internal class NativeVpnHttp(
 
     private fun acceptCookies(url: String, headers: List<String>) {
         if (cookieAccess != null) {
+            // This test/adapter interface is synchronous; its return means all
+            // issued writes are complete. Production callbacks are tracked below.
             cookieAccess.accept(url, headers) { !closed.get() }
             record("共享 Cookie 存储已处理 ${headers.size} 项")
             return
@@ -302,13 +342,52 @@ internal class NativeVpnHttp(
         // Await Android's cookie callback before following CAS redirects. Asynchronous
         // fire-and-forget writes can otherwise make the next hop lose its session.
         val receipt = NativeVpnCookieReceipt(headers.size)
-        main.post {
-            if (closed.get()) { repeat(headers.size) { receipt.record(false) }; return@post }
-            headers.forEach { header -> cookies.setCookie(url, header) { receipt.record(it) } }
+        synchronized(activity) { pendingCookieWrites += headers.size }
+        val completions = headers.map {
+            val once = AtomicBoolean()
+            val callback: (Boolean) -> Unit = { success ->
+                if (once.compareAndSet(false, true)) {
+                    receipt.record(success)
+                    synchronized(activity) { pendingCookieWrites--; activity.notifyAll() }
+                }
+            }
+            callback
         }
-        try { receipt.await(5_000) { !closed.get() } }
+        val posted = main.post {
+            headers.forEachIndexed { index, header ->
+                if (closed.get()) completions[index](false)
+                else try {
+                    val callback = completions[index]
+                    if (cookieWriter != null) cookieWriter.invoke(url, header, callback)
+                    else cookies.setCookie(url, header) { callback(it) }
+                } catch (_: Exception) { completions[index](false) }
+            }
+        }
+        if (!posted) completions.forEach { it(false) }
+        try { receipt.await(cookieTimeoutMs) { !closed.get() } }
         finally { record("系统接受 Cookie ${receipt.accepted.get()}/${headers.size} 项") }
     }
 
-    override fun close() { closed.set(true); connection?.disconnect(); synchronized(events) { events.clear() } }
+    override fun awaitQuiescence(timeoutMs: Long): Boolean {
+        check(Looper.myLooper() != Looper.getMainLooper()) { "Login teardown must not block the UI thread" }
+        require(timeoutMs >= 0)
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        synchronized(activity) {
+            while (activeRequests != 0 || pendingCookieWrites != 0) {
+                val remaining = deadline - System.nanoTime()
+                if (remaining <= 0) return false
+                try { TimeUnit.NANOSECONDS.timedWait(activity, remaining) }
+                catch (_: InterruptedException) { Thread.currentThread().interrupt(); return false }
+            }
+            return true
+        }
+    }
+
+    override fun isQuiescent(): Boolean = synchronized(activity) { activeRequests == 0 && pendingCookieWrites == 0 }
+
+    override fun close() {
+        val current = synchronized(activity) { closed.set(true); connection }
+        current?.disconnect()
+        synchronized(events) { events.clear() }
+    }
 }

@@ -12,6 +12,82 @@ import java.util.Base64
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class NativeWebVpnSessionTest {
+    @Test fun validationAndCancelledGuardNeverConsumeOrSendAChallenge() {
+        NativeLoginFixture().use { f ->
+            val form = f.client.load().form!!
+            assertTrue(f.client.validate(form))
+            assertFalse(f.client.validate(form) { false })
+            val failure = assertThrows(NativeVpnFailure::class.java) {
+                f.client.submit(form, "synthetic-user", "synthetic-password", "1234", false) { false }
+            }
+            assertEquals(NativeVpnFailureKind.CANCELLED, failure.kind)
+            assertFalse(failure.mayHaveSubmitted)
+            assertFalse(form.consumed.get()); assertTrue(f.posts.isEmpty())
+            f.binding = "synthetic-new-cookie"
+            assertFalse(f.client.validate(form))
+        }
+    }
+
+    @Test fun guardChangingDuringPreparationStopsTheFinalAtomicConsumption() {
+        NativeLoginFixture().use { f ->
+            val form = f.client.load().form!!
+            var checks = 0
+            val failure = assertThrows(NativeVpnFailure::class.java) {
+                f.client.submit(form, "synthetic-user", "synthetic-password", "1234", false) { ++checks == 1 }
+            }
+            assertEquals(2, checks)
+            assertEquals(NativeVpnFailureKind.CANCELLED, failure.kind)
+            assertFalse(form.consumed.get()); assertTrue(f.posts.isEmpty())
+        }
+    }
+
+    @Test fun closeBetweenConsumptionAndTransportNeverSendsAndRemainsAnUnknownSubmission() {
+        NativeLoginFixture().use { f ->
+            lateinit var session: NativeWebVpnSession
+            val transport = object : NativeVpnTransport {
+                override fun request(url: String, method: String, body: ByteArray?, referer: String?, follow: Boolean) = f.request(url, method, body, referer, follow)
+                override fun guardedRequest(url: String, method: String, body: ByteArray?, referer: String?, follow: Boolean, guard: () -> Boolean): NativeVpnResponse {
+                    session.close()
+                    check(guard())
+                    return request(url, method, body, referer, follow)
+                }
+                override fun cookieBinding(url: String) = f.binding
+                override fun close() {}
+            }
+            session = NativeWebVpnSession(transport) { f.time }
+            val form = session.load().form!!
+            val failure = assertThrows(NativeVpnFailure::class.java) {
+                session.submit(form, "synthetic-user", "synthetic-password", "1234", false)
+            }
+            assertTrue(form.consumed.get())
+            assertTrue(failure.mayHaveSubmitted)
+            assertEquals(NativeVpnFailureKind.UNKNOWN_RESULT, failure.kind)
+            assertTrue(f.posts.isEmpty())
+            assertFalse(session.validate(form))
+        }
+    }
+
+    @Test fun onlyExplicitCaptchaRejectionIsRetryableAndMixedRestrictionsTakePriority() {
+        for ((message, expected) in listOf(
+            "验证码信息无效" to NativeVpnFailureKind.CAPTCHA_REJECTED,
+            "验证码错误，账号已锁定" to NativeVpnFailureKind.RATE_LIMITED,
+            "验证码错误，登录过于频繁" to NativeVpnFailureKind.RATE_LIMITED,
+            "验证码错误，密码错误" to NativeVpnFailureKind.CREDENTIAL_REJECTED,
+            "请输入短信动态口令，验证码错误" to NativeVpnFailureKind.EXTRA_VERIFICATION,
+            "学校拒绝继续认证" to NativeVpnFailureKind.UNKNOWN_RESULT
+        )) NativeLoginFixture().use { f ->
+            val form = f.client.load().form!!
+            f.rejectionMessage = message
+            val result = f.client.submit(form, "synthetic-user", "synthetic-password", "1234", false)
+            assertTrue(result.error)
+            assertEquals(expected, result.failureKind)
+            assertEquals(1, f.posts.size)
+            if (expected == NativeVpnFailureKind.CAPTCHA_REJECTED) {
+                assertNotNull(result.form); assertNotNull(result.image)
+            }
+            assertFalse(result.toString().contains(message))
+        }
+    }
     @Test fun anExpiredPortalLandingRecoversTheKnownSsoFormWithOnlyBoundedGetRequests() {
         NativeLoginFixture().use { server ->
             val calls = mutableListOf<Pair<String, String>>()
@@ -257,6 +333,7 @@ internal class NativeLoginFixture : NativeVpnTransport {
     var rejectCaptcha = false
     var blankRejection = false
     var failPost = false
+    var rejectionMessage: String? = null
     private var ssoValid = false
     private var libraryValid = false
     var closed = false
@@ -284,6 +361,7 @@ internal class NativeLoginFixture : NativeVpnTransport {
             posts.add((if (WebVpnPages.isSso(url)) "sso" else "library") to fields)
             if (failPost) throw java.net.SocketTimeoutException("synthetic failure")
             if (WebVpnPages.isSso(url)) {
+                rejectionMessage?.let { return html(action, ssoHtml.replace("<form id=", "<div id=\"msg1\">$it</div><form id=")) }
                 if (blankRejection) return html(action, ssoHtml)
                 if (rejectCaptcha) return html(action, ssoHtml.replace("<form id=", "<div id=\"msg1\">验证码信息无效</div><form id="))
                 ssoValid = true

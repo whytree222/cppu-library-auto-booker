@@ -60,7 +60,7 @@ fun WebVpnCard(
         OutlinedButton(onClick = onLogin, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 应用内登录") }
         FilledTonalButton(onClick = onCheck, modifier = Modifier.fillMaxWidth()) { Text("检查 WebVPN") }
         OutlinedButton(onClick = onAccounts, modifier = Modifier.fillMaxWidth()) { Text("WebVPN 账号设置") }
-        Text("统一认证过期后，请在应用内手动输入验证码。可在本机加密记住两套账号；已有 WebVPN 会话有效时继续后台预约。",
+        Text("两套账号保存开启后，默认通过原生接口和本机验证码识别恢复登录；可在账号设置中关闭全流程自动登录。识别失败保留应用内手动入口，已有会话有效时直接复用。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

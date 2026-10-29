@@ -32,16 +32,20 @@ import cn.edu.cppu.libraryautobooker.network.NativeWebVpnSession
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /** All visible controls are native. Challenges/passwords are never put in saved state. */
 internal class WebVpnNativeForm(
     private val activity: Activity,
     private val onVerified: () -> Unit,
     private val session: NativeWebVpnSession = sessionFactory(),
-    private val worker: Executor = workerFactory()
+    private val worker: Executor = workerFactory(),
+    autoStart: Boolean = true
 ) : AutoCloseable {
     private val main = Handler(Looper.getMainLooper())
-    private var closed = false
+    @Volatile private var closed = false
+    @Volatile private var authenticationReady = autoStart
+    private val activeActions = AtomicInteger()
     private var busy = false
     private var resultDialog: AlertDialog? = null
     private var lastOperation = "读取登录表单"
@@ -89,9 +93,9 @@ internal class WebVpnNativeForm(
 
     init {
         root.addView(content)
-        if (BuildConfig.DEBUG) content.addView(TextView(activity).apply { text = "认证回跳修复版 E · 10-27"; textSize = 12f })
+        if (BuildConfig.DEBUG) content.addView(TextView(activity).apply { text = "原生自动登录调试版 · 10-28"; textSize = 12f })
         for (view in listOf(title, TextView(activity).apply {
-            text = "在这里完成统一认证，再登录图书馆。验证码由你手动输入，不再自动识别或点击学校网页。五天有效期由学校决定。"
+            text = "这里是应用内手动登录入口。自动登录失败时，可手动输入验证码完成两层登录；自动恢复在账号设置中开启。五天有效期由学校决定。"
         }, status, progress, username, password, image, captchaNote, captcha, fiveDays, remember, submit, refresh, check,
             Button(activity).apply { text = "返回应用"; setOnClickListener { activity.finish() } })) {
             content.addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -100,11 +104,23 @@ internal class WebVpnNativeForm(
             content.addView(diagnostics)
             content.addView(Button(activity).apply { text = "复制脱敏诊断"; setOnClickListener { copyDiagnostics() } })
         }
-        load()
+        if (authenticationReady) load() else {
+            status.text = "正在等待上一轮认证和会话写入结束…"
+            updateControls()
+        }
+    }
+
+    fun authenticationReady(ready: Boolean) {
+        if (closed) return
+        authenticationReady = ready
+        if (ready) load() else {
+            status.text = "预约或上一轮认证尚未结束，或已有登录窗口。请先结束并核对预约，稍后重新打开登录。"
+            updateControls()
+        }
     }
 
     private fun load() {
-        if (busy) return
+        if (busy || !authenticationReady || closed) return
         credentialVerification = null
         step = null; captcha.setText(""); image.setImageDrawable(null)
         image.visibility = View.GONE
@@ -115,7 +131,11 @@ internal class WebVpnNativeForm(
 
     private fun submit() {
         val form = step?.form ?: return
-        if (busy) return
+        if (busy || !authenticationReady || closed) return
+        if (cn.edu.cppu.libraryautobooker.booking.BookingService.running) {
+            status.text = "预约正在运行，请先结束并核对预约；本次未执行登录"
+            return
+        }
         val user = username.text.toString().trim()
         val secret = password.text.toString()
         val code = captcha.text.toString()
@@ -140,7 +160,9 @@ internal class WebVpnNativeForm(
         status.text = if (form.kind == NativeVpnForm.Kind.SSO) "正在提交统一认证并等待学校响应…" else "正在登录 WebVPN 图书馆…"
         execute(submitted = verification, loginSubmission = true,
             operation = if (form.kind == NativeVpnForm.Kind.SSO) "点击登录统一认证" else "点击登录图书馆") {
-            session.submit(form, user, secret, code, rememberFiveDays)
+            session.submit(form, user, secret, code, rememberFiveDays) {
+                authenticationReady && !closed && !cn.edu.cppu.libraryautobooker.booking.BookingService.running
+            }
         }
     }
 
@@ -149,11 +171,18 @@ internal class WebVpnNativeForm(
 
     private fun execute(submitted: CredentialVerification? = null, loginSubmission: Boolean = false,
         operation: String = "检查登录状态", action: () -> NativeVpnStep) {
-        if (busy || closed) return
+        if (busy || closed || !authenticationReady) return
+        if (cn.edu.cppu.libraryautobooker.booking.BookingService.running) {
+            status.text = "预约正在运行，请先结束并核对预约；本次未执行登录"
+            return
+        }
         lastOperation = operation
         busy = true; updateControls(); updateDiagnostics()
         SessionChecker.invalidateAuthentication(LibraryRoute.WEBVPN)
-        worker.execute {
+        activeActions.incrementAndGet()
+        try { worker.execute {
+            try {
+            if (closed) return@execute
             val result = runCatching(action)
             main.post {
                 if (closed || activity.isFinishing || activity.isDestroyed) return@post
@@ -181,6 +210,12 @@ internal class WebVpnNativeForm(
                     if (loginSubmission) showFailureDialog(status.text.toString())
                 })
             }
+            } finally { activeActions.decrementAndGet() }
+        } } catch (_: RuntimeException) {
+            activeActions.decrementAndGet()
+            busy = false
+            status.text = "无法启动本机登录组件，请返回应用后重试"
+            updateControls()
         }
     }
 
@@ -231,9 +266,9 @@ internal class WebVpnNativeForm(
     }
 
     private fun updateControls() {
-        listOf(username, password, captcha, remember, fiveDays, refresh, check).forEach { it.isEnabled = !busy }
-        captcha.isEnabled = !busy && step?.form?.kind == NativeVpnForm.Kind.SSO && image.drawable != null
-        submit.isEnabled = !busy && step?.form != null
+        listOf(username, password, captcha, remember, fiveDays, refresh, check).forEach { it.isEnabled = !busy && authenticationReady }
+        captcha.isEnabled = !busy && authenticationReady && step?.form?.kind == NativeVpnForm.Kind.SSO && image.drawable != null
+        submit.isEnabled = !busy && authenticationReady && step?.form != null
         progress.visibility = if (busy) View.VISIBLE else View.GONE
     }
 
@@ -251,7 +286,7 @@ internal class WebVpnNativeForm(
 
     private fun copyDiagnostics() {
         if (!BuildConfig.DEBUG) return
-        val safe = "认证回跳修复版 E\n最近操作：$lastOperation\n结果：${status.text}\n${session.diagnostics()}"
+        val safe = "原生自动登录调试版\n最近操作：$lastOperation\n结果：${status.text}\n${session.diagnostics()}"
         (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             .setPrimaryClip(ClipData.newPlainText("登录脱敏诊断", safe))
         Toast.makeText(activity, "已复制脱敏诊断，不含账号、密码或验证码", Toast.LENGTH_SHORT).show()
@@ -272,19 +307,36 @@ internal class WebVpnNativeForm(
         val confirmed = if (owned.form.kind == NativeVpnForm.Kind.SSO)
             result.vpnAuthState == "valid" else result.state == "valid"
         if (confirmed) {
-            account.markVerified()
+            account.markVerifiedIfRevision(owned.revision)
             discardVerification(owned)
         }
     }
 
     override fun close() {
+        credentialVerification?.let { owned ->
+            if (owned.form.consumed.get()) store(owned.form.kind).pauseIfRevision(owned.revision)
+        }
         credentialVerification = null
         resultDialog?.dismiss(); resultDialog = null
-        closed = true; session.close(); (worker as? ExecutorService)?.shutdownNow()
+        closed = true; session.close(); (worker as? ExecutorService)?.shutdown()
         password.setText(""); captcha.setText(""); image.setImageDrawable(null)
     }
 
+    /** The visible owner's cookie lease is released only after this callback. */
+    fun closeWhenIdle(onIdle: () -> Unit) {
+        close()
+        if (activeActions.get() == 0 && session.isQuiescent()) { onIdle(); return }
+        cleanup.execute {
+            while (activeActions.get() != 0) Thread.sleep(10L)
+            while (!session.awaitQuiescence(1_000L)) { /* cookie callbacks must finish */ }
+            main.post(onIdle)
+        }
+    }
+
     companion object {
+        private val cleanup = Executors.newSingleThreadExecutor { command ->
+            Thread(command, "native-login-cleanup").apply { isDaemon = true }
+        }
         internal var sessionFactory: () -> NativeWebVpnSession = { NativeWebVpnSession() }
         internal var workerFactory: () -> Executor = { Executors.newSingleThreadExecutor() }
         internal var credentialStoreFactory: (android.content.Context, WebVpnCredentialStore.Kind) -> WebVpnCredentialStore =

@@ -34,12 +34,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import cn.edu.cppu.libraryautobooker.data.WebVpnCredentialStore
 import cn.edu.cppu.libraryautobooker.data.WebVpnCredentialStore.Kind
+import cn.edu.cppu.libraryautobooker.data.NativeWebVpnAutoSettings
 
 /** Opt-in account settings only. Passwords are never carried in Activity intents. */
 class WebVpnAccountsActivity : ComponentActivity() {
@@ -51,6 +54,7 @@ class WebVpnAccountsActivity : ComponentActivity() {
             var message by remember { mutableStateOf("") }
             val sso = remember(revision) { accountState(Kind.SSO) }
             val library = remember(revision) { accountState(Kind.LIBRARY) }
+            val nativeAuto = remember(revision) { NativeWebVpnAutoSettings(this).enabled }
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
                     WebVpnAccountsScreen(sso, library, message,
@@ -61,26 +65,30 @@ class WebVpnAccountsActivity : ComponentActivity() {
                                 false
                             } else {
                                 val saved = runCatching {
+                                    WebVpnAutoLogin.settingsChanged(this)
                                     WebVpnCredentialStore(this, kind).save(username, password)
                                 }.isSuccess
                                 message = if (saved) "已在本机加密保存；待学校服务器验证，不代表已经登录。"
-                                    else "无法安全保存账号，请重试或使用网页登录。"
+                                    else "无法安全保存账号，请重试或使用应用内手动登录。"
                                 revision++
                                 saved
                             }
                         },
                         onEnabled = { kind, enabled ->
+                            WebVpnAutoLogin.settingsChanged(this)
                             WebVpnCredentialStore(this, kind).setEnabled(enabled)
-                            message = if (kind == Kind.SSO) "已更新统一认证账号填入设置；验证码仍需在应用内手动输入。"
+                            message = if (kind == Kind.SSO) "已更新统一认证账号使用设置；全流程自动登录开启时可在本机识别验证码。"
                                 else if (enabled) "已允许使用这个账号自动登录图书馆。" else "已关闭图书馆账号的自动登录。"
                             revision++
                         },
                         onResume = { kind ->
+                            WebVpnAutoLogin.settingsChanged(this)
                             WebVpnCredentialStore(this, kind).resume()
                             message = "已由你允许重新尝试；请先在前台验证登录。"
                             revision++
                         },
                         onClear = { kind ->
+                            WebVpnAutoLogin.settingsChanged(this)
                             val cleared = runCatching { WebVpnCredentialStore(this, kind).clear() }.isSuccess
                             message = if (cleared) "此账号的本机加密凭据已删除；学校已有登录会话不会因此退出。"
                                 else "删除未完成，请重试。"
@@ -90,7 +98,16 @@ class WebVpnAccountsActivity : ComponentActivity() {
                             startActivity(Intent(this, LoginActivity::class.java)
                                 .putExtra(LoginActivity.EXTRA_WEBVPN, true))
                         },
-                        onClose = ::finish)
+                        onClose = ::finish,
+                        autoLoginEnabled = nativeAuto,
+                        onAutoLoginChange = { enabled ->
+                            WebVpnAutoLogin.settingsChanged(this)
+                            val saved = runCatching { NativeWebVpnAutoSettings(this).setEnabled(enabled) }.isSuccess
+                            message = if (!saved) "无法保存自动登录设置，请重试。"
+                                else if (enabled) "已开启原生全流程自动登录；两套账号须分别保存开启，暂停的账号仍需你确认。"
+                                else "已关闭统一认证自动提交；可手动输入验证码，图书馆内层的自动登录设置保持不变。"
+                            revision++
+                        })
                 }
             }
         }
@@ -125,20 +142,44 @@ internal fun WebVpnAccountsScreen(
     onResume: (Kind) -> Unit,
     onClear: (Kind) -> Unit,
     onVerify: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    autoLoginEnabled: Boolean = false,
+    onAutoLoginChange: (Boolean) -> Unit = {}
 ) {
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()
         .verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("WebVPN 账号设置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("学校统一认证和图书馆是两层登录，请分别设置。不会从校园网直连账号中自动复制密码。")
-        Text("只有你明确保存并开启后，应用才会使用这套账号。账号和密码仅在本机加密保存；统一认证验证码由你在应用内手动输入，不再自动识别。",
+        Text("只有你明确保存并开启后，应用才会使用这套账号。账号和密码仅在本机加密保存；验证码由本机识别，不上传第三方，也可切换为应用内手动输入。",
             style = MaterialTheme.typography.bodySmall)
+        Card {
+            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("WebVPN 全流程自动登录", fontWeight = FontWeight.Bold)
+                        Text(if (autoLoginEnabled) "已开启 · 自动完成统一认证和图书馆登录"
+                            else "已关闭 · 统一认证验证码改为手动输入", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(checked = autoLoginEnabled, onCheckedChange = onAutoLoginChange,
+                        modifier = Modifier.semantics { contentDescription = "WebVPN 全流程自动登录开关" })
+                }
+                Text("两套账号均保存开启时默认启用；手动关闭后会记住选择。打开应用、主动检查或预约前需要 WebVPN 时恢复，不常驻轮询。每轮最多三张验证码，失败后保留手动登录入口。",
+                    style = MaterialTheme.typography.bodySmall)
+                if (autoLoginEnabled && (!sso.enabled || !library.enabled)) Text("两套账号尚未全部保存开启，缺少的账号仍需补充。",
+                    color = Color(0xFFB3261E), style = MaterialTheme.typography.bodySmall)
+                if (autoLoginEnabled && (sso.paused || library.paused)) Text("有账号处于暂停状态，应用不会擅自恢复；请核对后允许该账号重新尝试。",
+                    color = Color(0xFFB3261E), style = MaterialTheme.typography.bodySmall)
+                Text("关闭本开关只停止统一认证自动提交，图书馆内层的自动重登设置独立保留。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
         WebVpnAccountCard(Kind.SSO, sso, onSave, onEnabled, onResume, onClear)
         WebVpnAccountCard(Kind.LIBRARY, library, onSave, onEnabled, onResume, onClear)
         if (message.isNotEmpty()) Text(message, fontWeight = FontWeight.SemiBold)
         Button(onClick = onVerify, modifier = Modifier.fillMaxWidth()) { Text("打开 WebVPN 验证两层登录") }
-        Text("先在应用内完成学校统一认证，再登录图书馆。如学校增加短信等额外验证，应用会停止并明确提示。",
+        Text("手动入口始终保留。自动识别或登录未完成时，可在应用内手动输入验证码；遇到短信等额外验证、账号错误或提交结果不明会停止，不重复提交。",
             style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("返回应用") }
     }
@@ -185,7 +226,7 @@ private fun WebVpnAccountCard(
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = consent, onCheckedChange = { consent = it })
-                Text(if (isSso) "我允许本机加密记住统一认证账号密码，用于应用内登录；验证码仍手动输入。"
+                Text(if (isSso) "我允许本机加密记住统一认证账号密码，并在全流程自动登录开启时识别验证码及提交认证。"
                     else "我允许本机加密记住图书馆账号密码，并用于图书馆自动登录。",
                     style = MaterialTheme.typography.bodySmall)
             }
@@ -196,13 +237,13 @@ private fun WebVpnAccountCard(
                 }
             }, enabled = consent && WebVpnCredentialStore.inputError(username, password) == null,
                 modifier = Modifier.fillMaxWidth()) {
-                Text(if (isSso) "保存并开启统一认证账号填入" else "保存并开启图书馆自动登录")
+                Text(if (isSso) "保存并允许统一认证登录" else "保存并开启图书馆自动登录")
             }
             if (state.configured) {
                 Row(verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Switch(checked = state.enabled, onCheckedChange = { onEnabled(kind, it) })
-                    Text(if (isSso) "允许填入统一认证账号密码" else "允许图书馆自动登录")
+                    Text(if (isSso) "允许使用统一认证账号" else "允许图书馆自动登录")
                 }
                 if (state.enabled && state.paused) OutlinedButton(onClick = { onResume(kind) }) {
                     Text("允许${label}重新尝试")

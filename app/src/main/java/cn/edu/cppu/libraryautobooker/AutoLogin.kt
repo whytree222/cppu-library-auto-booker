@@ -134,6 +134,9 @@ object SessionCoordinator {
     }
 
     private fun checkPreferred(context: Context, callback: (SessionChecker.Result) -> Unit): AutoCloseable {
+        // A foreground recheck joins the existing recovery instead of replacing its
+        // progress with a second direct-route probe or credential-bearing login.
+        if (WebVpnAutoLogin.running) return checkRoute(context, LibraryRoute.WEBVPN, callback = callback)
         val request = CheckRequest()
         request.attach(checkRoute(context, LibraryRoute.DIRECT) { direct ->
             if (!request.active) return@checkRoute
@@ -162,6 +165,12 @@ object SessionCoordinator {
     fun checkRoute(context: Context, route: LibraryRoute, updateSession: Boolean = true,
                    callback: (SessionChecker.Result) -> Unit): AutoCloseable {
         val request = CheckRequest()
+        if (route == LibraryRoute.WEBVPN && WebVpnAutoLogin.running) {
+            request.attach(WebVpnAutoLogin.ensure(context, updateSession) { recovered ->
+                request.deliver { callback(recovered) }
+            })
+            return request
+        }
         SessionChecker.probe(context, route, updateSession = updateSession) { result ->
             // The read-only probe may already be in flight. Cancellation still prevents it
             // from starting a credential-bearing login or waking a stopped reservation task.

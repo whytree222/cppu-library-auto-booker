@@ -34,15 +34,17 @@ class WebVpnCredentialStore internal constructor(
 
     private val preferences = context.getSharedPreferences(kind.storageName, Context.MODE_PRIVATE)
     private val associatedData = "cppu-webvpn:${kind.name}:v1".toByteArray(Charsets.UTF_8)
-    val configured get() = preferences.contains("encrypted") && preferences.contains("iv")
-    val enabled get() = configured && preferences.getBoolean("enabled", false)
-    val paused get() = preferences.getBoolean("paused", false)
-    val verified get() = configured && preferences.getBoolean("verified", false)
-    val revision get() = preferences.getString("revision", "").orEmpty()
+    // Activity, recovery and status checks use different store instances. One
+    // monitor per account kind keeps revision checks and writes atomic across all.
+    private val lock get() = credentialLocks.getValue(kind)
+    val configured get() = synchronized(lock) { preferences.contains("encrypted") && preferences.contains("iv") }
+    val enabled get() = synchronized(lock) { configured && preferences.getBoolean("enabled", false) }
+    val paused get() = synchronized(lock) { preferences.getBoolean("paused", false) }
+    val verified get() = synchronized(lock) { configured && preferences.getBoolean("verified", false) }
+    val revision get() = synchronized(lock) { preferences.getString("revision", "").orEmpty() }
 
     /** Explicit user consent saves locally, but only a real server response may mark it verified. */
-    @Synchronized
-    fun save(username: String, password: String) {
+    fun save(username: String, password: String): Unit = synchronized(lock) {
         require(inputError(username, password) == null)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, keyProvider())
@@ -60,10 +62,9 @@ class WebVpnCredentialStore internal constructor(
         }
     }
 
-    @Synchronized
-    fun read(): Credentials? {
-        if (!enabled || paused) return null
-        return try {
+    fun read(): Credentials? = synchronized(lock) {
+        if (!enabled || paused) return@synchronized null
+        try {
             decrypt()
         } catch (_: Exception) {
             // A missing/invalidated key must never result in a plaintext fallback or a retry loop.
@@ -73,8 +74,7 @@ class WebVpnCredentialStore internal constructor(
     }
 
     /** Only the account name is prefilled. The password never enters saved UI state. */
-    @Synchronized
-    fun savedUsername(): String = runCatching { decrypt()?.username.orEmpty() }.getOrDefault("")
+    fun savedUsername(): String = synchronized(lock) { runCatching { decrypt()?.username.orEmpty() }.getOrDefault("") }
 
     private fun decrypt(): Credentials? {
         if (!configured) return null
@@ -95,34 +95,45 @@ class WebVpnCredentialStore internal constructor(
         }
     }
 
-    @Synchronized
-    fun markVerified() {
+    fun markVerified(): Unit = synchronized(lock) {
         if (configured) preferences.edit().putBoolean("verified", true).apply()
     }
 
-    @Synchronized
-    fun pause() {
+    /** A late response for old credentials cannot verify a newer explicit save. */
+    fun markVerifiedIfRevision(expected: String): Boolean = synchronized(lock) {
+        if (!configured || !enabled || paused || revision != expected) return@synchronized false
+        preferences.edit().putBoolean("verified", true).apply()
+        true
+    }
+
+    /** Unknown or rejected old submissions must not pause a newly saved account. */
+    fun pauseIfRevision(expected: String): Boolean = synchronized(lock) {
+        if (!configured || !enabled || revision != expected) return@synchronized false
+        pause()
+        true
+    }
+
+    fun pause(): Unit = synchronized(lock) {
         preferences.edit().putBoolean("paused", true).putBoolean("verified", false).apply()
     }
 
-    @Synchronized
-    fun resume() {
+    fun resume(): Unit = synchronized(lock) {
         preferences.edit().putBoolean("paused", false).apply()
     }
 
-    @Synchronized
-    fun setEnabled(value: Boolean) {
+    fun setEnabled(value: Boolean): Unit = synchronized(lock) {
         preferences.edit().putBoolean("enabled", value).apply()
     }
 
-    @Synchronized
-    fun clear() {
+    fun clear(): Unit = synchronized(lock) {
         check(preferences.edit().clear().commit())
         // If the key was already invalidated/deleted, local deletion is still successful.
         runCatching { keyRemover() }
+        Unit
     }
 
     companion object {
+        private val credentialLocks = Kind.entries.associateWith { Any() }
         fun inputError(username: String, password: String): String? = when {
             username.isBlank() -> "请填写账号"
             password.isEmpty() -> "请填写密码"

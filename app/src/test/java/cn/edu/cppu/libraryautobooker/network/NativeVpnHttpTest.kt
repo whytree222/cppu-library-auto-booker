@@ -5,12 +5,18 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.LooperMode
+import org.robolectric.Shadows
+import android.os.Looper
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Fake connections only: exercises redirect/cookie behavior without any sockets. */
 @RunWith(RobolectricTestRunner::class)
@@ -158,16 +164,17 @@ class NativeVpnHttpTest {
     }
     private class Connection(url: String, private val status: Int, val destination: String? = null,
         private val issued: List<String> = emptyList(), private val bytes: ByteArray = "synthetic".toByteArray(),
-        private val mime: String = "text/html; charset=UTF-8") : HttpURLConnection(URL(url)) {
+        private val mime: String = "text/html; charset=UTF-8", private val beforeOutput: () -> Unit = {}) : HttpURLConnection(URL(url)) {
         val sent = ByteArrayOutputStream()
+        var disconnected = false
         override fun connect() {}
-        override fun disconnect() {}
+        override fun disconnect() { disconnected = true }
         override fun usingProxy() = false
         override fun getResponseCode() = status
         override fun getHeaderField(name: String?) = if (name.equals("Location", true)) destination else null
         override fun getHeaderFields(): MutableMap<String, MutableList<String>> = mutableMapOf("Set-Cookie" to issued.toMutableList())
         override fun getInputStream() = ByteArrayInputStream(bytes)
-        override fun getOutputStream() = sent
+        override fun getOutputStream(): ByteArrayOutputStream { beforeOutput(); return sent }
         override fun getContentType() = mime
     }
     private class Cookies : NativeVpnCookies {
@@ -284,5 +291,75 @@ class NativeVpnHttpTest {
         http.close()
         assertThrows(Exception::class.java) { offMain { http.request(NativeVpnUrls.libraryLogin) } }
         assertEquals(1, calls)
+    }
+
+    @Test fun closeWhileOpeningCannotPublishOrSendTheJustCreatedConnection() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val connection = Connection(NativeLoginFixture.action, 200)
+        val worker = Executors.newSingleThreadExecutor()
+        val http = NativeVpnHttp({ entered.countDown(); check(release.await(2, TimeUnit.SECONDS)); connection }, Cookies())
+        try {
+            val result = worker.submit<Throwable?> {
+                runCatching { http.request(NativeLoginFixture.action, "POST", "synthetic=body".toByteArray()) }.exceptionOrNull()
+            }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            http.close()
+            assertFalse(http.isQuiescent())
+            assertFalse(offMain { http.awaitQuiescence(1) })
+            release.countDown()
+            assertEquals(NativeVpnTransportFailure.Reason.CANCELLED, (result.get(2, TimeUnit.SECONDS) as NativeVpnTransportFailure).reason)
+            assertEquals(0, connection.sent.size())
+            assertTrue(connection.disconnected)
+            assertTrue(offMain { http.awaitQuiescence(100) })
+            assertTrue(http.isQuiescent())
+        } finally { release.countDown(); http.close(); worker.shutdownNow() }
+    }
+
+    @Test fun accountGuardIsCheckedAgainBeforePasswordBytesAreWritten() {
+        val allowed = AtomicBoolean(true)
+        val connection = Connection(NativeLoginFixture.action, 200, beforeOutput = { allowed.set(false) })
+        val http = NativeVpnHttp({ connection }, Cookies())
+        try {
+            val failure = offMain { runCatching {
+                http.guardedRequest(NativeLoginFixture.action, "POST", "synthetic=body".toByteArray()) { allowed.get() }
+            }.exceptionOrNull() }
+            assertEquals(NativeVpnTransportFailure.Reason.CANCELLED, (failure as NativeVpnTransportFailure).reason)
+            assertEquals(0, connection.sent.size())
+            assertTrue(offMain { http.awaitQuiescence(100) })
+        } finally { http.close() }
+    }
+
+    @Test @LooperMode(LooperMode.Mode.PAUSED)
+    fun timedOutCookieWriteRemainsOutstandingUntilItsRealCallbackCompletes() {
+        val callbacks = CopyOnWriteArrayList<(Boolean) -> Unit>()
+        val connection = Connection(NativeVpnUrls.libraryLogin, 200, issued = listOf("synthetic-cookie=private"))
+        val worker = Executors.newSingleThreadExecutor()
+        val http = NativeVpnHttp({ connection }, cookieWriter = { _, _, callback -> callbacks.add(callback) }, cookieTimeoutMs = 100)
+        try {
+            val result = worker.submit<Throwable?> { runCatching { http.request(NativeVpnUrls.libraryLogin) }.exceptionOrNull() }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (callbacks.isEmpty() && System.nanoTime() < deadline) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                Thread.yield()
+            }
+            assertEquals(1, callbacks.size)
+            assertEquals(NativeVpnTransportFailure.Reason.COOKIE_TIMEOUT, (result.get(2, TimeUnit.SECONDS) as NativeVpnTransportFailure).reason)
+            http.close()
+            assertFalse(http.isQuiescent())
+            assertFalse(offMain { http.awaitQuiescence(1) })
+            callbacks.single()(true)
+            assertTrue(http.isQuiescent())
+            assertTrue(offMain { http.awaitQuiescence(100) })
+            // Duplicate platform callbacks cannot decrement the outstanding count twice.
+            callbacks.single()(true)
+            assertTrue(offMain { http.awaitQuiescence(100) })
+        } finally { http.close(); worker.shutdownNow() }
+    }
+
+    @Test fun quiescenceCannotBlockAndroidsMainThread() {
+        val http = NativeVpnHttp({ Connection(it, 200) }, Cookies())
+        try { assertTrue(http.isQuiescent()); assertThrows(IllegalStateException::class.java) { http.awaitQuiescence(1) } }
+        finally { http.close() }
     }
 }

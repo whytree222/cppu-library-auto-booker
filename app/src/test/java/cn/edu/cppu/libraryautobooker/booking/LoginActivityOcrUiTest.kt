@@ -62,6 +62,24 @@ class LoginActivityOcrUiTest {
         shadowOf(Looper.getMainLooper()).idle()
     }
 
+    @Test fun closingBeforeQueuedLoadRunsStillReleasesTheManualCookieLease() {
+        val queued = java.util.ArrayDeque<Runnable>()
+        WebVpnNativeForm.workerFactory = { Executor { queued.add(it) } }
+        val controller = open()
+        assertEquals(1, queued.size)
+        assertTrue(cn.edu.cppu.libraryautobooker.WebVpnAutoLogin.authenticationBusy)
+        controller.pause().stop().destroy()
+        queued.removeFirst().run() // Closed wrapper must skip I/O AND decrement its action counter.
+        val until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
+        while (cn.edu.cppu.libraryautobooker.WebVpnAutoLogin.authenticationBusy && System.nanoTime() < until) {
+            Thread.sleep(10)
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+        assertFalse(cn.edu.cppu.libraryautobooker.WebVpnAutoLogin.authenticationBusy)
+        assertFalse(cn.edu.cppu.libraryautobooker.WebVpnAutoLogin.interactiveLoginOpen)
+        assertTrue(fixture.posts.isEmpty())
+    }
+
     @Test fun checkingBeforeSubmissionKeepsTheImageAndTypedCodeWithoutSendingCredentials() {
         val controller = open()
         try {
@@ -111,7 +129,7 @@ class LoginActivityOcrUiTest {
             click(controller.get(), "复制脱敏诊断")
             val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
             val detail = clipboard.primaryClip!!.getItemAt(0).text.toString()
-            assertTrue(detail.contains("认证回跳修复版 E"))
+            assertTrue(detail.contains("原生自动登录调试版"))
             assertTrue(detail.contains("最近操作：点击登录统一认证"))
             assertTrue(detail.contains("登录提交尝试：1"))
             assertTrue(detail.contains("P01"))
