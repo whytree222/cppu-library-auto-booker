@@ -783,3 +783,5 @@ selection.js 为轮询及学校原有点击处理补充脱敏异常提示，阶�
 
 
 本轮离线验证：Node 452 项与 Android 435 项测试全部通过，assembleDebug / assembleRelease 成功（正式包未签名）。新增覆盖类型化错误、三张验证码上限、双层恢复、有效会话免提交、五分钟边界、开关记忆、账号版本变更、共享订阅、Cookie 延迟与重复回调、手动接管、排队任务关闭及预约期间禁止手动认证。未执行真实学校登录或预约。调试包签名校验通过，包名 cn.edu.cppu.libraryautobooker.debug，显示“图书馆自动预约（调试）”，登录诊断标识“原生自动登录调试版 · 10-28”；版本号仍为 0.20.3 / 55，不将它误认为已发布的正式 APK。调试交付位于维护者当前工作目录 diagnostics/native-auto-login-2026-10-28/library-auto-booker-native-auto-login-debug.apk，SHA-256 为 67ae3d8b1bded498eb32dc172de9af97954e0ba2080400e334958d2192a6ab3e。
+
+维护者随后明确要求‘发布’，授权 v0.20.4 / 56 的提交、推送、签名预检及 Gitee/GitHub 发布，取代前述暂不发布要求。最低支持保持 50；未宣称真机或隔夜已验证。
